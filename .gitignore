@@ -1,5 +1,4 @@
 # Configuración real (contiene secretos)
-config.yaml
 .env
 
 # Logs
