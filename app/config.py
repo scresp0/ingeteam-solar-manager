@@ -102,11 +102,25 @@ class ChargingConfig(BaseModel):
         return v
 
 
+class EmailConfig(BaseModel):
+    enabled: bool = False
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    mail_from: str = ""
+    mail_to: str = ""
+    use_tls: bool = True             # STARTTLS en puerto 587
+    use_ssl: bool = False            # SSL directo en puerto 465
+    verify_ssl: bool = True          # False para servidores con cert autofirmado
+
+
 class SystemConfig(BaseModel):
     log_level: str = "INFO"
     log_file: str = "/app/logs/solar-manager.log"
     dry_run: bool = False
     timezone: str = "Europe/Madrid"
+    email: EmailConfig = EmailConfig()
 
     @field_validator("log_level")
     @classmethod
@@ -124,6 +138,10 @@ class AppConfig(BaseModel):
     tariff: TariffConfig
     charging: ChargingConfig
     system: SystemConfig
+
+    @property
+    def email(self) -> EmailConfig:
+        return self.system.email
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +194,20 @@ def _apply_env_overrides(data: dict) -> dict:
         ("system", "dry_run"):                               "DRY_RUN",
         ("system", "log_level"):                             "LOG_LEVEL",
     }
+    # Overrides para email (anidados bajo system.email)
+    email_overrides = {
+        "smtp_host":     "SMTP_HOST",
+        "smtp_user":     "SMTP_USER",
+        "smtp_password": "SMTP_PASSWORD",
+    }
+    for key, env_var in email_overrides.items():
+        value = os.environ.get(env_var)
+        if value is not None:
+            if "system" not in data:
+                data["system"] = {}
+            if "email" not in data["system"]:
+                data["system"]["email"] = {}
+            data["system"]["email"][key] = value
     for (section, key), env_var in overrides.items():
         value = os.environ.get(env_var)
         if value is not None:

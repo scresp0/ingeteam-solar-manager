@@ -19,6 +19,7 @@ from app.solcast import get_tomorrow_forecast, SolcastError
 from app.inverter import read_inverter_state, InverterError
 from app.decision import calculate_charge_target, decision_summary, DecisionInput
 from app.automation import set_charge_schedule, AutomationError
+from app.notifier import CycleEmailNotifier
 
 
 def setup_logging(cfg: AppConfig) -> None:
@@ -44,6 +45,11 @@ def run(cfg: AppConfig) -> bool:
         True si todo fue bien, False si hubo algún error no fatal.
     """
     logger = logging.getLogger(__name__)
+
+    # Iniciar notifier de email — captura logs desde este momento
+    notifier = CycleEmailNotifier(cfg.system.email)
+    notifier.attach()
+
     logger.info("=== Iniciando ciclo de gestión de carga ===")
 
     if cfg.system.dry_run:
@@ -108,9 +114,11 @@ def run(cfg: AppConfig) -> bool:
         )
     except AutomationError as e:
         logger.error(f"Error al programar la carga en el inversor: {e}")
+        notifier.send(success=False)
         return False
 
     logger.info("=== Ciclo completado correctamente ===")
+    notifier.send(success=True)
     return True
 
 

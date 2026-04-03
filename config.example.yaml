@@ -98,3 +98,13 @@ system:
   log_file: "/app/logs/solar-manager.log"
   dry_run: false
   timezone: "Europe/Madrid"
+  email:
+    enabled: false          # true para activar notificaciones
+    smtp_host: ""           # ej. smtp.gmail.com
+    smtp_port: 587          # 587 = STARTTLS, 465 = SSL
+    smtp_user: ""           # usuario SMTP (normalmente el email)
+    smtp_password: ""       # contraseña SMTP (mejor en .env como SMTP_PASSWORD)
+    mail_from: "solar-manager@tudominio.com"
+    mail_to: "tu@email.com"
+    use_tls: true           # STARTTLS (puerto 587)
+    use_ssl: false          # SSL directo (puerto 465)
