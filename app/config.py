@@ -92,6 +92,7 @@ class ChargingConfig(BaseModel):
     min_soc_pct: float = Field(default=15.0, ge=0.0, le=100.0)
     max_soc_pct: float = Field(default=95.0, ge=0.0, le=100.0)
     safety_margin_kwh: float = Field(default=1.0, ge=0.0)
+    night_consumption_kwh: float = Field(default=3.5, ge=0.0)
 
     @field_validator("max_soc_pct")
     @classmethod

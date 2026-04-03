@@ -37,8 +37,9 @@ VALLEY_HOUR_OFF = 7
 VALLEY_MIN_OFF  = 59
 
 # Valores del desplegable
-SCHEDULE_WEEKDAY = "2"   # Entre semana (L-V)
-SCHEDULE_WEEKEND = "3"   # Fin de semana (S-D)
+SCHEDULE_DISABLED = "0"  # Desactivado
+SCHEDULE_WEEKDAY  = "2"  # Entre semana (L-V)
+SCHEDULE_WEEKEND  = "3"  # Fin de semana (S-D)
 
 # Textos exactos de las etiquetas en la tabla
 LABEL_PROG_1 = "Programación Horaria 1: Carga de baterías desde la Red"
@@ -52,26 +53,32 @@ class AutomationError(Exception):
     """Error durante la automatización de la interfaz web."""
 
 
-def set_charge_schedule(cfg: InverterConfig, target_soc_pct: float, dry_run: bool = False) -> None:
+def set_charge_schedule(
+    cfg: InverterConfig,
+    charge_needed: bool,
+    target_soc_pct: float = 0.0,
+    dry_run: bool = False,
+) -> None:
     """
     Configura la programación horaria de carga en la web del inversor.
 
-    Programación 1: Entre semana (L-V), SOC objetivo, 00:01 - 07:59
-    Programación 2: Fin de semana (S-D), SOC objetivo, 00:01 - 07:59
+    Si charge_needed=False: desactiva ambas programaciones (Desactivado)
+    Si charge_needed=True:
+        Programación 1: Entre semana (L-V), SOC objetivo, 00:01 - 07:59
+        Programación 2: Fin de semana (S-D), SOC objetivo, 00:01 - 07:59
 
     Args:
         cfg:            configuración del inversor
-        target_soc_pct: SOC objetivo calculado por decision.py
+        charge_needed:  si False, desactiva la carga de red
+        target_soc_pct: SOC objetivo (solo relevante si charge_needed=True)
         dry_run:        si True, navega y rellena pero NO pulsa Escribir
 
     Raises:
         AutomationError: si no se puede completar la operación
     """
-    soc = int(round(target_soc_pct))
-    logger.info(
-        f"{'[DRY RUN] ' if dry_run else ''}"
-        f"Configurando carga horaria: SOC objetivo = {soc}%"
-    )
+    soc = int(round(target_soc_pct)) if charge_needed else 0
+    action = f"SOC objetivo = {soc}%" if charge_needed else "DESACTIVAR carga de red"
+    logger.info(f"{'[DRY RUN] ' if dry_run else ''}Configurando carga horaria: {action}")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
@@ -88,21 +95,26 @@ def set_charge_schedule(cfg: InverterConfig, target_soc_pct: float, dry_run: boo
             _navigate_to_charge_schedule(page)
             _read_current_values(page)
 
-            # Programación 1 — entre semana
-            _set_select_by_exact_label(page, LABEL_PROG_1, SCHEDULE_WEEKDAY)
-            _set_input_by_exact_label(page, LABEL_SOC_1, str(soc))
-            _set_input_by_index(page, "Hora On",    0, str(VALLEY_HOUR_ON))
-            _set_input_by_index(page, "Minuto On",  0, str(VALLEY_MIN_ON))
-            _set_input_by_index(page, "Hora Off",   0, str(VALLEY_HOUR_OFF))
-            _set_input_by_index(page, "Minuto Off", 0, str(VALLEY_MIN_OFF))
+            if not charge_needed:
+                # Desactivar ambas programaciones — no cargar de red
+                _set_select_by_exact_label(page, LABEL_PROG_1, SCHEDULE_DISABLED)
+                _set_select_by_exact_label(page, LABEL_PROG_2, SCHEDULE_DISABLED)
+            else:
+                # Programación 1 — entre semana
+                _set_select_by_exact_label(page, LABEL_PROG_1, SCHEDULE_WEEKDAY)
+                _set_input_by_exact_label(page, LABEL_SOC_1, str(soc))
+                _set_input_by_index(page, "Hora On",    0, str(VALLEY_HOUR_ON))
+                _set_input_by_index(page, "Minuto On",  0, str(VALLEY_MIN_ON))
+                _set_input_by_index(page, "Hora Off",   0, str(VALLEY_HOUR_OFF))
+                _set_input_by_index(page, "Minuto Off", 0, str(VALLEY_MIN_OFF))
 
-            # Programación 2 — fin de semana
-            _set_select_by_exact_label(page, LABEL_PROG_2, SCHEDULE_WEEKEND)
-            _set_input_by_exact_label(page, LABEL_SOC_2, str(soc))
-            _set_input_by_index(page, "Hora On",    1, str(VALLEY_HOUR_ON))
-            _set_input_by_index(page, "Minuto On",  1, str(VALLEY_MIN_ON))
-            _set_input_by_index(page, "Hora Off",   1, str(VALLEY_HOUR_OFF))
-            _set_input_by_index(page, "Minuto Off", 1, str(VALLEY_MIN_OFF))
+                # Programación 2 — fin de semana
+                _set_select_by_exact_label(page, LABEL_PROG_2, SCHEDULE_WEEKEND)
+                _set_input_by_exact_label(page, LABEL_SOC_2, str(soc))
+                _set_input_by_index(page, "Hora On",    1, str(VALLEY_HOUR_ON))
+                _set_input_by_index(page, "Minuto On",  1, str(VALLEY_MIN_ON))
+                _set_input_by_index(page, "Hora Off",   1, str(VALLEY_HOUR_OFF))
+                _set_input_by_index(page, "Minuto Off", 1, str(VALLEY_MIN_OFF))
 
             if dry_run:
                 logger.info("[DRY RUN] Valores rellenados correctamente — NO se pulsa Escribir")

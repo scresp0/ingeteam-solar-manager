@@ -44,7 +44,7 @@ tariff:
 
 charging:
   risk_factor: 0.7
-  min_soc_pct: 35
+  min_soc_pct: 30
   max_soc_pct: 100
   safety_margin_kwh: 1.0
 

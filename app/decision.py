@@ -1,19 +1,21 @@
 """
 decision.py — lógica de cálculo del nivel de carga de baterías.
 
-Dado el estado actual de la batería y la previsión solar del día siguiente,
-calcula el nivel de SOC (%) al que hay que cargar durante el horario valle.
+Algoritmo:
+    solar_efectiva    = p10 * risk_factor + p50 * (1 - risk_factor)
+    energia_actual    = (soc_actual / 100) * capacidad_kwh
+    energia_amanecer  = energia_actual - consumo_nocturno_kwh  (lo que queda al acabar el valle)
+    necesario_dia     = consumo_diario + margen_seguridad - solar_efectiva
+    deficit           = necesario_dia - energia_amanecer
 
-Fórmula central:
-    solar_efectiva  = p10 * risk_factor + p50 * (1 - risk_factor)
-    energia_actual  = (soc_actual / 100) * capacidad_kwh
-    deficit         = max(0, consumo_diario + margen_seguridad - solar_efectiva)
-    a_cargar        = max(0, deficit - energia_actual)
-    soc_objetivo    = clamp(
-                        (energia_actual + a_cargar) / capacidad_kwh * 100,
-                        min_soc_pct,
-                        max_soc_pct
-                      )
+    Si deficit <= 0:
+        → charge_needed = False  (desactivar carga de red)
+    Si deficit > 0:
+        → charge_needed = True
+        → soc_objetivo = clamp(
+              (energia_amanecer + deficit) / capacidad * 100,
+              min_soc_pct, max_soc_pct
+          )
 """
 
 from dataclasses import dataclass
@@ -22,47 +24,46 @@ from dataclasses import dataclass
 @dataclass
 class SolarForecast:
     """Previsión de producción solar para el día siguiente (kWh)."""
-    p10: float   # pesimista  (10% de probabilidad de quedar por debajo)
-    p50: float   # esperado   (mediana)
-    p90: float   # optimista  (90% de probabilidad de quedar por debajo)
+    p10: float
+    p50: float
+    p90: float
 
 
 @dataclass
 class DecisionInput:
     """Todos los datos necesarios para tomar la decisión de carga."""
     forecast: SolarForecast
-    soc_actual_pct: float        # SOC actual de la batería (0-100)
-    battery_capacity_kwh: float  # capacidad total del banco de baterías
-    daily_consumption_kwh: float # consumo medio diario de la vivienda
-    risk_factor: float           # 0.0 = confiar en p50, 1.0 = usar solo p10
-    min_soc_pct: float           # límite inferior de SOC (protección batería)
-    max_soc_pct: float           # límite superior de SOC (salud batería)
-    safety_margin_kwh: float     # margen de seguridad adicional en kWh
+    soc_actual_pct: float
+    battery_capacity_kwh: float
+    daily_consumption_kwh: float
+    night_consumption_kwh: float   # consumo en horario valle (00:00-08:00)
+    risk_factor: float
+    min_soc_pct: float
+    max_soc_pct: float
+    safety_margin_kwh: float
 
 
 @dataclass
 class DecisionResult:
     """Resultado del cálculo, con desglose para logging y auditoría."""
-    target_soc_pct: float        # SOC objetivo a programar en el inversor
-    target_kwh: float            # equivalente en kWh
-    to_charge_kwh: float         # kWh a cargar desde la red
-    solar_effective_kwh: float   # producción solar que se usará en el cálculo
-    energy_stored_kwh: float     # energía ya almacenada en batería ahora mismo
-    deficit_kwh: float           # déficit esperado (consumo - solar - almacenado)
-    clamped: bool                # True si el resultado fue limitado por min/max SOC
-    dry_run: bool                # True si el script está en modo simulación
+    charge_needed: bool            # False = desactivar, True = cargar hasta target_soc_pct
+    target_soc_pct: float          # SOC objetivo (solo relevante si charge_needed=True)
+    target_kwh: float
+    to_charge_kwh: float           # kWh a cargar desde la red
+    solar_effective_kwh: float
+    energy_stored_kwh: float       # energía actual en batería
+    energy_at_dawn_kwh: float      # energía estimada al acabar el valle (08:00)
+    deficit_kwh: float
+    clamped: bool
+    dry_run: bool
 
 
 def calculate_charge_target(inp: DecisionInput, dry_run: bool = False) -> DecisionResult:
     """
-    Calcula el nivel de SOC objetivo para el horario valle.
-
-    Args:
-        inp:     datos de entrada (previsión, SOC actual, parámetros instalación)
-        dry_run: si True, el resultado es válido pero no se actuará sobre él
+    Calcula si hay que cargar de red y a qué nivel.
 
     Returns:
-        DecisionResult con el SOC objetivo y desglose completo del cálculo
+        DecisionResult con charge_needed y target_soc_pct
     """
     # 1. Producción solar efectiva interpolada según risk_factor
     solar_effective = (
@@ -70,31 +71,66 @@ def calculate_charge_target(inp: DecisionInput, dry_run: bool = False) -> Decisi
         + inp.forecast.p50 * (1.0 - inp.risk_factor)
     )
 
-    # 2. Energía ya almacenada en la batería ahora mismo
+    # 2. Energía actual en batería
     energy_stored = (inp.soc_actual_pct / 100.0) * inp.battery_capacity_kwh
 
-    # 3. Déficit: lo que no cubrirán ni la solar ni la batería actual
-    total_needed = inp.daily_consumption_kwh + inp.safety_margin_kwh
-    deficit = max(0.0, total_needed - solar_effective - energy_stored)
+    # 3. Energía mínima que el inversor mantiene siempre (min_soc configurado)
+    energy_min = (inp.min_soc_pct / 100.0) * inp.battery_capacity_kwh
 
-    # 4. kWh a cargar desde la red en horario valle
-    to_charge = max(0.0, deficit)
+    # 4. Energía estimada al amanecer sin cargar de red:
+    #    la batería se descarga durante el valle — no puede bajar del mínimo
+    energy_at_dawn_no_charge = max(energy_min, energy_stored - inp.night_consumption_kwh)
 
-    # 5. SOC objetivo (energía actual + carga planificada) como porcentaje
-    target_kwh_raw = energy_stored + to_charge
+    # 5. Energía utilizable al amanecer sin cargar (por encima del mínimo)
+    energy_usable_no_charge = max(0.0, energy_at_dawn_no_charge - energy_min)
+
+    # 6. Energía necesaria para cubrir el día (consumo - solar)
+    needed_for_day = max(0.0,
+        inp.daily_consumption_kwh + inp.safety_margin_kwh - solar_effective
+    )
+
+    # 7. Déficit sin cargar de red
+    deficit = max(0.0, needed_for_day - energy_usable_no_charge)
+
+    # Nota: cuando charge_needed=True, el consumo nocturno lo cubre la red
+    # (el inversor mantiene la batería en SOC Grid durante el valle).
+    # Por tanto energy_at_dawn = SOC objetivo, y el déficit se calcula
+    # directamente como needed_for_day sin restar consumo nocturno.
+
+    # 6. Decidir si hay que cargar
+    charge_needed = deficit > 0.0
+
+    if not charge_needed:
+        return DecisionResult(
+            charge_needed=False,
+            target_soc_pct=0.0,
+            target_kwh=0.0,
+            to_charge_kwh=0.0,
+            solar_effective_kwh=round(solar_effective, 2),
+            energy_stored_kwh=round(energy_stored, 2),
+            energy_at_dawn_kwh=round(energy_at_dawn_no_charge, 2),
+            deficit_kwh=0.0,
+            clamped=False,
+            dry_run=dry_run,
+        )
+
+    # 8. SOC objetivo cuando charge_needed=True:
+    #    consumo nocturno cubierto por la red → batería llega al amanecer en SOC Grid
+    #    solo necesitamos energy_min + needed_for_day
+    target_kwh_raw = energy_min + needed_for_day
     target_soc_raw = (target_kwh_raw / inp.battery_capacity_kwh) * 100.0
-
-    # 6. Clampear entre min y max configurados
     target_soc = max(inp.min_soc_pct, min(inp.max_soc_pct, target_soc_raw))
     clamped = target_soc != target_soc_raw
     target_kwh = (target_soc / 100.0) * inp.battery_capacity_kwh
 
     return DecisionResult(
+        charge_needed=True,
         target_soc_pct=round(target_soc, 1),
         target_kwh=round(target_kwh, 2),
-        to_charge_kwh=round(to_charge, 2),
+        to_charge_kwh=round(deficit, 2),
         solar_effective_kwh=round(solar_effective, 2),
         energy_stored_kwh=round(energy_stored, 2),
+        energy_at_dawn_kwh=round(energy_at_dawn_no_charge, 2),
         deficit_kwh=round(deficit, 2),
         clamped=clamped,
         dry_run=dry_run,
@@ -105,16 +141,22 @@ def decision_summary(inp: DecisionInput, result: DecisionResult) -> str:
     """Devuelve un resumen legible del cálculo para el log."""
     lines = [
         "=== Cálculo de carga ===",
-        f"  Producción solar p10/p50/p90 : {inp.forecast.p10}/{inp.forecast.p50}/{inp.forecast.p90} kWh",
+        f"  Producción solar p10/p50/p90   : {inp.forecast.p10}/{inp.forecast.p50}/{inp.forecast.p90} kWh",
         f"  Solar efectiva (risk={inp.risk_factor}) : {result.solar_effective_kwh} kWh",
-        f"  Energía almacenada actual     : {result.energy_stored_kwh} kWh  (SOC {inp.soc_actual_pct}%)",
-        f"  Consumo diario + margen       : {inp.daily_consumption_kwh} + {inp.safety_margin_kwh} kWh",
-        f"  Déficit esperado              : {result.deficit_kwh} kWh",
-        f"  A cargar en valle             : {result.to_charge_kwh} kWh",
-        f"  SOC objetivo                  : {result.target_soc_pct}%  ({result.target_kwh} kWh)",
+        f"  Energía actual en batería      : {result.energy_stored_kwh} kWh  (SOC {inp.soc_actual_pct}%)",
+        f"  Mínimo SOC configurado         : {inp.min_soc_pct}% ({round((inp.min_soc_pct/100)*inp.battery_capacity_kwh,2)} kWh)",
+        f"  Consumo nocturno valle         : {inp.night_consumption_kwh} kWh",
+        f"  Energía estimada al amanecer   : {result.energy_at_dawn_kwh} kWh  (sin cargar de red)",
+        f"  Consumo diario + margen        : {inp.daily_consumption_kwh} + {inp.safety_margin_kwh} kWh",
+        f"  Solar efectiva                 : {result.solar_effective_kwh} kWh",
+        f"  Déficit esperado               : {result.deficit_kwh} kWh",
     ]
-    if result.clamped:
-        lines.append(f"  (limitado por min={inp.min_soc_pct}% / max={inp.max_soc_pct}%)")
+    if result.charge_needed:
+        lines.append(f"  → CARGAR de red: SOC objetivo = {result.target_soc_pct}% ({result.target_kwh} kWh)")
+        if result.clamped:
+            lines.append(f"    (limitado por min={inp.min_soc_pct}% / max={inp.max_soc_pct}%)")
+    else:
+        lines.append(f"  → NO cargar de red (batería suficiente para el día)")
     if result.dry_run:
         lines.append("  [DRY RUN — no se modificará el inversor]")
     return "\n".join(lines)

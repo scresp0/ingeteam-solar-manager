@@ -88,6 +88,7 @@ charging:
   min_soc_pct: 15
   max_soc_pct: 95
   safety_margin_kwh: 1.0
+  night_consumption_kwh: 3.5  # consumo estimado en horario valle (00:00-08:00)
 
 # -----------------------------------------------------------------------------
 # Sistema
