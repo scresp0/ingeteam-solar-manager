@@ -6,21 +6,23 @@
 
 # -----------------------------------------------------------------------------
 # Solcast — previsión de producción solar
-# https://toolkit.solcast.com.au
 # -----------------------------------------------------------------------------
 solcast:
-  api_key: "REQUERIDO"          # tu API key de Solcast
-  resource_id: "REQUERIDO"      # ID del recurso (tu instalación) en Solcast
+  api_key: "REQUERIDO"
+  resource_id: "REQUERIDO"
   base_url: "https://api.solcast.com.au"
   forecast_hours: 48
 
 # -----------------------------------------------------------------------------
-# Inversor Ingeteam — interfaz web local
+# Inversor Ingeteam INGECON SUN STORAGE 1PLAY TL-M
 # -----------------------------------------------------------------------------
 inverter:
-  web_url: "http://192.168.1.xxx"   # [REQUERIDO] IP local del inversor
-  username: "REQUERIDO"              # usuario de la interfaz web
-  password: "REQUERIDO"             # contraseña de la interfaz web
+  web_url: "http://REQUERIDO"
+  username: "REQUERIDO"
+  password: "REQUERIDO"
+  modbus_host: ""           # si vacío, se usa la IP de web_url
+  modbus_port: 502
+  modbus_slave: 1
   browser_timeout_seconds: 30
 
 # -----------------------------------------------------------------------------
@@ -32,27 +34,56 @@ installation:
   peak_power_kwp: 5.0
 
 # -----------------------------------------------------------------------------
-# Tarifas eléctricas (horario peninsular español por defecto)
+# Tarifas eléctricas PVPC (peninsular)
+#
+# Estructura real del horario:
+#
+#   Lunes a jueves (laborables):
+#     Valle  : 00:00 - 08:00
+#     Llana  : 08:00 - 10:00  y  14:00 - 18:00  y  22:00 - 24:00
+#     Punta  : 10:00 - 14:00  y  18:00 - 22:00
+#
+#   Viernes (laborable):
+#     Valle  : 00:00 - 08:00
+#     Llana  : 08:00 - 10:00  y  14:00 - 18:00  y  22:00 - 24:00
+#     Punta  : 10:00 - 14:00  y  18:00 - 22:00
+#
+#   Sábado, domingo y festivos:
+#     Valle  : 00:00 - 24:00  (todo el día)
+#
+# Cada periodo es una lista de intervalos {start, end}.
+# El sistema usa esto para saber si en este momento hay que cargar (valle)
+# y para calcular el schedule_at (hora de lanzar el script antes del valle).
 # -----------------------------------------------------------------------------
 tariff:
-  valley:
-    start: "00:00"
-    end: "08:00"
-    schedule_at: "23:30"
-  flat:
-    start: "08:00"
-    end: "18:00"
-  peak:
-    start: "18:00"
-    end: "22:00"
+  schedule_at: "23:30"      # hora a la que se lanza el script cada noche
+
+  # Días de la semana: 0=lunes, 1=martes, ..., 5=sábado, 6=domingo
+  weekend_days: [5, 6]      # sábado y domingo siempre valle
+  # Añade aquí los días festivos nacionales en formato YYYY-MM-DD
+  holidays: []
+
+  periods:
+    valley:
+      intervals:
+        - { start: "00:00", end: "08:00" }
+      # En fin de semana/festivo se añade automáticamente 08:00-24:00
+
+    flat:
+      intervals:
+        - { start: "08:00", end: "10:00" }
+        - { start: "14:00", end: "18:00" }
+        - { start: "22:00", end: "24:00" }
+
+    peak:
+      intervals:
+        - { start: "10:00", end: "14:00" }
+        - { start: "18:00", end: "22:00" }
 
 # -----------------------------------------------------------------------------
 # Lógica de carga de baterías
 # -----------------------------------------------------------------------------
 charging:
-  # 1.0 = muy conservador (usa previsión p10)
-  # 0.0 = optimista (usa previsión p50)
-  # 0.7 = recomendado
   risk_factor: 0.7
   min_soc_pct: 15
   max_soc_pct: 95

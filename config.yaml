@@ -1,0 +1,55 @@
+# =============================================================================
+# solar-manager — configuración
+# Los datos sensibles (credenciales, IPs, IDs) van en .env, no aquí.
+# =============================================================================
+
+solcast:
+  api_key: ""           # SOLCAST_API_KEY en .env
+  resource_id: ""       # SOLCAST_RESOURCE_ID en .env
+  base_url: "https://api.solcast.com.au"
+  forecast_hours: 48
+
+inverter:
+  web_url: ""           # INVERTER_WEB_URL en .env
+  username: ""          # INVERTER_USERNAME en .env
+  password: ""          # INVERTER_PASSWORD en .env
+  modbus_host: ""       # INVERTER_MODBUS_HOST en .env
+  modbus_port: 502
+  modbus_slave: 1
+  browser_timeout_seconds: 30
+
+installation:
+  battery_capacity_kwh: 22.0
+  average_daily_consumption_kwh: 16.0
+  peak_power_kwp: 5.5
+
+tariff:
+  schedule_at: "23:30"
+  weekend_days: [5, 6]
+  holidays: []
+
+  periods:
+    valley:
+      intervals:
+        - { start: "00:00", end: "08:00" }
+    flat:
+      intervals:
+        - { start: "08:00", end: "10:00" }
+        - { start: "14:00", end: "18:00" }
+        - { start: "22:00", end: "24:00" }
+    peak:
+      intervals:
+        - { start: "10:00", end: "14:00" }
+        - { start: "18:00", end: "22:00" }
+
+charging:
+  risk_factor: 0.7
+  min_soc_pct: 35
+  max_soc_pct: 100
+  safety_margin_kwh: 1.0
+
+system:
+  log_level: "INFO"
+  log_file: "/app/logs/solar-manager.log"
+  dry_run: false
+  timezone: "Europe/Madrid"

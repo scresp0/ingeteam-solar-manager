@@ -8,8 +8,11 @@ Jerarquía de valores (mayor prioridad gana):
 """
 
 import os
-import yaml
+from datetime import date
 from pathlib import Path
+from typing import List
+
+import yaml
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -28,7 +31,20 @@ class InverterConfig(BaseModel):
     web_url: str
     username: str
     password: str
+    modbus_host: str = ""
+    modbus_port: int = 502
+    modbus_slave: int = 1
     browser_timeout_seconds: int = 30
+
+    def get_modbus_host(self) -> str:
+        """Devuelve el host MODBUS, usando web_url como fallback."""
+        if self.modbus_host:
+            return self.modbus_host
+        url = self.web_url.strip()
+        for prefix in ("https://", "http://"):
+            if url.startswith(prefix):
+                url = url[len(prefix):]
+        return url.rstrip("/").split("/")[0]
 
 
 class InstallationConfig(BaseModel):
@@ -37,17 +53,38 @@ class InstallationConfig(BaseModel):
     peak_power_kwp: float = 0.0
 
 
-class TariffPeriod(BaseModel):
-    start: str
-    end: str
+class TariffInterval(BaseModel):
+    start: str   # "HH:MM"
+    end: str     # "HH:MM"
 
-class TariffValley(TariffPeriod):
-    schedule_at: str = "23:30"
+
+class TariffPeriods(BaseModel):
+    valley: dict   # {"intervals": [...]}
+    flat: dict
+    peak: dict
+
+    def get_intervals(self, period: str) -> List[TariffInterval]:
+        data = getattr(self, period)
+        return [TariffInterval(**i) for i in data.get("intervals", [])]
+
 
 class TariffConfig(BaseModel):
-    valley: TariffValley
-    flat: TariffPeriod
-    peak: TariffPeriod
+    schedule_at: str = "23:30"
+    weekend_days: List[int] = [5, 6]   # 0=lunes..6=domingo
+    holidays: List[str] = []           # ["YYYY-MM-DD", ...]
+    periods: TariffPeriods
+
+    def is_valley_day(self, d: date) -> bool:
+        """True si el día es fin de semana o festivo (todo el día es valle)."""
+        if d.weekday() in self.weekend_days:
+            return True
+        return d.isoformat() in self.holidays
+
+    def get_valley_intervals(self, d: date) -> List[TariffInterval]:
+        """Devuelve los intervalos valle para un día concreto."""
+        if self.is_valley_day(d):
+            return [TariffInterval(start="00:00", end="24:00")]
+        return self.periods.get_intervals("valley")
 
 
 class ChargingConfig(BaseModel):
@@ -93,16 +130,6 @@ class AppConfig(BaseModel):
 # ---------------------------------------------------------------------------
 
 def load_config(config_path: str | Path | None = None) -> AppConfig:
-    """
-    Carga la configuración desde config.yaml y aplica overrides
-    de variables de entorno encima.
-
-    Orden de búsqueda del fichero de configuración:
-      1. config_path si se pasa explícitamente
-      2. Variable de entorno CONFIG_PATH
-      3. /app/config.yaml (ruta dentro del contenedor Docker)
-      4. config.yaml en el directorio actual
-    """
     path = _resolve_config_path(config_path)
     data = _load_yaml(path)
     data = _apply_env_overrides(data)
@@ -135,28 +162,24 @@ def _load_yaml(path: Path) -> dict:
 
 
 def _apply_env_overrides(data: dict) -> dict:
-    """
-    Sobreescribe valores de configuración con variables de entorno.
-    Útil para pasar secretos en Docker sin escribirlos en config.yaml.
-    """
     overrides = {
-        ("solcast", "api_key"):                    "SOLCAST_API_KEY",
-        ("solcast", "resource_id"):                "SOLCAST_RESOURCE_ID",
-        ("inverter", "password"):                  "INVERTER_PASSWORD",
-        ("inverter", "web_url"):                   "INVERTER_WEB_URL",
-        ("inverter", "username"):                  "INVERTER_USERNAME",
-        ("installation", "battery_capacity_kwh"):  "BATTERY_CAPACITY_KWH",
-        ("installation", "average_daily_consumption_kwh"): "DAILY_CONSUMPTION_KWH",
-        ("charging", "risk_factor"):               "RISK_FACTOR",
-        ("system", "dry_run"):                     "DRY_RUN",
-        ("system", "log_level"):                   "LOG_LEVEL",
+        ("solcast", "api_key"):                              "SOLCAST_API_KEY",
+        ("solcast", "resource_id"):                          "SOLCAST_RESOURCE_ID",
+        ("inverter", "web_url"):                             "INVERTER_WEB_URL",
+        ("inverter", "username"):                            "INVERTER_USERNAME",
+        ("inverter", "password"):                            "INVERTER_PASSWORD",
+        ("inverter", "modbus_host"):                         "INVERTER_MODBUS_HOST",
+        ("installation", "battery_capacity_kwh"):            "BATTERY_CAPACITY_KWH",
+        ("installation", "average_daily_consumption_kwh"):   "DAILY_CONSUMPTION_KWH",
+        ("charging", "risk_factor"):                         "RISK_FACTOR",
+        ("system", "dry_run"):                               "DRY_RUN",
+        ("system", "log_level"):                             "LOG_LEVEL",
     }
     for (section, key), env_var in overrides.items():
         value = os.environ.get(env_var)
         if value is not None:
             if section not in data:
                 data[section] = {}
-            # Convertir tipos básicos
             if key in {"dry_run"}:
                 data[section][key] = value.lower() in ("true", "1", "yes")
             elif key in {"battery_capacity_kwh", "average_daily_consumption_kwh", "risk_factor"}:
