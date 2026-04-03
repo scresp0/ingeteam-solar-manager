@@ -25,3 +25,5 @@ venv/
 *.swp
 *.swo
 .DS_Store
+*.tar.gz
+*.bak

@@ -19,3 +19,6 @@ pydantic-settings==2.3.0
 
 # Logging estructurado
 python-json-logger==2.0.7
+
+# MODBUS TCP
+pymodbus==3.7.4
