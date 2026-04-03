@@ -1,0 +1,21 @@
+# HTTP y APIs
+requests==2.31.0
+
+# YAML
+PyYAML==6.0.1
+
+# Automatización de navegador
+playwright==1.44.0
+
+# Scheduler (cron interno en Python)
+APScheduler==3.10.4
+
+# Zona horaria
+pytz==2024.1
+
+# Validación de configuración
+pydantic==2.7.1
+pydantic-settings==2.3.0
+
+# Logging estructurado
+python-json-logger==2.0.7

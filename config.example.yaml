@@ -1,0 +1,68 @@
+# =============================================================================
+# solar-manager — fichero de configuración
+# Copia este fichero como config.yaml y rellena tus valores.
+# Los campos marcados con [REQUERIDO] no tienen valor por defecto.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Solcast — previsión de producción solar
+# https://toolkit.solcast.com.au
+# -----------------------------------------------------------------------------
+solcast:
+  api_key: "REQUERIDO"          # tu API key de Solcast
+  resource_id: "REQUERIDO"      # ID del recurso (tu instalación) en Solcast
+  base_url: "https://api.solcast.com.au"
+  forecast_hours: 48
+
+# -----------------------------------------------------------------------------
+# Inversor Ingeteam — interfaz web local
+# -----------------------------------------------------------------------------
+inverter:
+  web_url: "http://192.168.1.xxx"   # [REQUERIDO] IP local del inversor
+  username: "admin"                  # usuario de la interfaz web
+  password: "REQUERIDO"             # contraseña de la interfaz web
+  browser_timeout_seconds: 30
+
+# -----------------------------------------------------------------------------
+# Instalación fotovoltaica
+# -----------------------------------------------------------------------------
+installation:
+  battery_capacity_kwh: 10.0
+  average_daily_consumption_kwh: 15.0
+  peak_power_kwp: 5.0
+
+# -----------------------------------------------------------------------------
+# Tarifas eléctricas (horario peninsular español por defecto)
+# -----------------------------------------------------------------------------
+tariff:
+  valley:
+    start: "00:00"
+    end: "08:00"
+    schedule_at: "23:30"
+  flat:
+    start: "08:00"
+    end: "18:00"
+  peak:
+    start: "18:00"
+    end: "22:00"
+
+# -----------------------------------------------------------------------------
+# Lógica de carga de baterías
+# -----------------------------------------------------------------------------
+charging:
+  # 1.0 = muy conservador (usa previsión p10)
+  # 0.0 = optimista (usa previsión p50)
+  # 0.7 = recomendado
+  risk_factor: 0.7
+  min_soc_pct: 15
+  max_soc_pct: 95
+  safety_margin_kwh: 1.0
+
+# -----------------------------------------------------------------------------
+# Sistema
+# -----------------------------------------------------------------------------
+system:
+  log_level: "INFO"
+  log_file: "/app/logs/solar-manager.log"
+  dry_run: false
+  timezone: "Europe/Madrid"

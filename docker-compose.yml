@@ -1,0 +1,38 @@
+# =============================================================================
+# solar-manager docker-compose.yml
+# =============================================================================
+
+services:
+  solar-manager:
+    build: .
+    container_name: solar-manager
+    restart: unless-stopped
+
+    volumes:
+      # Configuración: montada desde el host, no copiada en la imagen
+      # Así puedes editar config.yaml sin reconstruir el contenedor
+      - ./config.yaml:/app/config.yaml:ro
+      # Logs persistentes en el host
+      - ./logs:/app/logs
+
+    env_file:
+      # Variables de entorno para secretos (sobreescriben config.yaml)
+      - .env
+
+    environment:
+      - TZ=Europe/Madrid
+
+    # Necesario para que Playwright/Chromium funcione en modo headless
+    # dentro del contenedor sin GPU
+    shm_size: '256mb'
+
+    # Red del host: permite que el contenedor alcance la IP local del inversor
+    # (ej. http://192.168.1.xxx) sin configuración adicional
+    network_mode: host
+
+    # Healthcheck básico: verifica que el proceso Python sigue vivo
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3

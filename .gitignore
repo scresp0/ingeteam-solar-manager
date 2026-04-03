@@ -1,0 +1,28 @@
+# Configuración real (contiene secretos)
+config.yaml
+.env
+
+# Logs
+logs/
+*.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Docker
+.docker/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
