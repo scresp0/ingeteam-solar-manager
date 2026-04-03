@@ -26,7 +26,7 @@ class SolcastConfig(BaseModel):
 
 class InverterConfig(BaseModel):
     web_url: str
-    username: str = "admin"
+    username: str
     password: str
     browser_timeout_seconds: int = 30
 

@@ -19,7 +19,7 @@ solcast:
 # -----------------------------------------------------------------------------
 inverter:
   web_url: "http://192.168.1.xxx"   # [REQUERIDO] IP local del inversor
-  username: "admin"                  # usuario de la interfaz web
+  username: "REQUERIDO"              # usuario de la interfaz web
   password: "REQUERIDO"             # contraseña de la interfaz web
   browser_timeout_seconds: 30
 
