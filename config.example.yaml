@@ -98,6 +98,8 @@ system:
   log_file: "/app/logs/solar-manager.log"
   dry_run: false
   timezone: "Europe/Madrid"
+  web_port: 8080
+  web_enabled: true
   email:
     enabled: false          # true para activar notificaciones
     smtp_host: ""           # ej. smtp.gmail.com

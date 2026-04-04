@@ -121,6 +121,8 @@ class SystemConfig(BaseModel):
     dry_run: bool = False
     timezone: str = "Europe/Madrid"
     email: EmailConfig = EmailConfig()
+    web_port: int = 8080          # puerto de la interfaz web
+    web_enabled: bool = True      # false para deshabilitar la interfaz web
 
     @field_validator("log_level")
     @classmethod

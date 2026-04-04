@@ -123,7 +123,7 @@ def run(cfg: AppConfig) -> bool:
 
 
 def main() -> None:
-    """Punto de entrada — carga config y arranca el scheduler."""
+    """Punto de entrada — carga config, arranca el scheduler y la interfaz web."""
     try:
         cfg = load_config()
     except (FileNotFoundError, ValueError) as e:
@@ -134,7 +134,20 @@ def main() -> None:
     logger = logging.getLogger(__name__)
     logger.info(f"solar-manager arrancando (dry_run={cfg.system.dry_run})")
 
-    # Importar aquí para que el logging ya esté configurado
+    # Arrancar interfaz web en thread separado
+    if cfg.system.web_enabled:
+        import threading
+        import uvicorn
+        from app.web.server import create_app
+        web_app = create_app(cfg)
+        def _run_web():
+            uvicorn.run(web_app, host="0.0.0.0", port=cfg.system.web_port,
+                        log_level="warning")
+        t = threading.Thread(target=_run_web, daemon=True)
+        t.start()
+        logger.info(f"Interfaz web disponible en http://0.0.0.0:{cfg.system.web_port}")
+
+    # Arrancar scheduler (bloqueante)
     from app.scheduler import start_scheduler
     start_scheduler(cfg)
 

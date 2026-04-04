@@ -24,7 +24,7 @@ installation:
   peak_power_kwp: 5.5
 
 tariff:
-  schedule_at: "23:55"
+  schedule_at: "23:30"
   weekend_days: [5, 6]
   holidays: []
 
@@ -47,21 +47,22 @@ charging:
   min_soc_pct: 35
   max_soc_pct: 100
   safety_margin_kwh: 1.0
-  night_consumption_kwh: 3.0
 
 system:
   log_level: "INFO"
   log_file: "/app/logs/solar-manager.log"
-  dry_run: false            # false -> Guarda los cambios en la configuración del Ingeteam | true -> NO CAMBIA LA CONF. DEL INVERSOR
+  dry_run: false
   timezone: "Europe/Madrid"
+  web_port: 8080
+  web_enabled: true
   email:
-    enabled: true
+    enabled: false
     smtp_host: ""         # SMTP_HOST en .env
-    smtp_port: 25
+    smtp_port: 587
     smtp_user: ""         # SMTP_USER en .env
     smtp_password: ""     # SMTP_PASSWORD en .env
-    mail_from: "autosolar-ingeteam@metafrase.net"
-    mail_to: "santiago@metafrase.es"
+    mail_from: ""
+    mail_to: ""
     use_tls: true         # true para puerto 587 (STARTTLS)
     use_ssl: false        # true para puerto 465 (SSL directo)
 
