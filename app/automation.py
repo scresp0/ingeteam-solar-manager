@@ -187,12 +187,18 @@ def _navigate_to_charge_schedule(page: Page) -> None:
     page.wait_for_selector("text=Configuración", timeout=15000)
     page.locator("text=Configuración").first.click()
     page.wait_for_load_state("networkidle")
-    page.wait_for_selector(".inv-sett-top-cont", timeout=15000)
-    page.wait_for_timeout(2000)
+    page.wait_for_timeout(3000)
 
     # Captura para verificar que estamos en Configuración
     page.screenshot(path="/app/logs/screenshot_config_page.png")
     logger.debug("Captura de página de configuración guardada")
+
+    # Diagnóstico: qué clases hay en el DOM ahora
+    clases = page.evaluate("""
+        () => Array.from(document.querySelectorAll('div[class*="inv-sett"], div[class*="sett"]'))
+                   .map(e => e.className)
+    """)
+    logger.debug(f"Clases inv-sett encontradas: {clases}")
 
     # Clic en "Ajustes avanzados"
     logger.debug("Clic en Ajustes avanzados")
