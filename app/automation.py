@@ -188,14 +188,15 @@ def _navigate_to_charge_schedule(page: Page) -> None:
     page.wait_for_load_state("networkidle")
     page.wait_for_timeout(2000)
 
-    # Captura para diagnóstico
+    # Clic en "Ajustes avanzados" — segundo botón dentro de .inv-sett-top-cont
+    # Es btn-secondary (el activo/seleccionado es btn-info)
+    page.locator(".inv-sett-top-cont button.btn-secondary").first.click()
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(2000)
+
+    # Captura DESPUÉS del clic para verificar
     page.screenshot(path="/app/logs/screenshot_config_page.png")
     logger.debug("Captura de página de configuración guardada")
-
-    # Clic en "Ajustes avanzados" (segunda pestaña)
-    page.locator("text=Ajustes avanzados").click()
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(1500)
 
     # Buscar el item 6.3.1 en el menú lateral
     page.locator("text=6.3.1").first.click()
