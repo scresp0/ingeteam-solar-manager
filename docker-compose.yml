@@ -9,28 +9,27 @@ services:
     restart: unless-stopped
 
     volumes:
-      # Configuración: montada desde el host, no copiada en la imagen
-      # Así puedes editar config.yaml sin reconstruir el contenedor
       - ./config.yaml:/app/config.yaml:ro
-      # Logs persistentes en el host
       - ./logs:/app/logs
 
     env_file:
-      # Variables de entorno para secretos (sobreescriben config.yaml)
       - .env
 
     environment:
       - TZ=Europe/Madrid
 
-    # Necesario para que Playwright/Chromium funcione en modo headless
-    # dentro del contenedor sin GPU
     shm_size: '256mb'
 
-    # Red del host: permite que el contenedor alcance la IP local del inversor
-    # (ej. http://192.168.1.xxx) sin configuración adicional
+    # En Linux network_mode: host permite llegar al inversor en red local
+    # y hace innecesario el mapeo de puertos (el contenedor usa la red del host).
+    # En Mac Docker Desktop no soporta host networking real, por lo que
+    # el puerto hay que mapearlo explícitamente.
+    # Para Mac: comentar network_mode y descomentar ports.
+    # Para Linux: dejar network_mode y comentar ports.
     network_mode: host
+#    ports:
+#       - "8080:8080"
 
-    # Healthcheck básico: verifica que el proceso Python sigue vivo
     healthcheck:
       test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
       interval: 60s
