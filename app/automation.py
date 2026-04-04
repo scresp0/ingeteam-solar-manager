@@ -186,9 +186,12 @@ def _navigate_to_charge_schedule(page: Page) -> None:
     base_url = page.url.split("/#")[0]
     page.goto(f"{base_url}/#/embeddedinverter/config/local/1/-1")
     page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(2000)
 
-    # Clic en "Ajustes avanzados" via JavaScript — busca por texto del span interno
+    # Esperar a que el contenedor de pestañas de Configuración esté visible
+    page.wait_for_selector(".inv-sett-top-cont", timeout=15000)
+    page.wait_for_timeout(1000)
+
+    # Clic en "Ajustes avanzados" via JavaScript
     page.evaluate("""
         () => {
             const btns = Array.from(document.querySelectorAll('.inv-sett-top-cont button'));
