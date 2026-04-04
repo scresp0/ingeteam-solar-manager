@@ -188,13 +188,19 @@ def _navigate_to_charge_schedule(page: Page) -> None:
     page.wait_for_load_state("networkidle")
     page.wait_for_timeout(2000)
 
-    # Clic en "Ajustes avanzados" — segundo botón dentro de .inv-sett-top-cont
-    # Es btn-secondary (el activo/seleccionado es btn-info)
-    page.locator(".inv-sett-top-cont button.btn-secondary").first.click()
+    # Clic en "Ajustes avanzados" via JavaScript — busca por texto del span interno
+    page.evaluate("""
+        () => {
+            const btns = Array.from(document.querySelectorAll('.inv-sett-top-cont button'));
+            const btn = btns.find(b => b.innerText.includes('Ajustes') || b.innerText.includes('Advanced'));
+            if (btn) btn.click();
+            else throw new Error('Botón Ajustes avanzados no encontrado en .inv-sett-top-cont');
+        }
+    """)
     page.wait_for_load_state("networkidle")
     page.wait_for_timeout(2000)
 
-    # Captura DESPUÉS del clic para verificar
+    # Captura para verificar
     page.screenshot(path="/app/logs/screenshot_config_page.png")
     logger.debug("Captura de página de configuración guardada")
 
