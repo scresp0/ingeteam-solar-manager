@@ -34,6 +34,7 @@ def main():
     try:
         set_charge_schedule(
             cfg=cfg.inverter,
+            charge_needed=True,       # siempre True en el test para probar la escritura
             target_soc_pct=soc_test,
             dry_run="--write" not in sys.argv,
         )
