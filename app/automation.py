@@ -182,32 +182,32 @@ def _navigate_to_charge_schedule(page: Page) -> None:
     page.screenshot(path="/app/logs/screenshot_after_login.png")
     logger.debug("Captura guardada en /app/logs/screenshot_after_login.png")
 
-    # Navegar directamente por URL — independiente del idioma
-    base_url = page.url.split("/#")[0]
-    page.goto(f"{base_url}/#/embeddedinverter/config/local/1/-1")
+    # Navegación por clics secuenciales — Vue necesita los clics para montar componentes
+    logger.debug("Clic en Configuración (menú lateral)")
+    page.wait_for_selector("text=Configuración", timeout=15000)
+    page.locator("text=Configuración").first.click()
     page.wait_for_load_state("networkidle")
-
-    # Esperar a que el contenedor de pestañas de Configuración esté visible
     page.wait_for_selector(".inv-sett-top-cont", timeout=15000)
-    page.wait_for_timeout(1000)
+    page.wait_for_timeout(2000)
 
-    # Clic en "Ajustes avanzados" via JavaScript
+    # Captura para verificar que estamos en Configuración
+    page.screenshot(path="/app/logs/screenshot_config_page.png")
+    logger.debug("Captura de página de configuración guardada")
+
+    # Clic en "Ajustes avanzados"
+    logger.debug("Clic en Ajustes avanzados")
     page.evaluate("""
         () => {
             const btns = Array.from(document.querySelectorAll('.inv-sett-top-cont button'));
             const btn = btns.find(b => b.innerText.includes('Ajustes') || b.innerText.includes('Advanced'));
             if (btn) btn.click();
-            else throw new Error('Botón Ajustes avanzados no encontrado en .inv-sett-top-cont');
+            else throw new Error('Botón Ajustes avanzados no encontrado');
         }
     """)
     page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(2000)
+    page.wait_for_timeout(3000)
 
-    # Captura para verificar
-    page.screenshot(path="/app/logs/screenshot_config_page.png")
-    logger.debug("Captura de página de configuración guardada")
-
-    # Buscar el item 6.3.1 en el menú lateral
+    # Clic en 6.3.1
     page.locator("text=6.3.1").first.click()
     page.wait_for_load_state("networkidle")
     page.wait_for_timeout(1000)
