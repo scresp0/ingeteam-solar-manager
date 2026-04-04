@@ -138,27 +138,28 @@ def set_charge_schedule(
 # ---------------------------------------------------------------------------
 
 def _login(page: Page, cfg: InverterConfig) -> None:
-    """Abre la web del inversor y hace login si es necesario."""
-    logger.debug(f"Abriendo {cfg.web_url}")
-    page.goto(cfg.web_url)
+    """Fuerza el login navegando directamente a la URL de login."""
+    login_url = cfg.web_url.rstrip("/") + "/#/login"
+    logger.debug(f"Abriendo login: {login_url}")
+    page.goto(login_url)
     page.wait_for_load_state("networkidle")
 
-    # Detectar si hay formulario de login
-    if page.locator("input[type='password']").count() == 0:
-        logger.debug("Sesión ya activa, no se necesita login")
-        return
+    # Esperar a que Vue renderice el formulario
+    try:
+        page.wait_for_selector("input[placeholder='user']", timeout=15000)
+    except Exception:
+        page.screenshot(path="/app/logs/screenshot_login_error.png")
+        raise AutomationError(
+            "No apareció el formulario de login. "
+            "Captura guardada en /app/logs/screenshot_login_error.png"
+        )
 
     logger.debug("Rellenando credenciales")
-    # Esperar a que Vue renderice el formulario
-    page.wait_for_selector("input[placeholder='user']", timeout=15000)
     page.locator("input[placeholder='user']").fill(cfg.username)
-    page.wait_for_selector("input[placeholder='password']", timeout=15000)
     page.locator("input[placeholder='password']").fill(cfg.password)
-
-    # El botón de submit es el segundo botón de la página (btn-info con texto)
-    # La interfaz carga en el idioma del navegador — usamos clase CSS en lugar de texto
     page.locator("button.btn-info.ml-auto").click()
     page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(1000)
     logger.debug("Login completado")
 
 
