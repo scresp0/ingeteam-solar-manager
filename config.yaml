@@ -52,7 +52,7 @@ charging:
 system:
   log_level: "INFO"
   log_file: "/app/logs/solar-manager.log"
-  dry_run: false            # false -> No guarda los cambios en la configuración del Ingeteam | true -> Sí los guarda
+  dry_run: false            # false -> Guarda los cambios en la configuración del Ingeteam | true -> NO CAMBIA LA CONF. DEL INVERSOR
   timezone: "Europe/Madrid"
   email:
     enabled: true
