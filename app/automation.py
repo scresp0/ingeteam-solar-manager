@@ -165,13 +165,18 @@ def _login(page: Page, cfg: InverterConfig) -> None:
 def _navigate_to_charge_schedule(page: Page) -> None:
     """Navega a Configuración → Ajustes avanzados → 6.3.1."""
     logger.debug("Navegando a Configuración")
-    page.locator("text=Configuración").first.click()
-    page.wait_for_load_state("networkidle")
 
-    page.locator("text=Ajustes avanzados").click()
-    page.wait_for_load_state("networkidle")
+    # Captura para diagnóstico del idioma/estado de la página
+    page.screenshot(path="/app/logs/screenshot_after_login.png")
+    logger.debug("Captura guardada en /app/logs/screenshot_after_login.png")
 
-    page.locator("text=6.3.1").click()
+    # Navegar directamente por URL — independiente del idioma
+    base_url = page.url.split("/#")[0]
+    page.goto(f"{base_url}/#/embeddedinverter/config/local/1/-1")
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(1000)
+
+    page.locator("text=6.3.1, text=6.3.1-").first.click()
     page.wait_for_load_state("networkidle")
     page.wait_for_timeout(1000)
 
