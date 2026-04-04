@@ -196,14 +196,16 @@ def _navigate_to_charge_schedule(page: Page) -> None:
 
     # Clic en "Ajustes avanzados"
     logger.debug("Clic en Ajustes avanzados")
-    page.evaluate("""
+    found = page.evaluate("""
         () => {
             const btns = Array.from(document.querySelectorAll('.inv-sett-top-cont button'));
+            const texts = btns.map(b => b.innerText.trim());
             const btn = btns.find(b => b.innerText.includes('Ajustes') || b.innerText.includes('Advanced'));
-            if (btn) btn.click();
-            else throw new Error('Botón Ajustes avanzados no encontrado');
+            if (btn) { btn.click(); return 'clicked: ' + btn.innerText.trim(); }
+            return 'not found, buttons: ' + texts.join(' | ');
         }
     """)
+    logger.debug(f"Ajustes avanzados evaluate result: {found}")
     page.wait_for_load_state("networkidle")
     page.wait_for_timeout(3000)
 
