@@ -174,9 +174,16 @@ def _navigate_to_charge_schedule(page: Page) -> None:
     base_url = page.url.split("/#")[0]
     page.goto(f"{base_url}/#/embeddedinverter/config/local/1/-1")
     page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(1000)
 
-    page.locator("text=6.3.1, text=6.3.1-").first.click()
+    # Esperar a que Vue renderice el menú lateral (contiene los items de configuración)
+    page.wait_for_selector(".inv-sett-menu, .sidebar, nav, [class*='menu'], [class*='sidebar']",
+                           timeout=15000)
+    page.wait_for_timeout(2000)
+    page.screenshot(path="/app/logs/screenshot_config_page.png")
+    logger.debug("Captura de página de configuración guardada")
+
+    # Buscar el item 6.3.1 en el menú
+    page.locator("text=6.3.1").first.click()
     page.wait_for_load_state("networkidle")
     page.wait_for_timeout(1000)
 
