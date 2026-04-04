@@ -27,8 +27,8 @@ services:
     # Para Mac: comentar network_mode y descomentar ports.
     # Para Linux: dejar network_mode y comentar ports.
     network_mode: host
-#    ports:
-#       - "8080:8080"
+    ports:
+       - "8080:8080"
 
     healthcheck:
       test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
