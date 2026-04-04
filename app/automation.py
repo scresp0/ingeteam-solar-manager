@@ -81,7 +81,18 @@ def set_charge_schedule(
     logger.info(f"{'[DRY RUN] ' if dry_run else ''}Configurando carga horaria: {action}")
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-zygote",
+                "--single-process",
+            ]
+        )
         context = browser.new_context(
             ignore_https_errors=True,
             locale="es-ES",
@@ -175,15 +186,18 @@ def _navigate_to_charge_schedule(page: Page) -> None:
     base_url = page.url.split("/#")[0]
     page.goto(f"{base_url}/#/embeddedinverter/config/local/1/-1")
     page.wait_for_load_state("networkidle")
-
-    # Esperar a que Vue renderice el menú lateral (contiene los items de configuración)
-    page.wait_for_selector(".inv-sett-menu, .sidebar, nav, [class*='menu'], [class*='sidebar']",
-                           timeout=15000)
     page.wait_for_timeout(2000)
+
+    # Captura para diagnóstico
     page.screenshot(path="/app/logs/screenshot_config_page.png")
     logger.debug("Captura de página de configuración guardada")
 
-    # Buscar el item 6.3.1 en el menú
+    # Clic en "Ajustes avanzados" (segunda pestaña)
+    page.locator("text=Ajustes avanzados").click()
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(1500)
+
+    # Buscar el item 6.3.1 en el menú lateral
     page.locator("text=6.3.1").first.click()
     page.wait_for_load_state("networkidle")
     page.wait_for_timeout(1000)
