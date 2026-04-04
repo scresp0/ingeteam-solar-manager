@@ -189,29 +189,15 @@ def _navigate_to_charge_schedule(page: Page) -> None:
     page.wait_for_load_state("networkidle")
     page.wait_for_timeout(3000)
 
-    # Captura para verificar que estamos en Configuración
-    page.screenshot(path="/app/logs/screenshot_config_page.png")
-    logger.debug("Captura de página de configuración guardada")
-
-    # Diagnóstico: qué clases hay en el DOM ahora
-    clases = page.evaluate("""
-        () => Array.from(document.querySelectorAll('div[class*="inv-sett"], div[class*="sett"]'))
-                   .map(e => e.className)
-    """)
-    logger.debug(f"Clases inv-sett encontradas: {clases}")
-
-    # Clic en "Ajustes avanzados"
-    logger.debug("Clic en Ajustes avanzados")
-    found = page.evaluate("""
+    # Clic en "Ajustes avanzados" via JavaScript — independiente del idioma
+    page.evaluate("""
         () => {
             const btns = Array.from(document.querySelectorAll('.inv-sett-top-cont button'));
-            const texts = btns.map(b => b.innerText.trim());
             const btn = btns.find(b => b.innerText.includes('Ajustes') || b.innerText.includes('Advanced'));
-            if (btn) { btn.click(); return 'clicked: ' + btn.innerText.trim(); }
-            return 'not found, buttons: ' + texts.join(' | ');
+            if (btn) btn.click();
+            else throw new Error('Botón Ajustes avanzados no encontrado');
         }
     """)
-    logger.debug(f"Ajustes avanzados evaluate result: {found}")
     page.wait_for_load_state("networkidle")
     page.wait_for_timeout(3000)
 
