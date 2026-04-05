@@ -143,15 +143,17 @@ class CycleEmailNotifier:
             ctx.check_hostname = False
             ctx.verify_mode = ssl.CERT_NONE
 
+        SMTP_TIMEOUT = 15  # segundos
+
         if self.cfg.use_ssl:
             # SSL directo (puerto 465)
-            with smtplib.SMTP_SSL(host, port, context=ctx) as server:
+            with smtplib.SMTP_SSL(host, port, context=ctx, timeout=SMTP_TIMEOUT) as server:
                 if user and password:
                     server.login(user, password)
                 server.send_message(msg)
         else:
             # STARTTLS (puerto 587) o sin cifrado
-            with smtplib.SMTP(host, port) as server:
+            with smtplib.SMTP(host, port, timeout=SMTP_TIMEOUT) as server:
                 if self.cfg.use_tls:
                     server.starttls(context=ctx)
                 if user and password:

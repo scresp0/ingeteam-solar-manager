@@ -66,7 +66,7 @@ system:
     smtp_password: ""     # SMTP_PASSWORD en .env
     mail_from: ""
     mail_to: ""
-    use_tls: true         # true para puerto 587 (STARTTLS)
+    use_tls: false         # true para puerto 587 (STARTTLS)
     use_ssl: false        # true para puerto 465 (SSL directo)
 
 

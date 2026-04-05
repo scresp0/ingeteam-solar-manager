@@ -109,7 +109,7 @@ system:
     smtp_password: ""       # contraseña SMTP (mejor en .env como SMTP_PASSWORD)
     mail_from: "solar-manager@tudominio.com"
     mail_to: "tu@email.com"
-    use_tls: true           # STARTTLS (puerto 587)
+    use_tls: false           # STARTTLS (puerto 587)
     use_ssl: false          # SSL directo (puerto 465)
 
 # -----------------------------------------------------------------------------
