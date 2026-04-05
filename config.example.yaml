@@ -102,7 +102,7 @@ system:
   web_port: 8080
   web_enabled: true
   email:
-    enabled: false          # true para activar notificaciones
+    enabled: true          # true para activar notificaciones
     smtp_host: ""           # ej. smtp.gmail.com
     smtp_port: 587          # 587 = STARTTLS, 465 = SSL
     smtp_user: ""           # usuario SMTP (normalmente el email)
@@ -116,7 +116,7 @@ system:
 # InfluxDB — almacenamiento de series temporales
 # -----------------------------------------------------------------------------
 influxdb:
-  enabled: false                 # true para activar
+  enabled: true                 # true para activar
   url: "http://influxdb:8086"
   org: "solar"                   # INFLUXDB_ORG en .env
   bucket: "solar-manager"        # INFLUXDB_BUCKET en .env

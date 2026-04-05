@@ -104,7 +104,7 @@ class ChargingConfig(BaseModel):
 
 
 class EmailConfig(BaseModel):
-    enabled: bool = False
+    enabled: bool = True
     smtp_host: str = ""
     smtp_port: int = 587
     smtp_user: str = ""

@@ -59,7 +59,7 @@ system:
   web_port: 8080
   web_enabled: true
   email:
-    enabled: false
+    enabled: true
     smtp_host: ""         # SMTP_HOST en .env
     smtp_port: 587
     smtp_user: ""         # SMTP_USER en .env
