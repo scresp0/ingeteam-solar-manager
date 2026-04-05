@@ -71,6 +71,7 @@ class InverterState:
     battery_temp_c: float      # Temperatura batería [ºC]
     inverter_status: str       # Descripción del estado del inversor
     battery_status: str        # Descripción del estado de la batería
+    min_soc_pct: float = 0.0   # SOC mínimo configurado en el inversor (holding reg 40126)
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +135,16 @@ def read_inverter_state(cfg: InverterConfig) -> InverterState:
         battery_power_w = battery_power_raw if battery_power_raw < 32768 else battery_power_raw - 65536
         battery_temp_c  = (battery_temp_raw if battery_temp_raw < 32768 else battery_temp_raw - 65536) / 10.0
 
+        # Leer SOC mínimo del holding register 40126 (base-0: address 40125)
+        min_soc = 0.0
+        try:
+            hr = client.read_holding_registers(address=40125, count=1, slave=slave)
+            if not hr.isError():
+                min_soc = float(hr.registers[0])
+                logger.debug(f"SOC mínimo leído del inversor: {min_soc}%")
+        except Exception as e:
+            logger.warning(f"No se pudo leer SOC mínimo del inversor: {e}")
+
         state = InverterState(
             soc_pct=float(soc),
             soh_pct=float(soh),
@@ -142,12 +153,13 @@ def read_inverter_state(cfg: InverterConfig) -> InverterState:
             battery_temp_c=battery_temp_c,
             inverter_status=INVERTER_STATUS.get(inverter_status_code, f"Unknown ({inverter_status_code})"),
             battery_status=BATTERY_STATUS.get(battery_status_code, f"Unknown ({battery_status_code})"),
+            min_soc_pct=min_soc,
         )
 
         logger.info(
             f"Inversor: {state.inverter_status} | "
             f"Batería: {state.battery_status} | "
-            f"SOC: {state.soc_pct}% | SOH: {state.soh_pct}% | "
+            f"SOC: {state.soc_pct}% (min={state.min_soc_pct}%) | SOH: {state.soh_pct}% | "
             f"Potencia: {state.battery_power_w}W | "
             f"Tensión: {state.battery_voltage_v}V | "
             f"Temp: {state.battery_temp_c}ºC"

@@ -101,6 +101,12 @@ def run(cfg: AppConfig) -> bool:
         soc_actual = 50.0
 
     # 3. Calcular nivel de carga óptimo
+    # Usar min_soc del inversor si está disponible, si no el del config
+    min_soc = cfg.charging.min_soc_pct
+    if state is not None and state.min_soc_pct > 0:
+        min_soc = state.min_soc_pct
+        logger.info(f"SOC mínimo leído del inversor: {min_soc}% (config: {cfg.charging.min_soc_pct}%)")
+
     inp = DecisionInput(
         forecast=forecast,
         soc_actual_pct=soc_actual,
@@ -108,7 +114,7 @@ def run(cfg: AppConfig) -> bool:
         daily_consumption_kwh=cfg.installation.average_daily_consumption_kwh,
         night_consumption_kwh=cfg.charging.night_consumption_kwh,
         risk_factor=cfg.charging.risk_factor,
-        min_soc_pct=cfg.charging.min_soc_pct,
+        min_soc_pct=min_soc,
         max_soc_pct=cfg.charging.max_soc_pct,
         safety_margin_kwh=cfg.charging.safety_margin_kwh,
     )
