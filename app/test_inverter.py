@@ -29,6 +29,7 @@ def main():
         print(f"  Potencia        : {state.battery_power_w} W  ({'descargando' if state.battery_power_w > 0 else 'cargando' if state.battery_power_w < 0 else 'en reposo'})")
         print(f"  Tensión         : {state.battery_voltage_v} V")
         print(f"  Temperatura     : {state.battery_temp_c} ºC")
+        print(f"  SOC mínimo inv. : {state.min_soc_pct} %")
         print("\nOK")
     except InverterError as e:
         print(f"\nError al leer el inversor: {e}")
