@@ -135,13 +135,16 @@ def read_inverter_state(cfg: InverterConfig) -> InverterState:
         battery_power_w = battery_power_raw if battery_power_raw < 32768 else battery_power_raw - 65536
         battery_temp_c  = (battery_temp_raw if battery_temp_raw < 32768 else battery_temp_raw - 65536) / 10.0
 
-        # Leer SOC mínimo del holding register 40126 (base-0: address 40125)
+        # Leer SOC mínimo del holding register 40126
+        # Mismo patrón que input registers: address = número_registro - 40001 = 125
         min_soc = 0.0
         try:
-            hr = client.read_holding_registers(address=40125, count=1, slave=slave)
+            hr = client.read_holding_registers(address=125, count=1, slave=slave)
             if not hr.isError():
                 min_soc = float(hr.registers[0])
                 logger.debug(f"SOC mínimo leído del inversor: {min_soc}%")
+            else:
+                logger.warning(f"Error leyendo holding register 40126: {hr}")
         except Exception as e:
             logger.warning(f"No se pudo leer SOC mínimo del inversor: {e}")
 
