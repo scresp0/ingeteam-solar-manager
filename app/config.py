@@ -206,7 +206,6 @@ def _apply_env_overrides(data: dict) -> dict:
         ("charging", "risk_factor"):                         "RISK_FACTOR",
         ("system", "dry_run"):                               "DRY_RUN",
         ("system", "log_level"):                             "LOG_LEVEL",
-        ("system", "email", "smtp_port"):                   "SMTP_PORT",
         ("charging", "risk_factor"):                         "RISK_FACTOR",
         ("charging", "min_soc_pct"):                         "MIN_SOC_PCT",
         ("charging", "max_soc_pct"):                         "MAX_SOC_PCT",
@@ -220,6 +219,7 @@ def _apply_env_overrides(data: dict) -> dict:
     # Overrides para email (anidados bajo system.email)
     email_overrides = {
         "smtp_host":     "SMTP_HOST",
+        "smtp_port":     "SMTP_PORT",
         "smtp_user":     "SMTP_USER",
         "smtp_password": "SMTP_PASSWORD",
         "mail_from":     "MAIL_FROM",
@@ -232,7 +232,7 @@ def _apply_env_overrides(data: dict) -> dict:
                 data["system"] = {}
             if "email" not in data["system"]:
                 data["system"]["email"] = {}
-            data["system"]["email"][key] = value
+            data["system"]["email"][key] = int(value) if key == "smtp_port" else value
     for (section, key), env_var in overrides.items():
         value = os.environ.get(env_var)
         if value is not None:
