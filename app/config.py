@@ -206,6 +206,11 @@ def _apply_env_overrides(data: dict) -> dict:
         ("charging", "risk_factor"):                         "RISK_FACTOR",
         ("system", "dry_run"):                               "DRY_RUN",
         ("system", "log_level"):                             "LOG_LEVEL",
+        ("charging", "risk_factor"):                         "RISK_FACTOR",
+        ("charging", "min_soc_pct"):                         "MIN_SOC_PCT",
+        ("charging", "max_soc_pct"):                         "MAX_SOC_PCT",
+        ("charging", "safety_margin_kwh"):                   "SAFETY_MARGIN_KWH",
+        ("charging", "night_consumption_kwh"):               "NIGHT_CONSUMPTION_KWH",
         ("influxdb", "token"):                               "INFLUXDB_TOKEN",
         ("influxdb", "org"):                                 "INFLUXDB_ORG",
         ("influxdb", "bucket"):                              "INFLUXDB_BUCKET",
@@ -232,7 +237,11 @@ def _apply_env_overrides(data: dict) -> dict:
                 data[section] = {}
             if key in {"dry_run"}:
                 data[section][key] = value.lower() in ("true", "1", "yes")
-            elif key in {"battery_capacity_kwh", "average_daily_consumption_kwh", "risk_factor"}:
+            elif key in {
+                "battery_capacity_kwh", "average_daily_consumption_kwh",
+                "risk_factor", "min_soc_pct", "max_soc_pct",
+                "safety_margin_kwh", "night_consumption_kwh",
+            }:
                 data[section][key] = float(value)
             else:
                 data[section][key] = value
