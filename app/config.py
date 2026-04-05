@@ -35,6 +35,7 @@ class InverterConfig(BaseModel):
     modbus_port: int = 502
     modbus_slave: int = 1
     browser_timeout_seconds: int = 30
+    device_id: str = ""   # serial del inversor para el logger HTTP (INVERTER_DEVICE_ID en .env)
 
     def get_modbus_host(self) -> str:
         """Devuelve el host MODBUS, usando web_url como fallback."""
@@ -115,6 +116,14 @@ class EmailConfig(BaseModel):
     verify_ssl: bool = True          # False para servidores con cert autofirmado
 
 
+class InfluxDBConfig(BaseModel):
+    enabled: bool = False
+    url: str = "http://localhost:8086"
+    org: str = "solar"
+    bucket: str = "solar-manager"
+    token: str = ""              # INFLUXDB_TOKEN en .env
+
+
 class SystemConfig(BaseModel):
     log_level: str = "INFO"
     log_file: str = "/app/logs/solar-manager.log"
@@ -140,6 +149,7 @@ class AppConfig(BaseModel):
     tariff: TariffConfig
     charging: ChargingConfig
     system: SystemConfig
+    influxdb: InfluxDBConfig = InfluxDBConfig()
 
     @property
     def email(self) -> EmailConfig:
@@ -190,11 +200,16 @@ def _apply_env_overrides(data: dict) -> dict:
         ("inverter", "username"):                            "INVERTER_USERNAME",
         ("inverter", "password"):                            "INVERTER_PASSWORD",
         ("inverter", "modbus_host"):                         "INVERTER_MODBUS_HOST",
+        ("inverter", "device_id"):                           "INVERTER_DEVICE_ID",
         ("installation", "battery_capacity_kwh"):            "BATTERY_CAPACITY_KWH",
         ("installation", "average_daily_consumption_kwh"):   "DAILY_CONSUMPTION_KWH",
         ("charging", "risk_factor"):                         "RISK_FACTOR",
         ("system", "dry_run"):                               "DRY_RUN",
         ("system", "log_level"):                             "LOG_LEVEL",
+        ("influxdb", "token"):                               "INFLUXDB_TOKEN",
+        ("influxdb", "org"):                                 "INFLUXDB_ORG",
+        ("influxdb", "bucket"):                              "INFLUXDB_BUCKET",
+        ("influxdb", "url"):                                 "INFLUXDB_URL",
     }
     # Overrides para email (anidados bajo system.email)
     email_overrides = {
