@@ -110,3 +110,13 @@ system:
     mail_to: "tu@email.com"
     use_tls: true           # STARTTLS (puerto 587)
     use_ssl: false          # SSL directo (puerto 465)
+
+# -----------------------------------------------------------------------------
+# InfluxDB — almacenamiento de series temporales
+# -----------------------------------------------------------------------------
+influxdb:
+  enabled: false                 # true para activar
+  url: "http://localhost:8086"
+  org: "solar"                   # INFLUXDB_ORG en .env
+  bucket: "solar-manager"        # INFLUXDB_BUCKET en .env
+  # token en .env como INFLUXDB_TOKEN

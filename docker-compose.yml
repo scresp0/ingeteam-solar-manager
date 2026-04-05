@@ -20,18 +20,49 @@ services:
 
     shm_size: '256mb'
 
-    # En Linux network_mode: host permite llegar al inversor en red local
-    # y hace innecesario el mapeo de puertos (el contenedor usa la red del host).
-    # En Mac Docker Desktop no soporta host networking real, por lo que
-    # el puerto hay que mapearlo explícitamente.
-    # Para Mac: comentar network_mode y descomentar ports.
-    # Para Linux: dejar network_mode y comentar ports.
+    # En Linux network_mode: host permite llegar al inversor en red local.
+    # En Mac: comentar network_mode y descomentar ports.
     network_mode: host
-    ports:
-       - "8080:8080"
+    # ports:
+    #   - "8080:8080"
+
+    depends_on:
+      influxdb:
+        condition: service_healthy
 
     healthcheck:
       test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
       interval: 60s
       timeout: 10s
       retries: 3
+
+  influxdb:
+    image: influxdb:2.7
+    container_name: solar-manager-influxdb
+    restart: unless-stopped
+
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+      - influxdb-config:/etc/influxdb2
+
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=${INFLUXDB_PASSWORD}
+      - DOCKER_INFLUXDB_INIT_ORG=${INFLUXDB_ORG:-solar}
+      - DOCKER_INFLUXDB_INIT_BUCKET=${INFLUXDB_BUCKET:-solar-manager}
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${INFLUXDB_TOKEN}
+      - TZ=Europe/Madrid
+
+    ports:
+      - "8086:8086"
+
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  influxdb-data:
+  influxdb-config:
