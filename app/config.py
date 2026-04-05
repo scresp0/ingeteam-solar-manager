@@ -221,6 +221,8 @@ def _apply_env_overrides(data: dict) -> dict:
         "smtp_host":     "SMTP_HOST",
         "smtp_user":     "SMTP_USER",
         "smtp_password": "SMTP_PASSWORD",
+        "mail_from":     "MAIL_FROM",
+        "mail_to":       "MAIL_TO",
     }
     for key, env_var in email_overrides.items():
         value = os.environ.get(env_var)
