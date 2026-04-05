@@ -82,8 +82,10 @@ class CycleEmailNotifier:
         try:
             self._send_email(success, log_content, duration.seconds)
             logger.info(f"Email de notificación enviado a {self.cfg.mail_to}")
+            print(f"[notifier] Email enviado correctamente a {self.cfg.mail_to}", flush=True)
         except Exception as e:
             logger.error(f"Error al enviar email de notificación: {e}")
+            print(f"[notifier] ERROR al enviar email: {e}", flush=True)
 
     def _validate_config(self) -> bool:
         required = [
