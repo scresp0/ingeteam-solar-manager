@@ -206,6 +206,7 @@ def _apply_env_overrides(data: dict) -> dict:
         ("charging", "risk_factor"):                         "RISK_FACTOR",
         ("system", "dry_run"):                               "DRY_RUN",
         ("system", "log_level"):                             "LOG_LEVEL",
+        ("system", "email", "smtp_port"):                   "SMTP_PORT",
         ("charging", "risk_factor"):                         "RISK_FACTOR",
         ("charging", "min_soc_pct"):                         "MIN_SOC_PCT",
         ("charging", "max_soc_pct"):                         "MAX_SOC_PCT",
@@ -245,6 +246,8 @@ def _apply_env_overrides(data: dict) -> dict:
                 "safety_margin_kwh", "night_consumption_kwh",
             }:
                 data[section][key] = float(value)
+            elif key in {"smtp_port", "web_port"}:
+                data[section][key] = int(value)
             else:
                 data[section][key] = value
     return data
