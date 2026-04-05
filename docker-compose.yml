@@ -1,14 +1,17 @@
 # =============================================================================
 # solar-manager docker-compose.yml
 #
-# Volúmenes Docker nombrados — persisten al mover el stack entre hosts:
-#   solar-manager-logs     → logs de la aplicación
-#   solar-manager-config   → config.yaml (editable sin reconstruir)
-#   influxdb-data          → datos de InfluxDB
-#   influxdb-config        → configuración de InfluxDB
+# Configuración (config.yaml, .env) — en el directorio del proyecto en el host.
+#   Editar directamente con nano/vim y reiniciar el contenedor.
+#
+# Datos persistentes en volúmenes Docker nombrados:
+#   solar-manager-logs  → logs de la aplicación
+#   influxdb-data       → datos de InfluxDB
+#   influxdb-config     → configuración de InfluxDB
 #
 # Para migrar a otro host:
-#   docker volume export solar-manager-logs | ssh nuevo-host docker volume import -
+#   1. Copiar el directorio del proyecto (config.yaml, .env, docker-compose.yml)
+#   2. Exportar volúmenes de datos si se quiere conservar histórico
 # =============================================================================
 
 services:
@@ -18,10 +21,9 @@ services:
     restart: unless-stopped
 
     volumes:
-      # config.yaml en volumen nombrado — portable entre hosts
-      # Para actualizar: docker cp config.yaml solar-manager:/app/config.yaml
-      - solar-manager-config:/app/config
-      # Logs persistentes en volumen nombrado
+      # Configuración: bind mount directo desde el host
+      - ./config.yaml:/app/config.yaml:ro
+      # Logs: volumen nombrado — persiste entre reinicios y migraciones
       - solar-manager-logs:/app/logs
 
     env_file:
@@ -29,8 +31,6 @@ services:
 
     environment:
       - TZ=Europe/Madrid
-      # Ruta del config dentro del contenedor
-      - CONFIG_PATH=/app/config/config.yaml
 
     shm_size: '256mb'
 
@@ -78,7 +78,6 @@ services:
       retries: 10
 
 volumes:
-  solar-manager-config:
   solar-manager-logs:
   influxdb-data:
   influxdb-config:
