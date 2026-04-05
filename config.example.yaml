@@ -56,7 +56,8 @@ installation:
 # y para calcular el schedule_at (hora de lanzar el script antes del valle).
 # -----------------------------------------------------------------------------
 tariff:
-  schedule_at: "23:30"      # hora a la que se lanza el script cada noche
+  # Hora de ejecución del ciclo nocturno (HH:MM)
+  schedule_at: "23:55"      # hora a la que se lanza el script cada noche
 
   # Días de la semana: 0=lunes, 1=martes, ..., 5=sábado, 6=domingo
   weekend_days: [5, 6]      # sábado y domingo siempre valle
