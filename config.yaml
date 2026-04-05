@@ -47,7 +47,7 @@ tariff:
 
 charging:
   risk_factor: 0.7
-  min_soc_pct: 30
+  min_soc_pct: 35
   max_soc_pct: 100
   safety_margin_kwh: 1.0
 
@@ -56,7 +56,7 @@ system:
   log_file: "/app/logs/solar-manager.log"
   dry_run: false
   timezone: "Europe/Madrid"
-  web_port: 8081
+  web_port: 8080
   web_enabled: true
   email:
     enabled: false
@@ -75,7 +75,7 @@ system:
 # -----------------------------------------------------------------------------
 influxdb:
   enabled: true
-  url: "http://localhost:8086"   # mismo host gracias a network_mode: host
+  url: "http://influxdb:8086"    # nombre del servicio Docker
   org: "solar"                   # INFLUXDB_ORG en .env
   bucket: "solar-manager"        # INFLUXDB_BUCKET en .env
   # token en .env como INFLUXDB_TOKEN

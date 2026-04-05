@@ -117,7 +117,7 @@ system:
 # -----------------------------------------------------------------------------
 influxdb:
   enabled: false                 # true para activar
-  url: "http://localhost:8086"
+  url: "http://influxdb:8086"
   org: "solar"                   # INFLUXDB_ORG en .env
   bucket: "solar-manager"        # INFLUXDB_BUCKET en .env
   # token en .env como INFLUXDB_TOKEN

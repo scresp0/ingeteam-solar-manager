@@ -1,17 +1,5 @@
 # =============================================================================
 # solar-manager docker-compose.yml
-#
-# Configuración (config.yaml, .env) — en el directorio del proyecto en el host.
-#   Editar directamente con nano/vim y reiniciar el contenedor.
-#
-# Datos persistentes en volúmenes Docker nombrados:
-#   solar-manager-logs  → logs de la aplicación
-#   influxdb-data       → datos de InfluxDB
-#   influxdb-config     → configuración de InfluxDB
-#
-# Para migrar a otro host:
-#   1. Copiar el directorio del proyecto (config.yaml, .env, docker-compose.yml)
-#   2. Exportar volúmenes de datos si se quiere conservar histórico
 # =============================================================================
 
 services:
@@ -21,9 +9,7 @@ services:
     restart: unless-stopped
 
     volumes:
-      # Configuración: bind mount directo desde el host
       - ./config.yaml:/app/config.yaml:ro
-      # Logs: volumen nombrado — persiste entre reinicios y migraciones
       - solar-manager-logs:/app/logs
 
     env_file:
@@ -34,11 +20,8 @@ services:
 
     shm_size: '256mb'
 
-    # En Linux network_mode: host permite llegar al inversor en red local.
-    # En Mac: comentar network_mode y descomentar ports.
-    network_mode: host
-    # ports:
-    #   - "8080:8080"
+    ports:
+      - "${WEB_PORT:-8080}:${WEB_PORT:-8080}"
 
     depends_on:
       influxdb:
