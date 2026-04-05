@@ -20,6 +20,8 @@ from app.inverter import read_inverter_state, InverterError
 from app.decision import calculate_charge_target, decision_summary, DecisionInput
 from app.automation import set_charge_schedule, AutomationError
 from app.notifier import CycleEmailNotifier
+from app.logger_reader import get_yesterday_stats, LoggerReaderError
+from app.storage import write_cycle, write_daily_stats, StorageError
 
 
 def setup_logging(cfg: AppConfig) -> None:
@@ -56,20 +58,27 @@ def run(cfg: AppConfig) -> bool:
         logger.info("Modo DRY RUN activo — no se modificará el inversor")
 
     # 1. Previsión solar
-    try:
-        logger.info("Obteniendo previsión solar de Solcast...")
-        forecast = get_tomorrow_forecast(cfg.solcast, cfg.system.timezone)
-        logger.info(
-            f"Previsión mañana: p10={forecast.p10} kWh, "
-            f"p50={forecast.p50} kWh, p90={forecast.p90} kWh"
-        )
-    except SolcastError as e:
-        logger.error(f"Error al obtener previsión solar: {e}")
-        logger.warning("Usando previsión conservadora de 0 kWh como fallback")
+    # En dry_run usamos valores ficticios para no consumir cuota de Solcast
+    if cfg.system.dry_run:
         from app.decision import SolarForecast
-        forecast = SolarForecast(p10=0.0, p50=0.0, p90=0.0)
+        forecast = SolarForecast(p10=10.0, p50=20.0, p90=30.0)
+        logger.info("DRY RUN: usando previsión ficticia p10=10, p50=20, p90=30 kWh")
+    else:
+        try:
+            logger.info("Obteniendo previsión solar de Solcast...")
+            forecast = get_tomorrow_forecast(cfg.solcast, cfg.system.timezone)
+            logger.info(
+                f"Previsión mañana: p10={forecast.p10} kWh, "
+                f"p50={forecast.p50} kWh, p90={forecast.p90} kWh"
+            )
+        except SolcastError as e:
+            logger.error(f"Error al obtener previsión solar: {e}")
+            logger.warning("Usando previsión conservadora de 0 kWh como fallback")
+            from app.decision import SolarForecast
+            forecast = SolarForecast(p10=0.0, p50=0.0, p90=0.0)
 
-    # 2. Estado actual del inversor
+    # 2. Estado actual del inversor vía MODBUS (siempre, dry_run o no)
+    state = None
     try:
         logger.info("Leyendo estado del inversor vía MODBUS...")
         state = read_inverter_state(cfg.inverter)
@@ -80,8 +89,15 @@ def run(cfg: AppConfig) -> bool:
         )
         soc_actual = state.soc_pct
     except InverterError as e:
-        logger.error(f"Error al leer el inversor: {e}")
-        logger.warning("Usando SOC=50% como fallback conservador")
+        host = cfg.inverter.get_modbus_host()
+        port = cfg.inverter.modbus_port
+        logger.error(
+            f"No se pudo conectar al inversor en {host}:{port} — "
+            f"comprueba que el inversor está encendido y accesible en la red. "
+            f"Detalle: {e}"
+        )
+        if not cfg.system.dry_run:
+            logger.warning("Usando SOC=50% como fallback conservador")
         soc_actual = 50.0
 
     # 3. Calcular nivel de carga óptimo
@@ -116,6 +132,26 @@ def run(cfg: AppConfig) -> bool:
         logger.error(f"Error al programar la carga en el inversor: {e}")
         notifier.send(success=False)
         return False
+
+    # 5. Leer stats del día anterior y guardar en InfluxDB
+    try:
+        stats = get_yesterday_stats(cfg.inverter)
+        write_daily_stats(cfg.influxdb, stats)
+    except (LoggerReaderError, StorageError) as e:
+        logger.warning(f"No se pudieron guardar stats diarias: {e}")
+
+    # 6. Guardar decisión del ciclo en InfluxDB
+    try:
+        write_cycle(
+            cfg=cfg.influxdb,
+            inp=inp,
+            result=result,
+            state=state if isinstance(state, object) else None,
+            solcast_error=(forecast.p10 == 0.0 and forecast.p50 == 0.0),
+            automation_ok=True,
+        )
+    except StorageError as e:
+        logger.warning(f"No se pudo guardar ciclo en InfluxDB: {e}")
 
     logger.info("=== Ciclo completado correctamente ===")
     notifier.send(success=True)
