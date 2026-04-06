@@ -63,6 +63,45 @@ def _log_line_color(line: str) -> str:
     return "#6b8cae"
 
 
+# Patrón que identifica una línea de log estándar: empieza con timestamp
+_LOG_LINE_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
+
+
+def _render_log_lines(log_content: str) -> str:
+    """
+    Convierte el texto de log en HTML coloreado distinguiendo:
+    - Líneas estándar (con timestamp): color por nivel (INFO/WARNING/ERROR)
+    - Líneas de bloque/continuación (sin timestamp): color tenue + indentación
+      Dentro de estas, las que empiezan por → o contienen === se destacan.
+    """
+    html = ""
+    for raw_line in log_content.strip().splitlines():
+        escaped = raw_line.replace("&", "&amp;").replace("<", "&lt;")
+
+        if _LOG_LINE_RE.match(raw_line):
+            color  = _log_line_color(raw_line)
+            indent = ""
+        elif raw_line.strip() == "":
+            html += '<div style="height:4px;"></div>\n'
+            continue
+        elif raw_line.lstrip().startswith("→"):
+            color  = "#ffffff"
+            indent = "padding-left:16px;"
+        elif "===" in raw_line:
+            color  = "#7ecbff"
+            indent = ""
+        else:
+            color  = "#5d8aaa"
+            indent = "padding-left:16px;"
+
+        html += (
+            f'<div style="padding:1px 0;font-size:11.5px;color:{color};'
+            f'line-height:1.55;white-space:pre-wrap;word-break:break-word;{indent}">'
+            f'{escaped}</div>\n'
+        )
+    return html
+
+
 def _parse_decision(log: str) -> tuple:
     """
     Extrae del log: soc (float|None), forecast (float|None),
@@ -156,15 +195,8 @@ def _build_html(
     rows += _kv_row("Duración del ciclo", f"{duration_s}s")
     rows += _kv_row("Timestamp", f"{date_str} {time_str}")
 
-    # Log con color por nivel
-    log_lines_html = ""
-    for line in log_content.strip().splitlines():
-        color   = _log_line_color(line)
-        escaped = line.replace("&", "&amp;").replace("<", "&lt;")
-        log_lines_html += (
-            f'<div style="padding:2px 0;font-size:11.5px;color:{color};'
-            f'line-height:1.5;">{escaped}</div>\n'
-        )
+    # Log renderizado con coloreado por tipo de línea
+    log_lines_html = _render_log_lines(log_content)
 
     return f"""<!DOCTYPE html>
 <html lang="es">
@@ -203,7 +235,7 @@ def _build_html(
     </td>
   </tr>
 
-  <!-- CUERPO -->
+  <!-- CUERPO — resumen (ancho acotado) -->
   <tr>
     <td style="background:{_C['card']};border-radius:0 0 14px 14px;
                padding:28px 36px 32px;
@@ -211,26 +243,35 @@ def _build_html(
 
       {_soc_bar(soc)}
 
-      <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+      <table width="100%" cellpadding="0" cellspacing="0">
         {rows}
       </table>
-
-      <div>
-        <div style="font-size:11px;font-weight:700;color:{_C['muted']};
-                    letter-spacing:1.5px;text-transform:uppercase;margin-bottom:10px;">
-          Log de ejecución
-        </div>
-        <div style="background:{_C['mono_bg']};border-radius:10px;padding:18px 20px;
-                    font-family:'SF Mono','Fira Code','Consolas',monospace;
-                    overflow-x:auto;border:1px solid #2d3f55;">
-          {log_lines_html}
-        </div>
-      </div>
 
     </td>
   </tr>
 
-  <!-- PIE -->
+</table><!-- fin tabla 560px -->
+
+<!-- LOG — tabla independiente al 90% del wrapper para mantener márgenes -->
+<table width="90%" cellpadding="0" cellspacing="0" style="margin-top:16px;margin-left:auto;margin-right:auto;">
+  <tr>
+    <td style="padding:0 0 4px;">
+      <div style="font-size:11px;font-weight:700;color:{_C['muted']};
+                  letter-spacing:1.5px;text-transform:uppercase;margin-bottom:10px;">
+        Log de ejecución
+      </div>
+      <div style="background:{_C['mono_bg']};border-radius:10px;padding:18px 22px;
+                  font-family:'SF Mono','Fira Code','Consolas',monospace;
+                  overflow-x:auto;border:1px solid #2d3f55;width:100%;
+                  box-sizing:border-box;">
+        {log_lines_html}
+      </div>
+    </td>
+  </tr>
+</table>
+
+<!-- PIE -->
+<table width="100%" cellpadding="0" cellspacing="0">
   <tr>
     <td style="padding:18px 0 4px;text-align:center;">
       <p style="margin:0;font-size:11px;color:{_C['muted']};">
@@ -238,10 +279,10 @@ def _build_html(
       </p>
     </td>
   </tr>
+</table>
 
-</table>
 </td></tr>
-</table>
+</table><!-- fin wrapper exterior -->
 </body>
 </html>"""
 
