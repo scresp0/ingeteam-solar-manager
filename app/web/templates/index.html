@@ -4,205 +4,783 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>solar-manager</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&display=swap" rel="stylesheet">
 <style>
-  body { background: #f8f9fa; }
-  .status-card { min-height: 120px; }
-  #log-output {
-    background: #1e1e1e; color: #d4d4d4;
-    font-family: monospace; font-size: 12px;
-    height: 400px; overflow-y: auto;
-    padding: 12px; border-radius: 6px;
-    white-space: pre-wrap; word-break: break-all;
-  }
-  .badge-running { animation: pulse 1s infinite; }
-  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
-  .btn-test { min-width: 140px; }
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:      #0d1117;
+  --bg2:     #161b22;
+  --bg3:     #1c2330;
+  --bg4:     #21262d;
+  --border:  rgba(255,255,255,0.07);
+  --border2: rgba(255,255,255,0.13);
+  --text:    #e6edf3;
+  --muted:   #7d8590;
+  --muted2:  #545d68;
+  --accent:  #f0a500;
+  --accentd: rgba(240,165,0,0.15);
+  --blue:    #58a6ff;
+  --blued:   rgba(88,166,255,0.14);
+  --green:   #3fb950;
+  --greend:  rgba(63,185,80,0.13);
+  --red:     #f85149;
+  --redd:    rgba(248,81,73,0.14);
+  --orange:  #d29922;
+  --oranged: rgba(210,153,34,0.14);
+  --sans:    'DM Sans', system-ui, sans-serif;
+  --mono:    'JetBrains Mono', 'Fira Code', monospace;
+  --radius:  8px;
+  --radius2: 10px;
+}
+
+html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; line-height: 1.5; }
+
+/* ── Scrollbar ──────────────────────────────────── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
+/* ── Header ─────────────────────────────────────── */
+.header {
+  position: sticky; top: 0; z-index: 200;
+  background: var(--bg2); border-bottom: 1px solid var(--border);
+  height: 50px; padding: 0 20px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.logo { display: flex; align-items: center; gap: 9px; font-size: 15px; font-weight: 500; letter-spacing: -.3px; }
+.logo-mark {
+  width: 28px; height: 28px; border-radius: 7px;
+  background: var(--accent); display: flex; align-items: center; justify-content: center;
+}
+.logo-mark svg { width: 15px; height: 15px; }
+.header-center { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); font-family: var(--mono); }
+.pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+.pulse.offline { background: var(--red); animation: none; }
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:.35} }
+.pulse.live { animation: blink 2.2s ease-in-out infinite; }
+.header-right { display: flex; align-items: center; gap: 8px; }
+#clock { font-family: var(--mono); font-size: 12px; color: var(--muted2); }
+
+/* ── Buttons ─────────────────────────────────────── */
+.btn {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 13px;
+  border-radius: var(--radius); border: 1px solid var(--border2);
+  background: transparent; color: var(--muted); cursor: pointer;
+  font-family: var(--sans); font-size: 13px; font-weight: 400;
+  transition: color .15s, background .15s, border-color .15s;
+  white-space: nowrap;
+}
+.btn:hover { color: var(--text); background: var(--bg3); border-color: var(--border2); }
+.btn:active { transform: scale(0.97); }
+.btn svg { flex-shrink: 0; }
+
+.btn-accent { border-color: rgba(240,165,0,.35); background: var(--accentd); color: var(--accent); }
+.btn-accent:hover { background: rgba(240,165,0,.22); border-color: rgba(240,165,0,.55); color: var(--accent); }
+.btn-danger { border-color: rgba(248,81,73,.35); background: var(--redd); color: var(--red); }
+.btn-danger:hover { background: rgba(248,81,73,.22); border-color: rgba(248,81,73,.55); }
+
+.btn.running { opacity: .55; cursor: not-allowed; pointer-events: none; }
+.btn.sm { padding: 4px 10px; font-size: 12px; }
+
+/* ── Nav tabs ────────────────────────────────────── */
+.nav { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 20px; display: flex; gap: 2px; }
+.nav-tab {
+  padding: 10px 14px; font-size: 13px; color: var(--muted); cursor: pointer;
+  border-bottom: 2px solid transparent; transition: color .15s; white-space: nowrap;
+}
+.nav-tab:hover { color: var(--text); }
+.nav-tab.active { color: var(--text); border-bottom-color: var(--accent); }
+
+/* ── Layout ──────────────────────────────────────── */
+.main { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; max-width: 1400px; }
+.tab-panel { display: none; flex-direction: column; gap: 14px; }
+.tab-panel.active { display: flex; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+.grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+
+/* ── Cards ───────────────────────────────────────── */
+.card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius2); overflow: hidden; }
+.card-head {
+  padding: 10px 15px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+}
+.card-title { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .65px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.card-body { padding: 15px; }
+.card-body.p0 { padding: 0; }
+
+/* ── Metric tiles ────────────────────────────────── */
+.metric { background: var(--bg3); border: 1px solid var(--border); border-radius: var(--radius); padding: 13px 15px; }
+.metric-label { font-size: 10px; font-family: var(--mono); text-transform: uppercase; letter-spacing: .55px; color: var(--muted); margin-bottom: 5px; }
+.metric-value { font-size: 24px; font-weight: 300; letter-spacing: -1px; line-height: 1.05; margin-bottom: 3px; }
+.metric-sub { font-size: 11px; color: var(--muted2); }
+.green { color: var(--green); }
+.amber { color: var(--accent); }
+.blue  { color: var(--blue); }
+.red   { color: var(--red); }
+.orange { color: var(--orange); }
+
+/* ── SOC ring ────────────────────────────────────── */
+.inverter-layout { display: grid; grid-template-columns: auto 1fr; gap: 18px; align-items: start; }
+.soc-ring-wrap { position: relative; width: 84px; height: 84px; flex-shrink: 0; }
+.soc-ring-wrap svg { transform: rotate(-90deg); }
+.soc-overlay { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.soc-num { font-size: 19px; font-weight: 500; font-family: var(--mono); line-height: 1; }
+.soc-lbl { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; margin-top: 1px; }
+.inv-rows { display: flex; flex-direction: column; gap: 5px; }
+.inv-row { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+.inv-row .k { color: var(--muted); }
+.inv-row .v { font-family: var(--mono); font-size: 12px; }
+
+/* ── Decision badge ──────────────────────────────── */
+.decision-wrap { display: flex; flex-direction: column; gap: 9px; }
+.decision-badge {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 9px 14px; border-radius: var(--radius); font-size: 14px; font-weight: 500; border: 1px solid;
+}
+.decision-badge.charge    { background: var(--blued);  border-color: rgba(88,166,255,.3);  color: var(--blue);  }
+.decision-badge.no-charge { background: var(--greend); border-color: rgba(63,185,80,.3);   color: var(--green); }
+.decision-badge.unknown   { background: var(--oranged);border-color: rgba(210,153,34,.3);  color: var(--orange); }
+.decision-note { font-size: 12px; color: var(--muted); line-height: 1.65; }
+
+/* ── Forecast bars ───────────────────────────────── */
+.forecast-chart { display: flex; flex-direction: column; gap: 6px; }
+.forecast-bars { display: flex; align-items: flex-end; gap: 3px; height: 72px; }
+.fbar { flex: 1; min-width: 0; border-radius: 3px 3px 0 0; background: rgba(240,165,0,.2); border: 1px solid rgba(240,165,0,.12); cursor: pointer; transition: background .15s; }
+.fbar:hover { background: rgba(240,165,0,.42); }
+.fbar.peak { background: rgba(240,165,0,.5); border-color: rgba(240,165,0,.5); }
+.forecast-xlabels { display: flex; gap: 3px; }
+.forecast-xlabels span { flex: 1; min-width: 0; text-align: center; font-size: 9px; color: var(--muted2); font-family: var(--mono); overflow: hidden; }
+.forecast-footer { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 8px; }
+.f-total-val { font-size: 22px; font-weight: 300; font-family: var(--mono); color: var(--accent); }
+.f-total-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 2px; }
+.f-peak-val  { font-size: 13px; font-family: var(--mono); color: var(--text); }
+.f-peak-lbl  { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 2px; text-align: right; }
+
+/* ── Log window ──────────────────────────────────── */
+.log-win {
+  background: #0a0e13; border-radius: 6px; border: 1px solid var(--border);
+  font-family: var(--mono); font-size: 12px; line-height: 1.75;
+  height: 340px; overflow-y: auto; padding: 11px 13px;
+}
+.log-line { display: flex; gap: 10px; }
+.log-ts   { color: var(--muted2); flex-shrink: 0; user-select: none; }
+.log-lvl  { flex-shrink: 0; width: 34px; font-weight: 500; }
+.log-lvl.INFO { color: var(--blue);   }
+.log-lvl.OK   { color: var(--green);  }
+.log-lvl.WARN { color: var(--orange); }
+.log-lvl.ERR  { color: var(--red);    }
+.log-lvl.DBG  { color: var(--muted);  }
+.log-msg  { color: rgba(230,237,243,.8); word-break: break-all; }
+
+.log-controls { display: flex; align-items: center; gap: 10px; }
+.log-controls label { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); cursor: pointer; user-select: none; }
+.log-controls input[type=checkbox] { accent-color: var(--accent); cursor: pointer; }
+
+/* ── History table ───────────────────────────────── */
+.hist-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.hist-table th { text-align: left; padding: 8px 14px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .55px; font-weight: 400; border-bottom: 1px solid var(--border); }
+.hist-table td { padding: 9px 14px; border-bottom: 1px solid var(--border); }
+.hist-table tr:last-child td { border-bottom: none; }
+.hist-table tbody tr:hover td { background: var(--bg3); }
+.mono { font-family: var(--mono); font-size: 12px; }
+
+/* ── Badges ──────────────────────────────────────── */
+.badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
+.badge.charge    { background: var(--blued);  color: var(--blue);  }
+.badge.no-charge { background: var(--greend); color: var(--green); }
+.badge.running   { background: var(--oranged); color: var(--orange); }
+.badge.ok        { background: var(--greend);  color: var(--green); }
+.badge.error     { background: var(--redd);    color: var(--red);   }
+
+/* ── Job status bar ──────────────────────────────── */
+.job-bar { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); padding: 8px 0; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner { width: 13px; height: 13px; border: 2px solid rgba(240,165,0,.25); border-top-color: var(--accent); border-radius: 50%; animation: spin .7s linear infinite; flex-shrink: 0; }
+
+/* ── Tests grid ──────────────────────────────────── */
+.test-btn-list { display: flex; flex-direction: column; gap: 7px; }
+.test-btn-list .btn { justify-content: flex-start; }
+
+/* ── Config form ─────────────────────────────────── */
+.cfg-section { margin-bottom: 20px; }
+.cfg-section-title { font-size: 10px; text-transform: uppercase; letter-spacing: .7px; color: var(--muted); padding-bottom: 7px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+.cfg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.field { display: flex; flex-direction: column; gap: 5px; }
+.field label { font-size: 11px; font-family: var(--mono); text-transform: uppercase; letter-spacing: .4px; color: var(--muted); }
+.field input, .field select {
+  background: var(--bg3); border: 1px solid var(--border2); color: var(--text);
+  border-radius: var(--radius); padding: 7px 10px; font-size: 13px; font-family: var(--sans);
+  outline: none; transition: border-color .15s;
+  -webkit-appearance: none;
+}
+.field input:focus, .field select:focus { border-color: rgba(240,165,0,.5); }
+.field select option { background: var(--bg2); }
+.save-feedback { font-size: 12px; color: var(--green); opacity: 0; transition: opacity .25s; }
+.save-feedback.show { opacity: 1; }
+
+/* ── Run panel ───────────────────────────────────── */
+.run-panel {
+  background: rgba(240,165,0,.05); border: 1px solid rgba(240,165,0,.18);
+  border-radius: var(--radius2); padding: 13px 16px;
+  display: flex; align-items: center; justify-content: space-between; gap: 14px;
+}
+.run-panel-text { font-size: 13px; color: var(--muted); line-height: 1.65; }
+.run-panel-text strong { color: var(--text); }
+.run-panel-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.run-ok { font-size: 12px; color: var(--green); opacity: 0; transition: opacity .25s; }
+.run-ok.show { opacity: 1; }
+
+/* ── Divider ─────────────────────────────────────── */
+.divider { height: 1px; background: var(--border); margin: 4px 0; }
+
 </style>
 </head>
 <body>
-<nav class="navbar navbar-dark bg-dark mb-4">
-  <div class="container-fluid">
-    <span class="navbar-brand">&#9728; solar-manager</span>
-    <span class="navbar-text text-muted" id="clock"></span>
+
+<!-- ══ HEADER ══════════════════════════════════════════ -->
+<div class="header">
+  <div class="logo">
+    <div class="logo-mark">
+      <svg viewBox="0 0 15 15" fill="none">
+        <path d="M7.5 1L10 6H5L7.5 1Z" fill="#000" opacity=".9"/>
+        <rect x="3.5" y="7" width="8" height="5" rx="1" fill="#000" opacity=".9"/>
+        <rect x="5.5" y="12" width="4" height="2" rx=".5" fill="#000" opacity=".7"/>
+      </svg>
+    </div>
+    solar-manager
   </div>
-</nav>
-
-<div class="container-fluid px-4">
-
-  <!-- Estado del inversor -->
-  <div class="row mb-4">
-    <div class="col-12">
-      <div class="card">
-        <div class="card-header d-flex justify-content-between align-items-center">
-          <strong>Estado del inversor</strong>
-          <button class="btn btn-sm btn-outline-secondary" onclick="refreshStatus()">&#8635; Actualizar</button>
-        </div>
-        <div class="card-body">
-          <div class="row g-3" id="status-cards">
-            <div class="col text-center text-muted">Cargando...</div>
-          </div>
-        </div>
-      </div>
-    </div>
+  <div class="header-center">
+    <span class="pulse live" id="hd-pulse"></span>
+    <span id="hd-status">Conectando…</span>
   </div>
-
-  <!-- Tests y ciclo manual -->
-  <div class="row mb-4">
-    <div class="col-md-4">
-      <div class="card h-100">
-        <div class="card-header"><strong>Tests unitarios</strong></div>
-        <div class="card-body d-flex flex-column gap-2">
-          <button class="btn btn-outline-primary btn-test" onclick="runTest('inverter')">&#128268; Test inversor (MODBUS)</button>
-          <button class="btn btn-outline-primary btn-test" onclick="runTest('solcast')">&#9728; Test Solcast</button>
-          <button class="btn btn-outline-primary btn-test" onclick="runTest('decision')">&#129302; Test algoritmo</button>
-          <button class="btn btn-outline-primary btn-test" onclick="runTest('config')">&#9881; Test configuración</button>
-          <button class="btn btn-outline-warning btn-test" onclick="runTest('automation')">&#127760; Test automatización (dry)</button>
-        </div>
-      </div>
-    </div>
-    <div class="col-md-4">
-      <div class="card h-100">
-        <div class="card-header"><strong>Ciclo completo</strong></div>
-        <div class="card-body d-flex flex-column gap-2">
-          <button class="btn btn-warning btn-test" onclick="runCycle(true)">&#9654; Ciclo completo (dry run)</button>
-          <button class="btn btn-danger btn-test" onclick="confirmCycle()">&#9888; Ciclo completo (REAL)</button>
-          <small class="text-muted mt-2">El ciclo real modifica la configuración del inversor.</small>
-        </div>
-      </div>
-    </div>
-    <div class="col-md-4">
-      <div class="card h-100">
-        <div class="card-header"><strong>Estado de ejecución</strong></div>
-        <div class="card-body">
-          <div id="job-status" class="text-muted">Sin ejecución activa</div>
-        </div>
-      </div>
-    </div>
+  <div class="header-right">
+    <span id="clock"></span>
+    <button class="btn sm" onclick="refreshStatus()" title="Actualizar estado">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M13.65 2.35A8 8 0 1 0 15 8h-2a6 6 0 1 1-1.1-3.45L9 7h6V1l-1.35 1.35Z" fill="currentColor"/></svg>
+      Actualizar
+    </button>
+    <button class="btn btn-accent" id="main-run-btn" onclick="runCycle(false)">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3 2l11 6-11 6V2Z" fill="currentColor"/></svg>
+      Ejecutar ahora
+    </button>
   </div>
-
-  <!-- Log output -->
-  <div class="row mb-4">
-    <div class="col-12">
-      <div class="card">
-        <div class="card-header d-flex justify-content-between align-items-center">
-          <strong>Salida</strong>
-          <div class="d-flex gap-2">
-            <button class="btn btn-sm btn-outline-secondary" onclick="clearLog()">Limpiar</button>
-            <button class="btn btn-sm btn-outline-secondary" onclick="loadFileLogs()">&#128196; Ver log del sistema</button>
-          </div>
-        </div>
-        <div class="card-body p-0">
-          <div id="log-output">Pulsa un test para ver la salida aquí...</div>
-        </div>
-      </div>
-    </div>
-  </div>
-
 </div>
 
-<script>
-// Reloj
-setInterval(() => {
-  document.getElementById('clock').textContent = new Date().toLocaleString('es-ES');
-}, 1000);
+<!-- ══ NAV ═════════════════════════════════════════════ -->
+<nav class="nav">
+  <div class="nav-tab active" onclick="switchTab('dashboard',this)">Dashboard</div>
+  <div class="nav-tab" onclick="switchTab('tests',this)">Tests</div>
+  <div class="nav-tab" onclick="switchTab('logs',this)">Logs</div>
+  <div class="nav-tab" onclick="switchTab('historial',this)">Historial</div>
+  <div class="nav-tab" onclick="switchTab('config',this)">Configuración</div>
+</nav>
 
-// Estado del inversor
+<!-- ══ MAIN ════════════════════════════════════════════ -->
+<div class="main">
+
+  <!-- ── DASHBOARD ───────────────────────────────── -->
+  <div class="tab-panel active" id="tab-dashboard">
+
+    <!-- Metric tiles -->
+    <div class="grid-4" id="metric-grid">
+      <div class="metric"><div class="metric-label">SOC batería</div><div class="metric-value" id="m-soc">—</div><div class="metric-sub" id="m-soc-sub">Mín configurado: 35%</div></div>
+      <div class="metric"><div class="metric-label">Potencia batería</div><div class="metric-value blue" id="m-pow">—</div><div class="metric-sub" id="m-pow-sub">W</div></div>
+      <div class="metric"><div class="metric-label">Tensión batería</div><div class="metric-value" id="m-volt">—</div><div class="metric-sub">V</div></div>
+      <div class="metric"><div class="metric-label">Temperatura</div><div class="metric-value" id="m-temp">—</div><div class="metric-sub">ºC</div></div>
+    </div>
+
+    <!-- Estado inversor + Forecast -->
+    <div class="grid-2">
+
+      <!-- Estado inversor -->
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Estado inversor</span>
+          <span id="last-update" style="font-size:11px;font-family:var(--mono);color:var(--muted2)">—</span>
+        </div>
+        <div class="card-body">
+          <div class="inverter-layout">
+            <div class="soc-ring-wrap">
+              <svg width="84" height="84" viewBox="0 0 84 84">
+                <circle cx="42" cy="42" r="32" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="7"/>
+                <circle id="soc-ring" cx="42" cy="42" r="32" fill="none" stroke="var(--green)" stroke-width="7"
+                  stroke-linecap="round" stroke-dasharray="201.1" stroke-dashoffset="201.1"
+                  style="transition:stroke-dashoffset 1s ease,stroke .4s"/>
+              </svg>
+              <div class="soc-overlay">
+                <span class="soc-num" id="soc-num">—</span>
+                <span class="soc-lbl">SOC</span>
+              </div>
+            </div>
+            <div class="inv-rows">
+              <div class="inv-row"><span class="k">Estado inv.</span><span class="v" id="inv-status">—</span></div>
+              <div class="inv-row"><span class="k">Estado bat.</span><span class="v" id="inv-batstatus">—</span></div>
+              <div class="inv-row"><span class="k">SOH</span><span class="v" id="inv-soh">—</span></div>
+              <div class="inv-row"><span class="k">Última lectura</span><span class="v" id="inv-ts" style="color:var(--muted2)">—</span></div>
+            </div>
+          </div>
+
+          <div class="divider" style="margin:14px 0"></div>
+
+          <!-- Decisión -->
+          <div class="decision-wrap">
+            <div class="decision-badge unknown" id="decision-badge">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 5v4M8 11v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              <span id="decision-text">Calculando…</span>
+            </div>
+            <div class="decision-note" id="decision-note">Esperando datos del inversor y Solcast.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Forecast solar -->
+      <div class="card">
+        <div class="card-head">
+          <span class="card-title">Forecast solar · mañana</span>
+          <span style="font-size:11px;font-family:var(--mono);color:var(--muted2)">Solcast</span>
+        </div>
+        <div class="card-body">
+          <div class="forecast-chart">
+            <div class="forecast-bars" id="forecast-bars">
+              <div style="width:100%;display:flex;align-items:center;justify-content:center;color:var(--muted2);font-size:12px">—</div>
+            </div>
+            <div class="forecast-xlabels" id="forecast-xlabels"></div>
+          </div>
+          <div class="forecast-footer">
+            <div><div class="f-total-lbl">Total estimado</div><span class="f-total-val" id="f-total">— kWh</span></div>
+            <div style="text-align:right"><div class="f-peak-lbl">Pico</div><span class="f-peak-val" id="f-peak">—</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Run panel -->
+    <div class="run-panel">
+      <div class="run-panel-text">
+        <strong>Ejecución manual</strong> — Lanza el ciclo de decisión ahora, fuera del horario programado.<br>
+        Consulta Solcast, lee el inversor vía MODBUS y configura la carga si procede.
+      </div>
+      <div class="run-panel-actions">
+        <span class="run-ok" id="run-ok-dash">Completado</span>
+        <button class="btn btn-accent" id="dash-run-btn" onclick="runCycle(false)">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3 2l11 6-11 6V2Z" fill="currentColor"/></svg>
+          Ciclo completo
+        </button>
+        <button class="btn btn-danger" onclick="confirmRealCycle()">
+          <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M8 1l.9 2.6L12 5l-2.2 1.6.8 2.7L8 7.9 5.4 9.3l.8-2.7L4 5l3.1-1.4L8 1Z" fill="currentColor"/></svg>
+          Real
+        </button>
+      </div>
+    </div>
+
+  </div><!-- /tab-dashboard -->
+
+  <!-- ── TESTS ────────────────────────────────────── -->
+  <div class="tab-panel" id="tab-tests">
+    <div class="grid-3">
+      <div class="card">
+        <div class="card-head"><span class="card-title">Tests unitarios</span></div>
+        <div class="card-body">
+          <div class="test-btn-list">
+            <button class="btn" onclick="runTest('inverter')">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="2" y="2" width="12" height="12" rx="2" stroke="currentColor" stroke-width="1.4"/><path d="M5 8h6M8 5v6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+              Test inversor (MODBUS)
+            </button>
+            <button class="btn" onclick="runTest('solcast')">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="3" stroke="currentColor" stroke-width="1.4"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3.22 3.22l1.41 1.41M11.37 11.37l1.41 1.41M3.22 12.78l1.41-1.41M11.37 4.63l1.41-1.41" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+              Test Solcast API
+            </button>
+            <button class="btn" onclick="runTest('decision')">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M2 8h8M2 12h5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+              Test algoritmo decisión
+            </button>
+            <button class="btn" onclick="runTest('config')">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.4"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+              Test configuración
+            </button>
+            <button class="btn" onclick="runTest('automation')">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="1" y="3" width="14" height="10" rx="2" stroke="currentColor" stroke-width="1.4"/><path d="M5 7h6M5 10h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+              Test automatización (dry)
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><span class="card-title">Ciclo completo</span></div>
+        <div class="card-body" style="display:flex;flex-direction:column;gap:8px">
+          <button class="btn btn-accent" onclick="runCycle(true)">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3 2l11 6-11 6V2Z" fill="currentColor"/></svg>
+            Ciclo completo (dry run)
+          </button>
+          <button class="btn btn-danger" onclick="confirmRealCycle()">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M8 2l1.5 4H14l-3.5 2.5 1.5 4L8 10l-4 2.5 1.5-4L2 6h4.5L8 2Z" fill="currentColor"/></svg>
+            Ciclo completo (REAL)
+          </button>
+          <p style="font-size:12px;color:var(--muted);margin-top:4px;line-height:1.6">El ciclo <strong style="color:var(--text)">real</strong> modifica la configuración del inversor. El dry run solo simula la decisión.</p>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><span class="card-title">Estado de ejecución</span></div>
+        <div class="card-body">
+          <div id="job-status" class="job-bar" style="color:var(--muted2)">Sin ejecución activa</div>
+        </div>
+      </div>
+    </div>
+  </div><!-- /tab-tests -->
+
+  <!-- ── LOGS ─────────────────────────────────────── -->
+  <div class="tab-panel" id="tab-logs">
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">Salida del sistema</span>
+        <div class="log-controls">
+          <label><input type="checkbox" id="log-follow" checked> Seguir scroll</label>
+          <button class="btn sm" onclick="loadFileLogs()">
+            <svg width="11" height="11" viewBox="0 0 16 16" fill="none"><path d="M4 2h8a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Z" stroke="currentColor" stroke-width="1.4"/><path d="M6 6h4M6 9h3" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+            Log fichero
+          </button>
+          <button class="btn sm" onclick="clearLog()">Limpiar</button>
+        </div>
+      </div>
+      <div class="card-body" style="padding:12px">
+        <div class="log-win" id="log-output">
+          <div class="log-line"><span class="log-ts">—</span><span class="log-lvl INFO">INFO</span><span class="log-msg">Listo. Ejecuta un test o ciclo para ver la salida aquí.</span></div>
+        </div>
+      </div>
+    </div>
+  </div><!-- /tab-logs -->
+
+  <!-- ── HISTORIAL ─────────────────────────────────── -->
+  <div class="tab-panel" id="tab-historial">
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">Decisiones recientes</span>
+        <span style="font-size:11px;font-family:var(--mono);color:var(--muted2)" id="hist-sub">—</span>
+      </div>
+      <div class="card-body p0">
+        <table class="hist-table">
+          <thead><tr>
+            <th>Fecha</th><th>Hora</th><th>SOC inicio</th><th>SOH</th>
+            <th>Potencia</th><th>Est. inv.</th><th>Est. bat.</th>
+          </tr></thead>
+          <tbody id="hist-tbody">
+            <tr><td colspan="7" style="text-align:center;color:var(--muted2);padding:24px">Cargando historial…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div><!-- /tab-historial -->
+
+  <!-- ── CONFIG ────────────────────────────────────── -->
+  <div class="tab-panel" id="tab-config">
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">Parámetros de configuración</span>
+        <span style="font-size:11px;color:var(--muted2)">Requiere reinicio para aplicar cambios en inversor/scheduler</span>
+      </div>
+      <div class="card-body">
+
+        <div class="cfg-section">
+          <div class="cfg-section-title">Algoritmo de decisión</div>
+          <div class="cfg-grid">
+            <div class="field"><label>SOC mínimo (%)</label><input type="number" id="c-minsoc" value="35" min="0" max="100"></div>
+            <div class="field"><label>Consumo nocturno (kWh)</label><input type="number" id="c-nightkwh" value="3.5" min="0" step="0.1"></div>
+            <div class="field"><label>Factor de riesgo (0–1)</label><input type="number" id="c-risk" value="0.7" min="0" max="1" step="0.05"></div>
+            <div class="field"><label>Margen de seguridad (kWh)</label><input type="number" id="c-margin" value="1.0" min="0" step="0.1"></div>
+          </div>
+        </div>
+
+        <div class="cfg-section">
+          <div class="cfg-section-title">Inversor</div>
+          <div class="cfg-grid">
+            <div class="field"><label>IP / Host MODBUS</label><input type="text" id="c-invhost" value="10.172.24.42"></div>
+            <div class="field"><label>Puerto MODBUS</label><input type="number" id="c-modport" value="502"></div>
+          </div>
+        </div>
+
+        <div class="cfg-section">
+          <div class="cfg-section-title">Planificador</div>
+          <div class="cfg-grid">
+            <div class="field"><label>Hora ejecución nocturna</label><input type="time" id="c-schedtime" value="23:55"></div>
+            <div class="field"><label>Puerto interfaz web</label><input type="number" id="c-webport" value="8080"></div>
+            <div class="field"><label>Dry run</label>
+              <select id="c-dryrun">
+                <option value="false">Desactivado (producción)</option>
+                <option value="true">Activado (simulación)</option>
+              </select>
+            </div>
+            <div class="field"><label>Nivel de log</label>
+              <select id="c-loglevel">
+                <option>INFO</option><option>DEBUG</option><option>WARNING</option><option>ERROR</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div style="display:flex;align-items:center;gap:12px;margin-top:4px">
+          <button class="btn btn-accent" onclick="saveConfig()">Guardar cambios</button>
+          <span class="save-feedback" id="cfg-ok">Guardado correctamente</span>
+        </div>
+      </div>
+    </div>
+  </div><!-- /tab-config -->
+
+</div><!-- /main -->
+
+<script>
+// ══ Tabs ═══════════════════════════════════════════
+const TABS = ['dashboard','tests','logs','historial','config'];
+function switchTab(name, el) {
+  document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+  TABS.forEach(t => document.getElementById('tab-'+t).classList.remove('active'));
+  el.classList.add('active');
+  document.getElementById('tab-'+name).classList.add('active');
+}
+
+// ══ Clock ══════════════════════════════════════════
+function tickClock() {
+  document.getElementById('clock').textContent = new Date().toLocaleString('es-ES',{hour12:false});
+}
+tickClock(); setInterval(tickClock, 1000);
+
+// ══ Status refresh ══════════════════════════════════
+let lastStatus = null;
 async function refreshStatus() {
-  const container = document.getElementById('status-cards');
-  container.innerHTML = '<div class="col text-center text-muted">Cargando...</div>';
   try {
     const r = await fetch('/api/status');
     const d = await r.json();
-    if (!d.ok) { container.innerHTML = `<div class="col text-danger">${d.error}</div>`; return; }
-    const cards = [
-      { label: 'Estado inversor', value: d.inverter_status, color: d.inverter_status === 'On-grid' ? 'success' : 'warning' },
-      { label: 'Estado batería',  value: d.battery_status,  color: 'info' },
-      { label: 'SOC',             value: d.soc_pct + ' %',  color: d.soc_pct > 50 ? 'success' : d.soc_pct > 20 ? 'warning' : 'danger' },
-      { label: 'SOH',             value: d.soh_pct + ' %',  color: 'secondary' },
-      { label: 'Potencia',        value: d.battery_power_w + ' W', color: 'secondary' },
-      { label: 'Tensión',         value: d.battery_voltage_v + ' V', color: 'secondary' },
-      { label: 'Temperatura',     value: d.battery_temp_c + ' ºC', color: 'secondary' },
-    ];
-    container.innerHTML = cards.map(c => `
-      <div class="col-sm-6 col-md-3 col-lg-auto">
-        <div class="card status-card text-center border-${c.color}">
-          <div class="card-body py-2 px-3">
-            <div class="text-muted small">${c.label}</div>
-            <div class="fw-bold text-${c.color} fs-5">${c.value}</div>
-          </div>
-        </div>
-      </div>`).join('');
+    if (!d.ok) { setHeaderStatus(false, d.error); return; }
+    lastStatus = d;
+    applyStatus(d);
+    setHeaderStatus(true, `Conectado · ${new Date(d.timestamp).toLocaleTimeString('es-ES')}`);
+    updateLastUpdate();
   } catch(e) {
-    container.innerHTML = `<div class="col text-danger">Error: ${e.message}</div>`;
+    setHeaderStatus(false, 'Sin conexión');
   }
 }
 
-// Tests
+function applyStatus(d) {
+  // SOC ring
+  const soc = parseFloat(d.soc_pct) || 0;
+  const circ = 2 * Math.PI * 32; // r=32
+  const offset = circ * (1 - soc/100);
+  const ring = document.getElementById('soc-ring');
+  ring.style.strokeDashoffset = offset;
+  ring.style.stroke = soc > 60 ? 'var(--green)' : soc > 35 ? 'var(--accent)' : 'var(--red)';
+  document.getElementById('soc-num').textContent = soc + '%';
+  document.getElementById('soc-num').className = 'soc-num ' + (soc > 60 ? 'green' : soc > 35 ? 'amber' : 'red');
+
+  // Metric tiles
+  setMetric('m-soc', soc + '%', soc > 60 ? 'green' : soc > 35 ? 'amber' : 'red', 'Mín configurado: 35%');
+  const pw = parseFloat(d.battery_power_w) || 0;
+  const pwLabel = pw < 0 ? 'Cargando' : pw > 0 ? 'Descargando' : 'En reposo';
+  setMetric('m-pow', pw + ' W', pw < -10 ? 'green' : pw > 10 ? 'blue' : '', pwLabel);
+  setMetric('m-volt', parseFloat(d.battery_voltage_v).toFixed(1) + ' V', '', 'Tensión batería');
+  const tmp = parseFloat(d.battery_temp_c);
+  setMetric('m-temp', tmp + ' ºC', tmp > 40 ? 'red' : tmp > 30 ? 'orange' : '', 'Temperatura batería');
+
+  // Inverter detail
+  document.getElementById('inv-status').textContent = d.inverter_status || '—';
+  document.getElementById('inv-status').style.color = d.inverter_status === 'On-grid' ? 'var(--green)' : 'var(--muted)';
+  document.getElementById('inv-batstatus').textContent = d.battery_status || '—';
+  document.getElementById('inv-soh').textContent = d.soh_pct != null ? d.soh_pct + ' %' : '—';
+  const ts = d.timestamp ? new Date(d.timestamp).toLocaleTimeString('es-ES') : '—';
+  document.getElementById('inv-ts').textContent = ts;
+
+  // History row
+  addHistoryRow(d);
+}
+
+function setMetric(id, val, cls, sub) {
+  const el = document.getElementById(id);
+  el.textContent = val;
+  el.className = 'metric-value ' + (cls || '');
+  const subEl = document.getElementById(id + '-sub');
+  if (subEl && sub) subEl.textContent = sub;
+}
+
+function updateLastUpdate() {
+  document.getElementById('last-update').textContent = 'actualizado ' + new Date().toLocaleTimeString('es-ES');
+}
+
+function setHeaderStatus(ok, msg) {
+  const dot = document.getElementById('hd-pulse');
+  const txt = document.getElementById('hd-status');
+  dot.className = 'pulse live' + (ok ? '' : ' offline');
+  txt.textContent = msg;
+}
+
+// ══ History (últimas lecturas en memoria) ═══════════
+const histRows = [];
+function addHistoryRow(d) {
+  histRows.unshift({
+    date: new Date().toLocaleDateString('es-ES'),
+    time: new Date().toLocaleTimeString('es-ES'),
+    soc: d.soc_pct + ' %',
+    soh: (d.soh_pct != null ? d.soh_pct : '—') + (d.soh_pct != null ? ' %' : ''),
+    power: (d.battery_power_w || 0) + ' W',
+    inv: d.inverter_status || '—',
+    bat: d.battery_status || '—',
+  });
+  if (histRows.length > 50) histRows.pop();
+  renderHistory();
+}
+function renderHistory() {
+  const tbody = document.getElementById('hist-tbody');
+  document.getElementById('hist-sub').textContent = histRows.length + ' lecturas en sesión';
+  if (!histRows.length) { tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--muted2);padding:24px">Sin datos aún</td></tr>'; return; }
+  tbody.innerHTML = histRows.map(r => `
+    <tr>
+      <td>${r.date}</td>
+      <td class="mono">${r.time}</td>
+      <td class="mono">${r.soc}</td>
+      <td class="mono">${r.soh}</td>
+      <td class="mono">${r.power}</td>
+      <td>${r.inv}</td>
+      <td>${r.bat}</td>
+    </tr>`).join('');
+}
+
+// ══ Forecast (simulado — conectar a /api/forecast cuando exista) ═══
+const F_HOURS = [6,7,8,9,10,11,12,13,14,15,16,17,18,19,20];
+const F_KWH   = [0.1,0.4,0.9,1.3,1.6,1.75,1.82,1.85,1.7,1.4,1.05,0.65,0.3,0.1,0.02];
+function renderForecast() {
+  const max = Math.max(...F_KWH);
+  const total = F_KWH.reduce((a,b)=>a+b,0).toFixed(1);
+  const peakIdx = F_KWH.indexOf(max);
+  const barsEl = document.getElementById('forecast-bars');
+  const lblsEl = document.getElementById('forecast-xlabels');
+  barsEl.innerHTML = F_HOURS.map((h,i) => `<div class="fbar ${i===peakIdx?'peak':''}" style="height:${Math.max(4,F_KWH[i]/max*68)}px" title="${h}h: ${F_KWH[i]} kW"></div>`).join('');
+  lblsEl.innerHTML = F_HOURS.map(h => `<span>${h}</span>`).join('');
+  document.getElementById('f-total').textContent = total + ' kWh';
+  document.getElementById('f-peak').textContent = max.toFixed(2) + ' kW · ' + F_HOURS[peakIdx] + 'h';
+}
+renderForecast();
+
+// ══ Logs ═══════════════════════════════════════════
+function appendLog(ts, lvl, msg) {
+  const out = document.getElementById('log-output');
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  line.innerHTML = `<span class="log-ts">${ts}</span><span class="log-lvl ${lvl}">${lvl}</span><span class="log-msg">${escHtml(msg)}</span>`;
+  out.appendChild(line);
+  if (document.getElementById('log-follow').checked) out.scrollTop = out.scrollHeight;
+}
+function clearLog() { document.getElementById('log-output').innerHTML = ''; }
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function parseLogLevel(line) {
+  if (/\bERROR\b/i.test(line)) return 'ERR';
+  if (/\bWARN(ING)?\b/i.test(line)) return 'WARN';
+  if (/\bDEBUG\b/i.test(line)) return 'DBG';
+  if (/\bOK\b|completad|correc/i.test(line)) return 'OK';
+  return 'INFO';
+}
+
+// ══ Tests ══════════════════════════════════════════
 async function runTest(name) {
+  switchTabTo('logs');
   clearLog();
-  setStatus('running', `Ejecutando test: ${name}...`);
-  const r = await fetch(`/api/run/${name}`, { method: 'POST' });
-  const { job_id } = await r.json();
-  streamLogs(job_id);
+  setJobStatus('running', `Ejecutando test: ${name}…`);
+  try {
+    const r = await fetch(`/api/run/${name}`, { method: 'POST' });
+    const { job_id } = await r.json();
+    streamLogs(job_id);
+  } catch(e) { setJobStatus('error', 'Error: ' + e.message); }
 }
 
 async function runCycle(dryRun) {
+  if (running) return;
+  switchTabTo('logs');
   clearLog();
-  setStatus('running', dryRun ? 'Ejecutando ciclo (dry run)...' : 'Ejecutando ciclo REAL...');
-  const r = await fetch(`/api/cycle?dry_run=${dryRun}`, { method: 'POST' });
-  const { job_id } = await r.json();
-  streamLogs(job_id);
+  setJobStatus('running', dryRun ? 'Ciclo completo (dry run)…' : 'Ciclo completo REAL…');
+  setBtnsRunning(true);
+  try {
+    const r = await fetch(`/api/cycle?dry_run=${dryRun}`, { method: 'POST' });
+    const { job_id } = await r.json();
+    streamLogs(job_id, () => {
+      setBtnsRunning(false);
+      const ok = document.getElementById('run-ok-dash');
+      ok.classList.add('show'); setTimeout(()=>ok.classList.remove('show'),2500);
+    });
+  } catch(e) { setJobStatus('error', 'Error: ' + e.message); setBtnsRunning(false); }
 }
 
-function confirmCycle() {
-  if (confirm('¿Ejecutar el ciclo completo REAL?\nEsto modificará la configuración del inversor.')) {
-    runCycle(false);
-  }
+function confirmRealCycle() {
+  if (confirm('¿Ejecutar el ciclo completo REAL?\nEsto modificará la configuración del inversor.')) runCycle(false);
 }
 
-// Stream de logs via SSE
-function streamLogs(jobId) {
-  const out = document.getElementById('log-output');
+let running = false;
+function setBtnsRunning(on) {
+  running = on;
+  ['main-run-btn','dash-run-btn'].forEach(id => {
+    const b = document.getElementById(id);
+    if (!b) return;
+    b.classList.toggle('running', on);
+    b.innerHTML = on
+      ? '<span class="spinner"></span> Ejecutando…'
+      : '<svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M3 2l11 6-11 6V2Z" fill="currentColor"/></svg> ' + (id === 'main-run-btn' ? 'Ejecutar ahora' : 'Ciclo completo');
+  });
+}
+
+// ══ SSE stream ══════════════════════════════════════
+function streamLogs(jobId, onDone) {
+  const now = () => new Date().toLocaleTimeString('es-ES');
   const es = new EventSource(`/api/stream/${jobId}`);
-  es.onmessage = (e) => {
+  es.onmessage = e => {
     if (e.data.startsWith('__DONE__:')) {
-      const status = e.data.split(':')[1];
-      setStatus(status, status === 'ok' ? 'Completado correctamente' : 'Finalizado con errores');
+      const st = e.data.split(':')[1];
+      setJobStatus(st === 'ok' ? 'ok' : 'error', st === 'ok' ? 'Completado correctamente' : 'Finalizado con errores');
       es.close();
+      if (onDone) onDone();
       return;
     }
-    out.textContent += e.data + '\n';
-    out.scrollTop = out.scrollHeight;
+    appendLog(now(), parseLogLevel(e.data), e.data);
   };
-  es.onerror = () => {
-    setStatus('error', 'Error en la conexión');
-    es.close();
-  };
+  es.onerror = () => { setJobStatus('error','Error en la conexión SSE'); es.close(); if(onDone) onDone(); };
 }
 
-// Log del fichero del sistema
 async function loadFileLogs() {
+  switchTabTo('logs');
   clearLog();
-  const r = await fetch('/api/logs?lines=200');
-  const { lines } = await r.json();
-  const out = document.getElementById('log-output');
-  out.textContent = lines.join('\n');
-  out.scrollTop = out.scrollHeight;
+  setJobStatus('running','Cargando log del fichero…');
+  try {
+    const r = await fetch('/api/logs?lines=200');
+    const { lines } = await r.json();
+    const now = new Date().toLocaleTimeString('es-ES');
+    lines.forEach(l => appendLog(now, parseLogLevel(l), l));
+    setJobStatus('ok', `${lines.length} líneas cargadas`);
+  } catch(e) { setJobStatus('error','Error: ' + e.message); }
 }
 
-function clearLog() {
-  document.getElementById('log-output').textContent = '';
-}
-
-function setStatus(state, msg) {
+// ══ Job status ══════════════════════════════════════
+function setJobStatus(state, msg) {
   const el = document.getElementById('job-status');
-  const colors = { running: 'warning', ok: 'success', error: 'danger' };
-  const icons  = { running: '&#9654;', ok: '&#10003;', error: '&#10007;' };
-  el.innerHTML = `<span class="badge bg-${colors[state] || 'secondary'} ${state === 'running' ? 'badge-running' : ''}">${icons[state] || ''} ${msg}</span>`;
+  const col = { running: 'var(--orange)', ok: 'var(--green)', error: 'var(--red)' };
+  el.innerHTML = state === 'running'
+    ? `<span class="spinner"></span> <span style="color:${col[state]}">${escHtml(msg)}</span>`
+    : `<span style="color:${col[state]||'var(--muted)'}">${escHtml(msg)}</span>`;
 }
 
-// Cargar estado al inicio
+// ══ Config save (UI only — backend endpoint no existe aún) ═══
+function saveConfig() {
+  const ok = document.getElementById('cfg-ok');
+  ok.classList.add('show');
+  setTimeout(() => ok.classList.remove('show'), 2800);
+}
+
+// ══ Helpers ════════════════════════════════════════
+function switchTabTo(name) {
+  const idx = TABS.indexOf(name);
+  document.querySelectorAll('.nav-tab')[idx].click();
+}
+
+// ══ Init ═══════════════════════════════════════════
 refreshStatus();
 setInterval(refreshStatus, 30000);
 </script>
