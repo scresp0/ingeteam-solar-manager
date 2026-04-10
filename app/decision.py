@@ -50,7 +50,6 @@ class DecisionInput:
 class DecisionResult:
     """Resultado del cálculo, con desglose para logging y auditoría."""
     charge_needed: bool            # False = desactivar, True = cargar hasta target_soc_pct
-    weekend_skip: bool = False     # True si se omite la carga por ser fin de semana
     target_soc_pct: float          # SOC objetivo (solo relevante si charge_needed=True)
     target_kwh: float
     to_charge_kwh: float           # kWh a cargar desde la red
@@ -60,6 +59,7 @@ class DecisionResult:
     deficit_kwh: float
     clamped: bool
     dry_run: bool
+    weekend_skip: bool = False     # True si se omite la carga por ser fin de semana
 
 
 def _is_tomorrow_weekend_or_holiday(inp: DecisionInput) -> bool:
