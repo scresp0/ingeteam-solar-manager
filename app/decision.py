@@ -19,6 +19,7 @@ Algoritmo:
 """
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 
 
 @dataclass
@@ -41,12 +42,15 @@ class DecisionInput:
     min_soc_pct: float
     max_soc_pct: float
     safety_margin_kwh: float
+    weekend_days: list = None      # días de fin de semana (0=lunes, 5=sábado, 6=domingo)
+    holidays: list = None          # festivos como strings "YYYY-MM-DD"
 
 
 @dataclass
 class DecisionResult:
     """Resultado del cálculo, con desglose para logging y auditoría."""
     charge_needed: bool            # False = desactivar, True = cargar hasta target_soc_pct
+    weekend_skip: bool = False     # True si se omite la carga por ser fin de semana
     target_soc_pct: float          # SOC objetivo (solo relevante si charge_needed=True)
     target_kwh: float
     to_charge_kwh: float           # kWh a cargar desde la red
@@ -58,6 +62,18 @@ class DecisionResult:
     dry_run: bool
 
 
+def _is_tomorrow_weekend_or_holiday(inp: DecisionInput) -> bool:
+    """Devuelve True si mañana es fin de semana o festivo."""
+    tomorrow = date.today() + timedelta(days=1)
+    weekend_days = inp.weekend_days or [5, 6]
+    if tomorrow.weekday() in weekend_days:
+        return True
+    holidays = inp.holidays or []
+    if tomorrow.isoformat() in holidays:
+        return True
+    return False
+
+
 def calculate_charge_target(inp: DecisionInput, dry_run: bool = False) -> DecisionResult:
     """
     Calcula si hay que cargar de red y a qué nivel.
@@ -65,6 +81,23 @@ def calculate_charge_target(inp: DecisionInput, dry_run: bool = False) -> Decisi
     Returns:
         DecisionResult con charge_needed y target_soc_pct
     """
+    # 0. Si mañana es fin de semana o festivo, no cargar nunca de red
+    #    (tarifa valle todo el día → ineficiente cargar con ~10% pérdidas)
+    if _is_tomorrow_weekend_or_holiday(inp):
+        return DecisionResult(
+            charge_needed=False,
+            target_soc_pct=0.0,
+            target_kwh=0.0,
+            to_charge_kwh=0.0,
+            solar_effective_kwh=0.0,
+            energy_stored_kwh=round((inp.soc_actual_pct / 100.0) * inp.battery_capacity_kwh, 2),
+            energy_at_dawn_kwh=0.0,
+            deficit_kwh=0.0,
+            clamped=False,
+            dry_run=dry_run,
+            weekend_skip=True,
+        )
+
     # 1. Producción solar efectiva interpolada según risk_factor
     solar_effective = (
         inp.forecast.p10 * inp.risk_factor
@@ -112,6 +145,7 @@ def calculate_charge_target(inp: DecisionInput, dry_run: bool = False) -> Decisi
             deficit_kwh=0.0,
             clamped=False,
             dry_run=dry_run,
+            weekend_skip=False,
         )
 
     # 8. SOC objetivo cuando charge_needed=True:
@@ -134,6 +168,7 @@ def calculate_charge_target(inp: DecisionInput, dry_run: bool = False) -> Decisi
         deficit_kwh=round(deficit, 2),
         clamped=clamped,
         dry_run=dry_run,
+        weekend_skip=False,
     )
 
 
@@ -155,6 +190,9 @@ def decision_summary(inp: DecisionInput, result: DecisionResult) -> str:
         lines.append(f"  → CARGAR de red: SOC objetivo = {result.target_soc_pct}% ({result.target_kwh} kWh)")
         if result.clamped:
             lines.append(f"    (limitado por min={inp.min_soc_pct}% / max={inp.max_soc_pct}%)")
+    elif result.weekend_skip:
+        tomorrow = date.today() + timedelta(days=1)
+        lines.append(f"  → NO cargar de red (mañana {tomorrow.strftime('%A %d/%m')} es fin de semana/festivo — tarifa valle todo el día)")
     else:
         lines.append(f"  → NO cargar de red (batería suficiente para el día)")
     if result.dry_run:

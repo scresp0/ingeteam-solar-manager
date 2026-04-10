@@ -117,6 +117,8 @@ def run(cfg: AppConfig) -> bool:
         min_soc_pct=min_soc,
         max_soc_pct=cfg.charging.max_soc_pct,
         safety_margin_kwh=cfg.charging.safety_margin_kwh,
+        weekend_days=cfg.tariff.weekend_days,
+        holidays=[h.isoformat() if hasattr(h, 'isoformat') else str(h) for h in (cfg.tariff.holidays or [])],
     )
     result = calculate_charge_target(inp, dry_run=cfg.system.dry_run)
     logger.info("\n" + decision_summary(inp, result))
