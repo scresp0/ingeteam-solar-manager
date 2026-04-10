@@ -81,23 +81,6 @@ def calculate_charge_target(inp: DecisionInput, dry_run: bool = False) -> Decisi
     Returns:
         DecisionResult con charge_needed y target_soc_pct
     """
-    # 0. Si mañana es fin de semana o festivo, no cargar nunca de red
-    #    (tarifa valle todo el día → ineficiente cargar con ~10% pérdidas)
-    if _is_tomorrow_weekend_or_holiday(inp):
-        return DecisionResult(
-            charge_needed=False,
-            target_soc_pct=0.0,
-            target_kwh=0.0,
-            to_charge_kwh=0.0,
-            solar_effective_kwh=0.0,
-            energy_stored_kwh=round((inp.soc_actual_pct / 100.0) * inp.battery_capacity_kwh, 2),
-            energy_at_dawn_kwh=0.0,
-            deficit_kwh=0.0,
-            clamped=False,
-            dry_run=dry_run,
-            weekend_skip=True,
-        )
-
     # 1. Producción solar efectiva interpolada según risk_factor
     solar_effective = (
         inp.forecast.p10 * inp.risk_factor
@@ -130,7 +113,25 @@ def calculate_charge_target(inp: DecisionInput, dry_run: bool = False) -> Decisi
     # Por tanto energy_at_dawn = SOC objetivo, y el déficit se calcula
     # directamente como needed_for_day sin restar consumo nocturno.
 
-    # 6. Decidir si hay que cargar
+    # 8. Si mañana es fin de semana o festivo, no cargar nunca de red
+    #    (tarifa valle todo el día → ineficiente cargar con ~10% pérdidas)
+    #    Mostramos los valores calculados igualmente para informar correctamente
+    if _is_tomorrow_weekend_or_holiday(inp):
+        return DecisionResult(
+            charge_needed=False,
+            target_soc_pct=0.0,
+            target_kwh=0.0,
+            to_charge_kwh=0.0,
+            solar_effective_kwh=round(solar_effective, 2),
+            energy_stored_kwh=round(energy_stored, 2),
+            energy_at_dawn_kwh=round(energy_at_dawn_no_charge, 2),
+            deficit_kwh=round(deficit, 2),
+            clamped=False,
+            dry_run=dry_run,
+            weekend_skip=True,
+        )
+
+    # 9. Decidir si hay que cargar
     charge_needed = deficit > 0.0
 
     if not charge_needed:
