@@ -192,7 +192,9 @@ def decision_summary(inp: DecisionInput, result: DecisionResult) -> str:
             lines.append(f"    (limitado por min={inp.min_soc_pct}% / max={inp.max_soc_pct}%)")
     elif result.weekend_skip:
         tomorrow = date.today() + timedelta(days=1)
-        lines.append(f"  → NO cargar de red (mañana {tomorrow.strftime('%A %d/%m')} es fin de semana/festivo — tarifa valle todo el día)")
+        dias = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
+        dia_es = dias[tomorrow.weekday()]
+        lines.append(f"  → NO cargar de red (mañana {dia_es} {tomorrow.strftime('%d/%m')} es fin de semana/festivo — tarifa valle todo el día)")
     else:
         lines.append(f"  → NO cargar de red (batería suficiente para el día)")
     if result.dry_run:
