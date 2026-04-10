@@ -75,6 +75,12 @@ class TariffConfig(BaseModel):
     holidays: List[str] = []           # ["YYYY-MM-DD", ...]
     periods: TariffPeriods
 
+    @field_validator("holidays", mode="before")
+    @classmethod
+    def coerce_holidays_to_str(cls, v):
+        """Convierte objetos date a string ISO — YAML parsea fechas como date automáticamente."""
+        return [d.isoformat() if hasattr(d, "isoformat") else str(d) for d in (v or [])]
+
     def is_valley_day(self, d: date) -> bool:
         """True si el día es fin de semana o festivo (todo el día es valle)."""
         if d.weekday() in self.weekend_days:
