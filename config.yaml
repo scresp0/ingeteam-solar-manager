@@ -29,7 +29,7 @@ tariff:
   # quede programada antes de que empiece
   schedule_at: "23:55"
   weekend_days: [5, 6]
-  holidays: []
+  holidays: [2026-12-25,2027-01-01]
 
   periods:
     valley:
