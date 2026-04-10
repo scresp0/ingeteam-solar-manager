@@ -170,6 +170,12 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
     path = _resolve_config_path(config_path)
     data = _load_yaml(path)
     data = _apply_env_overrides(data)
+    # YAML parsea fechas como datetime.date — convertir a string antes de Pydantic
+    if "tariff" in data and "holidays" in data["tariff"]:
+        data["tariff"]["holidays"] = [
+            d.isoformat() if hasattr(d, "isoformat") else str(d)
+            for d in (data["tariff"]["holidays"] or [])
+        ]
     try:
         return AppConfig(**data)
     except Exception as e:
