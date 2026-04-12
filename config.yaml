@@ -8,6 +8,7 @@ solcast:
   resource_id: ""       # SOLCAST_RESOURCE_ID en .env
   base_url: "https://api.solcast.com.au"
   forecast_hours: 48
+  cache_ttl_hours: 4    # horas de validez de la caché local de Solcast
 
 inverter:
   web_url: ""           # INVERTER_WEB_URL en .env
@@ -29,7 +30,7 @@ tariff:
   # quede programada antes de que empiece
   schedule_at: "23:55"
   weekend_days: [5, 6]
-  holidays: [2026-01-01,2026-01-06,2026-04-03,2026-05-01,2026-08-15,2026-10-12,2026-11-01,2026-12-08,2026-12-25,2027-01-01]
+  holidays: []
 
   periods:
     valley:

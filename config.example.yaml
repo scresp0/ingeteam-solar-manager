@@ -12,6 +12,7 @@ solcast:
   resource_id: "REQUERIDO"
   base_url: "https://api.solcast.com.au"
   forecast_hours: 48
+  cache_ttl_hours: 4    # horas de validez de la caché local de Solcast
 
 # -----------------------------------------------------------------------------
 # Inversor Ingeteam INGECON SUN STORAGE 1PLAY TL-M

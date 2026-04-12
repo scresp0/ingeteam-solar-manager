@@ -25,6 +25,7 @@ class SolcastConfig(BaseModel):
     resource_id: str
     base_url: str = "https://api.solcast.com.au"
     forecast_hours: int = 48
+    cache_ttl_hours: int = 4   # horas de validez de la caché local
 
 
 class InverterConfig(BaseModel):

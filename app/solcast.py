@@ -22,25 +22,24 @@ from app.decision import SolarForecast
 logger = logging.getLogger(__name__)
 
 CACHE_PATH = Path("/app/logs/solcast_cache.json")
-CACHE_MAX_AGE_HOURS = 12
 
 
 class SolcastError(Exception):
     """Error al obtener o procesar la previsión de Solcast."""
 
 
-def _load_cache() -> dict | None:
-    """Carga la caché si existe y tiene menos de CACHE_MAX_AGE_HOURS horas."""
+def _load_cache(ttl_hours: int) -> dict | None:
+    """Carga la caché si existe y tiene menos de ttl_hours horas."""
     try:
         if not CACHE_PATH.exists():
             return None
         data = json.loads(CACHE_PATH.read_text())
         cached_at = datetime.fromisoformat(data["cached_at"])
         age_hours = (datetime.now() - cached_at).total_seconds() / 3600
-        if age_hours > CACHE_MAX_AGE_HOURS:
-            logger.debug(f"Caché Solcast expirada ({age_hours:.1f}h > {CACHE_MAX_AGE_HOURS}h)")
+        if age_hours > ttl_hours:
+            logger.debug(f"Caché Solcast expirada ({age_hours:.1f}h > {ttl_hours}h)")
             return None
-        logger.info(f"Usando caché Solcast ({age_hours:.1f}h de antigüedad)")
+        logger.info(f"Usando caché Solcast ({age_hours:.1f}h de antigüedad, TTL={ttl_hours}h)")
         return data
     except Exception as e:
         logger.debug(f"No se pudo leer caché Solcast: {e}")
@@ -68,8 +67,8 @@ def get_two_day_forecast(
     Returns:
         (forecast_day1, forecast_day2) — día 1 = mañana, día 2 = pasado mañana
     """
-    # Intentar usar caché
-    cached = _load_cache()
+    # Intentar usar caché (TTL configurable en config.yaml bajo solcast.cache_ttl_hours)
+    cached = _load_cache(cfg.cache_ttl_hours)
     if cached:
         raw = cached["raw"]
     else:
