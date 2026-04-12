@@ -52,6 +52,13 @@ def test_tariff():
 
     print("Tarifas OK")
 
+def test_holidays_loaded():
+    cfg = load_config("config.yaml")
+    holidays = cfg.tariff.holidays
+    assert isinstance(holidays, list)
+    assert len(holidays) > 0
+    assert all(isinstance(h, str) for h in holidays)
+    print(f"  Festivos 2026 cargados correctamente: {len(holidays)} ✓")
 
 def test_validation():
     from app.config import ChargingConfig
@@ -66,5 +73,7 @@ if __name__ == "__main__":
     test_load()
     print()
     test_tariff()
+    print()
+    test_holidays_loaded()
     print()
     test_validation()
