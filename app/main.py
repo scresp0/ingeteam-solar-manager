@@ -3,11 +3,13 @@ main.py — punto de entrada del contenedor.
 
 Flujo completo:
   1. Cargar configuración
-  2. Obtener previsión solar de Solcast (p10/p50/p90 para mañana)
+  2. Obtener previsión solar de Solcast (día 1 y día 2)
   3. Leer SOC actual del inversor vía MODBUS
-  4. Calcular nivel de carga óptimo (decision.py)
-  5. Programar la carga en la web del inversor (automation.py)
-  6. Registrar todo en el log
+  4. decide_charge  → ¿cargar batería esta noche?
+  5. decide_discharge → ¿bloquear descarga mañana?
+  6. Configurar inversor (6.3.1 carga + 6.3.2 descarga)
+  7. Leer stats del día anterior y guardar en InfluxDB
+  8. Enviar email de notificación
 """
 
 import logging
@@ -15,10 +17,13 @@ import sys
 from pathlib import Path
 
 from app.config import load_config, AppConfig
-from app.solcast import get_tomorrow_forecast, SolcastError
+from app.solcast import get_two_day_forecast, SolcastError
 from app.inverter import read_inverter_state, InverterError
-from app.decision import calculate_charge_target, decision_summary, DecisionInput
-from app.automation import set_charge_schedule, AutomationError
+from app.decision import (
+    DecisionInput, decide_charge, decide_discharge,
+    charge_summary, discharge_summary, SolarForecast
+)
+from app.automation import set_charge_schedule, set_discharge_schedule, AutomationError
 from app.notifier import CycleEmailNotifier
 from app.logger_reader import get_yesterday_stats, LoggerReaderError
 from app.storage import write_cycle, write_daily_stats, StorageError
@@ -48,37 +53,31 @@ def run(cfg: AppConfig) -> bool:
     """
     logger = logging.getLogger(__name__)
 
-    # Iniciar notifier de email — captura logs desde este momento
     notifier = CycleEmailNotifier(cfg.system.email)
     notifier.attach()
 
     logger.info("=== Iniciando ciclo de gestión de carga ===")
-
     if cfg.system.dry_run:
         logger.info("Modo DRY RUN activo — no se modificará el inversor")
 
-    # 1. Previsión solar
-    # En dry_run usamos valores ficticios para no consumir cuota de Solcast
+    # 1. Previsión solar — día 1 y día 2
     if cfg.system.dry_run:
-        from app.decision import SolarForecast
-        forecast = SolarForecast(p10=10.0, p50=20.0, p90=30.0)
-        logger.info("DRY RUN: usando previsión ficticia p10=10, p50=20, p90=30 kWh")
+        forecast_day1 = SolarForecast(p10=10.0, p50=20.0, p90=30.0)
+        forecast_day2 = SolarForecast(p10=8.0, p50=18.0, p90=28.0)
+        logger.info("DRY RUN: previsión ficticia día1=10/20/30 kWh, día2=8/18/28 kWh")
     else:
         try:
             logger.info("Obteniendo previsión solar de Solcast...")
-            forecast = get_tomorrow_forecast(cfg.solcast, cfg.system.timezone)
-            logger.info(
-                f"Previsión mañana: p10={forecast.p10} kWh, "
-                f"p50={forecast.p50} kWh, p90={forecast.p90} kWh"
-            )
+            forecast_day1, forecast_day2 = get_two_day_forecast(cfg.solcast, cfg.system.timezone)
         except SolcastError as e:
             logger.error(f"Error al obtener previsión solar: {e}")
             logger.warning("Usando previsión conservadora de 0 kWh como fallback")
-            from app.decision import SolarForecast
-            forecast = SolarForecast(p10=0.0, p50=0.0, p90=0.0)
+            forecast_day1 = SolarForecast(p10=0.0, p50=0.0, p90=0.0)
+            forecast_day2 = SolarForecast(p10=0.0, p50=0.0, p90=0.0)
 
-    # 2. Estado actual del inversor vía MODBUS (siempre, dry_run o no)
+    # 2. Estado actual del inversor vía MODBUS
     state = None
+    soc_actual = 50.0
     try:
         logger.info("Leyendo estado del inversor vía MODBUS...")
         state = read_inverter_state(cfg.inverter)
@@ -90,25 +89,22 @@ def run(cfg: AppConfig) -> bool:
         soc_actual = state.soc_pct
     except InverterError as e:
         host = cfg.inverter.get_modbus_host()
-        port = cfg.inverter.modbus_port
         logger.error(
-            f"No se pudo conectar al inversor en {host}:{port} — "
-            f"comprueba que el inversor está encendido y accesible en la red. "
-            f"Detalle: {e}"
+            f"No se pudo conectar al inversor en {host}:{cfg.inverter.modbus_port} — "
+            f"comprueba que está encendido y accesible. Detalle: {e}"
         )
-        if not cfg.system.dry_run:
-            logger.warning("Usando SOC=50% como fallback conservador")
-        soc_actual = 50.0
+        logger.warning("Usando SOC=50% como fallback conservador")
 
-    # 3. Calcular nivel de carga óptimo
-    # Usar min_soc del inversor si está disponible, si no el del config
+    # min_soc: del inversor si disponible, si no del config
     min_soc = cfg.charging.min_soc_pct
     if state is not None and state.min_soc_pct > 0:
         min_soc = state.min_soc_pct
         logger.info(f"SOC mínimo leído del inversor: {min_soc}% (config: {cfg.charging.min_soc_pct}%)")
 
+    # 3. Construir input compartido por ambas funciones de decisión
     inp = DecisionInput(
-        forecast=forecast,
+        forecast_day1=forecast_day1,
+        forecast_day2=forecast_day2,
         soc_actual_pct=soc_actual,
         battery_capacity_kwh=cfg.installation.battery_capacity_kwh,
         daily_consumption_kwh=cfg.installation.average_daily_consumption_kwh,
@@ -118,44 +114,65 @@ def run(cfg: AppConfig) -> bool:
         max_soc_pct=cfg.charging.max_soc_pct,
         safety_margin_kwh=cfg.charging.safety_margin_kwh,
         weekend_days=cfg.tariff.weekend_days,
-        holidays=[h.isoformat() if hasattr(h, 'isoformat') else str(h) for h in (cfg.tariff.holidays or [])],
+        holidays=cfg.tariff.holidays,
     )
-    result = calculate_charge_target(inp, dry_run=cfg.system.dry_run)
-    logger.info("\n" + decision_summary(inp, result))
 
-    # 4. Programar la carga en el inversor
+    # 4. Decisiones independientes
+    charge   = decide_charge(inp, dry_run=cfg.system.dry_run)
+    discharge = decide_discharge(inp)
+
+    logger.info("\n" + charge_summary(inp, charge))
+    logger.info("\n" + discharge_summary(inp, discharge))
+
+    # 5. Configurar inversor — 6.3.1 carga
     try:
-        logger.info("Programando carga en el inversor...")
+        logger.info("Programando carga en el inversor (6.3.1)...")
         set_charge_schedule(
             cfg=cfg.inverter,
-            charge_needed=result.charge_needed,
-            target_soc_pct=result.target_soc_pct,
+            charge_needed=charge.charge_needed,
+            target_soc_pct=charge.target_soc_pct,
             dry_run=cfg.system.dry_run,
         )
         logger.info(
             f"{'[DRY RUN] ' if cfg.system.dry_run else ''}"
-            f"Carga programada correctamente: SOC objetivo = {result.target_soc_pct}%"
+            f"6.3.1 configurado: SOC objetivo = {charge.target_soc_pct}%"
         )
     except AutomationError as e:
-        logger.error(f"Error al programar la carga en el inversor: {e}")
+        logger.error(f"Error al configurar carga (6.3.1): {e}")
         notifier.send(success=False)
         return False
 
-    # 5. Leer stats del día anterior y guardar en InfluxDB
+    # 6. Configurar inversor — 6.3.2 descarga
+    try:
+        logger.info("Programando descarga en el inversor (6.3.2)...")
+        set_discharge_schedule(
+            cfg=cfg.inverter,
+            discharge_blocked=discharge.discharge_blocked,
+            dry_run=cfg.system.dry_run,
+        )
+        logger.info(
+            f"{'[DRY RUN] ' if cfg.system.dry_run else ''}"
+            f"6.3.2 configurado: discharge_blocked={discharge.discharge_blocked}"
+        )
+    except AutomationError as e:
+        logger.error(f"Error al configurar descarga (6.3.2): {e}")
+        notifier.send(success=False)
+        return False
+
+    # 7. Stats del día anterior + InfluxDB
     try:
         stats = get_yesterday_stats(cfg.inverter)
         write_daily_stats(cfg.influxdb, stats)
     except (LoggerReaderError, StorageError) as e:
         logger.warning(f"No se pudieron guardar stats diarias: {e}")
 
-    # 6. Guardar decisión del ciclo en InfluxDB
     try:
         write_cycle(
             cfg=cfg.influxdb,
             inp=inp,
-            result=result,
-            state=state if isinstance(state, object) else None,
-            solcast_error=(forecast.p10 == 0.0 and forecast.p50 == 0.0),
+            result=charge,
+            state=state,
+            solcast_error=(forecast_day1.p10 == 0.0 and forecast_day1.p50 == 0.0),
             automation_ok=True,
         )
     except StorageError as e:
@@ -178,7 +195,6 @@ def main() -> None:
     logger = logging.getLogger(__name__)
     logger.info(f"solar-manager arrancando (dry_run={cfg.system.dry_run})")
 
-    # Arrancar interfaz web en thread separado
     if cfg.system.web_enabled:
         import threading
         import uvicorn
@@ -191,7 +207,6 @@ def main() -> None:
         t.start()
         logger.info(f"Interfaz web disponible en http://0.0.0.0:{cfg.system.web_port}")
 
-    # Arrancar scheduler (bloqueante)
     from app.scheduler import start_scheduler
     start_scheduler(cfg)
 

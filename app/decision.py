@@ -1,30 +1,33 @@
 """
-decision.py — lógica de cálculo del nivel de carga de baterías.
+decision.py — lógica de decisión de carga y descarga de baterías.
 
-Algoritmo:
-    solar_efectiva    = p10 * risk_factor + p50 * (1 - risk_factor)
-    energia_actual    = (soc_actual / 100) * capacidad_kwh
-    energia_amanecer  = energia_actual - consumo_nocturno_kwh  (lo que queda al acabar el valle)
-    necesario_dia     = consumo_diario + margen_seguridad - solar_efectiva
-    deficit           = necesario_dia - energia_amanecer
+Dos funciones independientes:
 
-    Si deficit <= 0:
-        → charge_needed = False  (desactivar carga de red)
-    Si deficit > 0:
-        → charge_needed = True
-        → soc_objetivo = clamp(
-              (energia_amanecer + deficit) / capacidad * 100,
-              min_soc_pct, max_soc_pct
-          )
+  decide_charge(inp) → ChargeDecision
+    ¿Cargo batería desde la red esta noche y hasta qué SOC?
+    Solo mira el día 1 (mañana). Si mañana es día valle, nunca carga.
+
+  decide_discharge(inp) → DischargeDecision
+    ¿Bloqueo la descarga de la batería mañana?
+    Solo aplica si mañana es día valle. Mira 2 días para decidir
+    si reservar la batería para el día laborable siguiente.
+
+is_valley_day(d, tariff) → bool
+    ¿Es el día d un día de tarifa valle todo el día?
+    (fin de semana o festivo)
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 
+# ---------------------------------------------------------------------------
+# Estructuras de datos
+# ---------------------------------------------------------------------------
+
 @dataclass
 class SolarForecast:
-    """Previsión de producción solar para el día siguiente (kWh)."""
+    """Previsión de producción solar para un día (kWh)."""
     p10: float
     p50: float
     p90: float
@@ -32,172 +35,283 @@ class SolarForecast:
 
 @dataclass
 class DecisionInput:
-    """Todos los datos necesarios para tomar la decisión de carga."""
-    forecast: SolarForecast
+    """Todos los datos necesarios para tomar las decisiones de carga/descarga."""
+    # Previsión solar
+    forecast_day1: SolarForecast       # mañana
+    forecast_day2: SolarForecast       # pasado mañana
+
+    # Estado del inversor
     soc_actual_pct: float
     battery_capacity_kwh: float
-    daily_consumption_kwh: float
-    night_consumption_kwh: float   # consumo en horario valle (00:00-08:00)
-    risk_factor: float
     min_soc_pct: float
     max_soc_pct: float
+
+    # Parámetros de consumo
+    daily_consumption_kwh: float
+    night_consumption_kwh: float       # consumo en horario valle (00:00-08:00)
     safety_margin_kwh: float
-    weekend_days: list = None      # días de fin de semana (0=lunes, 5=sábado, 6=domingo)
-    holidays: list = None          # festivos como strings "YYYY-MM-DD"
+
+    # Parámetros del algoritmo
+    risk_factor: float
+
+    # Tarifa — para is_valley_day
+    weekend_days: list = field(default_factory=lambda: [5, 6])
+    holidays: list = field(default_factory=list)
+
+    # Compatibilidad con código anterior — forecast = día 1
+    @property
+    def forecast(self) -> SolarForecast:
+        return self.forecast_day1
 
 
 @dataclass
-class DecisionResult:
-    """Resultado del cálculo, con desglose para logging y auditoría."""
-    charge_needed: bool            # False = desactivar, True = cargar hasta target_soc_pct
-    target_soc_pct: float          # SOC objetivo (solo relevante si charge_needed=True)
+class ChargeDecision:
+    """Resultado de decide_charge."""
+    charge_needed: bool
+    target_soc_pct: float
     target_kwh: float
-    to_charge_kwh: float           # kWh a cargar desde la red
+    to_charge_kwh: float
     solar_effective_kwh: float
-    energy_stored_kwh: float       # energía actual en batería
-    energy_at_dawn_kwh: float      # energía estimada al acabar el valle (08:00)
+    energy_stored_kwh: float
+    energy_at_dawn_kwh: float
     deficit_kwh: float
     clamped: bool
-    dry_run: bool
-    weekend_skip: bool = False     # True si se omite la carga por ser fin de semana
+    valley_day_skip: bool = False      # True si no se carga por ser día valle
+    dry_run: bool = False
 
 
-def _is_tomorrow_weekend_or_holiday(inp: DecisionInput) -> bool:
-    """Devuelve True si mañana es fin de semana o festivo."""
+@dataclass
+class DischargeDecision:
+    """Resultado de decide_discharge."""
+    discharge_blocked: bool            # True = bloquear descarga durante el valle
+    reason: str = ""                   # motivo para el log
+    energy_end_day1_kwh: float = 0.0  # energía estimada al final del día 1
+    deficit_day2_kwh: float = 0.0     # déficit estimado del día 2
+
+
+# ---------------------------------------------------------------------------
+# Función auxiliar
+# ---------------------------------------------------------------------------
+
+def is_valley_day(d: date, weekend_days: list, holidays: list) -> bool:
+    """
+    Devuelve True si el día d tiene tarifa valle todo el día.
+    Eso ocurre cuando es fin de semana o festivo nacional.
+    """
+    if d.weekday() in weekend_days:
+        return True
+    return d.isoformat() in holidays
+
+
+def _solar_effective(forecast: SolarForecast, risk_factor: float) -> float:
+    """Calcula la solar efectiva con el mismo criterio en ambas funciones."""
+    return forecast.p10 * risk_factor + forecast.p50 * (1.0 - risk_factor)
+
+
+# ---------------------------------------------------------------------------
+# decide_charge
+# ---------------------------------------------------------------------------
+
+def decide_charge(inp: DecisionInput, dry_run: bool = False) -> ChargeDecision:
+    """
+    Decide si cargar la batería desde la red esta noche y hasta qué SOC.
+
+    Regla principal: solo carga si mañana (día 1) es día laborable.
+    Si mañana es valle (fin de semana o festivo), no tiene sentido cargar
+    con las pérdidas de ~10% — la decisión se tomará en su momento.
+    """
     tomorrow = date.today() + timedelta(days=1)
-    weekend_days = inp.weekend_days or [5, 6]
-    if tomorrow.weekday() in weekend_days:
-        return True
-    holidays = inp.holidays or []
-    if tomorrow.isoformat() in holidays:
-        return True
-    return False
-
-
-def calculate_charge_target(inp: DecisionInput, dry_run: bool = False) -> DecisionResult:
-    """
-    Calcula si hay que cargar de red y a qué nivel.
-
-    Returns:
-        DecisionResult con charge_needed y target_soc_pct
-    """
-    # 1. Producción solar efectiva interpolada según risk_factor
-    solar_effective = (
-        inp.forecast.p10 * inp.risk_factor
-        + inp.forecast.p50 * (1.0 - inp.risk_factor)
-    )
-
-    # 2. Energía actual en batería
     energy_stored = (inp.soc_actual_pct / 100.0) * inp.battery_capacity_kwh
-
-    # 3. Energía mínima que el inversor mantiene siempre (min_soc configurado)
     energy_min = (inp.min_soc_pct / 100.0) * inp.battery_capacity_kwh
 
-    # 4. Energía estimada al amanecer sin cargar de red:
-    #    la batería se descarga durante el valle — no puede bajar del mínimo
-    energy_at_dawn_no_charge = max(energy_min, energy_stored - inp.night_consumption_kwh)
+    # Si mañana es día valle → nunca cargar
+    if is_valley_day(tomorrow, inp.weekend_days, inp.holidays):
+        return ChargeDecision(
+            charge_needed=False,
+            target_soc_pct=0.0,
+            target_kwh=0.0,
+            to_charge_kwh=0.0,
+            solar_effective_kwh=round(_solar_effective(inp.forecast_day1, inp.risk_factor), 2),
+            energy_stored_kwh=round(energy_stored, 2),
+            energy_at_dawn_kwh=round(max(energy_min, energy_stored - inp.night_consumption_kwh), 2),
+            deficit_kwh=0.0,
+            clamped=False,
+            valley_day_skip=True,
+            dry_run=dry_run,
+        )
 
-    # 5. Energía utilizable al amanecer sin cargar (por encima del mínimo)
-    energy_usable_no_charge = max(0.0, energy_at_dawn_no_charge - energy_min)
-
-    # 6. Energía necesaria para cubrir el día (consumo - solar)
+    # Mañana es laborable → calcular si hay déficit
+    solar_effective = _solar_effective(inp.forecast_day1, inp.risk_factor)
+    energy_at_dawn = max(energy_min, energy_stored - inp.night_consumption_kwh)
+    energy_usable = max(0.0, energy_at_dawn - energy_min)
     needed_for_day = max(0.0,
         inp.daily_consumption_kwh + inp.safety_margin_kwh - solar_effective
     )
+    deficit = max(0.0, needed_for_day - energy_usable)
 
-    # 7. Déficit sin cargar de red
-    deficit = max(0.0, needed_for_day - energy_usable_no_charge)
-
-    # Nota: cuando charge_needed=True, el consumo nocturno lo cubre la red
-    # (el inversor mantiene la batería en SOC Grid durante el valle).
-    # Por tanto energy_at_dawn = SOC objetivo, y el déficit se calcula
-    # directamente como needed_for_day sin restar consumo nocturno.
-
-    # 8. Si mañana es fin de semana o festivo, no cargar nunca de red
-    #    (tarifa valle todo el día → ineficiente cargar con ~10% pérdidas)
-    #    Mostramos los valores calculados igualmente para informar correctamente
-    if _is_tomorrow_weekend_or_holiday(inp):
-        return DecisionResult(
+    if deficit == 0.0:
+        return ChargeDecision(
             charge_needed=False,
             target_soc_pct=0.0,
             target_kwh=0.0,
             to_charge_kwh=0.0,
             solar_effective_kwh=round(solar_effective, 2),
             energy_stored_kwh=round(energy_stored, 2),
-            energy_at_dawn_kwh=round(energy_at_dawn_no_charge, 2),
-            deficit_kwh=round(deficit, 2),
-            clamped=False,
-            dry_run=dry_run,
-            weekend_skip=True,
-        )
-
-    # 9. Decidir si hay que cargar
-    charge_needed = deficit > 0.0
-
-    if not charge_needed:
-        return DecisionResult(
-            charge_needed=False,
-            target_soc_pct=0.0,
-            target_kwh=0.0,
-            to_charge_kwh=0.0,
-            solar_effective_kwh=round(solar_effective, 2),
-            energy_stored_kwh=round(energy_stored, 2),
-            energy_at_dawn_kwh=round(energy_at_dawn_no_charge, 2),
+            energy_at_dawn_kwh=round(energy_at_dawn, 2),
             deficit_kwh=0.0,
             clamped=False,
             dry_run=dry_run,
-            weekend_skip=False,
         )
 
-    # 8. SOC objetivo cuando charge_needed=True:
-    #    consumo nocturno cubierto por la red → batería llega al amanecer en SOC Grid
-    #    solo necesitamos energy_min + needed_for_day
+    # Hay déficit → calcular target_soc
+    # Cuando se carga de red, la batería descansa en SOC objetivo (la red cubre el valle)
     target_kwh_raw = energy_min + needed_for_day
     target_soc_raw = (target_kwh_raw / inp.battery_capacity_kwh) * 100.0
     target_soc = max(inp.min_soc_pct, min(inp.max_soc_pct, target_soc_raw))
-    clamped = target_soc != target_soc_raw
+    clamped = abs(target_soc - target_soc_raw) > 0.01
     target_kwh = (target_soc / 100.0) * inp.battery_capacity_kwh
 
-    return DecisionResult(
+    return ChargeDecision(
         charge_needed=True,
         target_soc_pct=round(target_soc, 1),
         target_kwh=round(target_kwh, 2),
         to_charge_kwh=round(deficit, 2),
         solar_effective_kwh=round(solar_effective, 2),
         energy_stored_kwh=round(energy_stored, 2),
-        energy_at_dawn_kwh=round(energy_at_dawn_no_charge, 2),
+        energy_at_dawn_kwh=round(energy_at_dawn, 2),
         deficit_kwh=round(deficit, 2),
         clamped=clamped,
         dry_run=dry_run,
-        weekend_skip=False,
     )
 
 
-def decision_summary(inp: DecisionInput, result: DecisionResult) -> str:
-    """Devuelve un resumen legible del cálculo para el log."""
+# ---------------------------------------------------------------------------
+# decide_discharge
+# ---------------------------------------------------------------------------
+
+def decide_discharge(inp: DecisionInput) -> DischargeDecision:
+    """
+    Decide si bloquear la descarga de la batería mañana (día 1).
+
+    Solo tiene sentido bloquear si mañana es día valle — si no,
+    la descarga siempre es libre.
+
+    Cuando mañana es valle, simula la descarga libre del día 1 y calcula
+    si la energía restante cubre el día 2. Si no cubre, bloquea la descarga
+    para reservar la batería para el día laborable siguiente.
+    """
+    tomorrow = date.today() + timedelta(days=1)
+
+    # Si mañana no es valle, la descarga siempre es libre
+    if not is_valley_day(tomorrow, inp.weekend_days, inp.holidays):
+        return DischargeDecision(
+            discharge_blocked=False,
+            reason="mañana es día laborable — descarga libre",
+        )
+
+    energy_stored = (inp.soc_actual_pct / 100.0) * inp.battery_capacity_kwh
+    energy_min = (inp.min_soc_pct / 100.0) * inp.battery_capacity_kwh
+
+    # Simular descarga libre del día 1:
+    # La batería se carga con la solar y se descarga con el consumo,
+    # sin bajar del mínimo configurado
+    solar_day1 = _solar_effective(inp.forecast_day1, inp.risk_factor)
+    energy_end_day1 = max(
+        energy_min,
+        energy_stored + solar_day1 - inp.daily_consumption_kwh
+    )
+
+    # Calcular si la energía restante cubre el día 2
+    solar_day2 = _solar_effective(inp.forecast_day2, inp.risk_factor)
+    energy_usable_day2 = max(0.0, energy_end_day1 - energy_min)
+    needed_day2 = max(0.0,
+        inp.daily_consumption_kwh + inp.safety_margin_kwh - solar_day2
+    )
+    deficit_day2 = max(0.0, needed_day2 - energy_usable_day2)
+
+    if deficit_day2 == 0.0:
+        return DischargeDecision(
+            discharge_blocked=False,
+            reason="solar de 2 días suficiente — descarga libre",
+            energy_end_day1_kwh=round(energy_end_day1, 2),
+            deficit_day2_kwh=0.0,
+        )
+
+    return DischargeDecision(
+        discharge_blocked=True,
+        reason=f"déficit día 2 = {round(deficit_day2, 2)} kWh — reservar batería",
+        energy_end_day1_kwh=round(energy_end_day1, 2),
+        deficit_day2_kwh=round(deficit_day2, 2),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Resumen para el log
+# ---------------------------------------------------------------------------
+
+def charge_summary(inp: DecisionInput, result: ChargeDecision) -> str:
+    """Resumen legible de decide_charge para el log."""
+    dias = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
+    tomorrow = date.today() + timedelta(days=1)
+    dia_es = dias[tomorrow.weekday()]
+
     lines = [
-        "=== Cálculo de carga ===",
-        f"  Producción solar p10/p50/p90   : {inp.forecast.p10}/{inp.forecast.p50}/{inp.forecast.p90} kWh",
+        "=== Decisión de carga ===",
+        f"  Día 1 (mañana {dia_es} {tomorrow.strftime('%d/%m')})",
+        f"  Producción solar p10/p50/p90   : {inp.forecast_day1.p10}/{inp.forecast_day1.p50}/{inp.forecast_day1.p90} kWh",
         f"  Solar efectiva (risk={inp.risk_factor}) : {result.solar_effective_kwh} kWh",
         f"  Energía actual en batería      : {result.energy_stored_kwh} kWh  (SOC {inp.soc_actual_pct}%)",
         f"  Mínimo SOC configurado         : {inp.min_soc_pct}% ({round((inp.min_soc_pct/100)*inp.battery_capacity_kwh,2)} kWh)",
         f"  Consumo nocturno valle         : {inp.night_consumption_kwh} kWh",
-        f"  Energía estimada al amanecer   : {result.energy_at_dawn_kwh} kWh  (sin cargar de red)",
+        f"  Energía estimada al amanecer   : {result.energy_at_dawn_kwh} kWh",
         f"  Consumo diario + margen        : {inp.daily_consumption_kwh} + {inp.safety_margin_kwh} kWh",
-        f"  Solar efectiva                 : {result.solar_effective_kwh} kWh",
         f"  Déficit esperado               : {result.deficit_kwh} kWh",
     ]
-    if result.charge_needed:
+    if result.valley_day_skip:
+        lines.append(f"  → NO cargar (mañana {dia_es} {tomorrow.strftime('%d/%m')} es valle todo el día)")
+    elif result.charge_needed:
         lines.append(f"  → CARGAR de red: SOC objetivo = {result.target_soc_pct}% ({result.target_kwh} kWh)")
         if result.clamped:
             lines.append(f"    (limitado por min={inp.min_soc_pct}% / max={inp.max_soc_pct}%)")
-    elif result.weekend_skip:
-        tomorrow = date.today() + timedelta(days=1)
-        dias = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
-        dia_es = dias[tomorrow.weekday()]
-        lines.append(f"  → NO cargar de red (mañana {dia_es} {tomorrow.strftime('%d/%m')} es fin de semana/festivo — tarifa valle todo el día)")
     else:
-        lines.append(f"  → NO cargar de red (batería suficiente para el día)")
+        lines.append("  → NO cargar de red (batería suficiente)")
     if result.dry_run:
         lines.append("  [DRY RUN — no se modificará el inversor]")
     return "\n".join(lines)
+
+
+def discharge_summary(inp: DecisionInput, result: DischargeDecision) -> str:
+    """Resumen legible de decide_discharge para el log."""
+    dias = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
+    tomorrow = date.today() + timedelta(days=1)
+    day2 = tomorrow + timedelta(days=1)
+    dia1_es = dias[tomorrow.weekday()]
+    dia2_es = dias[day2.weekday()]
+
+    lines = [
+        "=== Decisión de descarga ===",
+        f"  Día 1: {dia1_es} {tomorrow.strftime('%d/%m')} | Día 2: {dia2_es} {day2.strftime('%d/%m')}",
+        f"  Solar efectiva día 2           : {round(_solar_effective(inp.forecast_day2, inp.risk_factor), 2)} kWh",
+        f"  Energía estimada fin día 1     : {result.energy_end_day1_kwh} kWh",
+        f"  Déficit día 2                  : {result.deficit_day2_kwh} kWh",
+    ]
+    if result.discharge_blocked:
+        lines.append("  → BLOQUEAR descarga mañana (6.3.2: 00:01–07:59)")
+    else:
+        lines.append("  → Descarga libre mañana")
+    lines.append(f"  Motivo: {result.reason}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Compatibilidad con código anterior
+# ---------------------------------------------------------------------------
+
+def calculate_charge_target(inp: DecisionInput, dry_run: bool = False) -> ChargeDecision:
+    """Alias de decide_charge para compatibilidad."""
+    return decide_charge(inp, dry_run)
+
+
+def decision_summary(inp: DecisionInput, result: ChargeDecision) -> str:
+    """Alias de charge_summary para compatibilidad."""
+    return charge_summary(inp, result)

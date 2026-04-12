@@ -14,7 +14,7 @@ import logging
 from datetime import datetime, timezone
 
 from app.config import InfluxDBConfig
-from app.decision import DecisionInput, DecisionResult
+from app.decision import DecisionInput, ChargeDecision
 from app.inverter import InverterState
 from app.logger_reader import DailyStats
 
@@ -28,7 +28,7 @@ class StorageError(Exception):
 def write_cycle(
     cfg: InfluxDBConfig,
     inp: DecisionInput,
-    result: DecisionResult,
+    result: ChargeDecision,
     state: InverterState,
     solcast_error: bool = False,
     automation_ok: bool = True,
@@ -62,9 +62,9 @@ def write_cycle(
             "battery_voltage_v":    state.battery_voltage_v,
             "battery_temp_c":       state.battery_temp_c,
             # Previsión Solcast
-            "forecast_p10_kwh":     inp.forecast.p10,
-            "forecast_p50_kwh":     inp.forecast.p50,
-            "forecast_p90_kwh":     inp.forecast.p90,
+            "forecast_p10_kwh":     inp.forecast_day1.p10,
+            "forecast_p50_kwh":     inp.forecast_day1.p50,
+            "forecast_p90_kwh":     inp.forecast_day1.p90,
             "solar_effective_kwh":  result.solar_effective_kwh,
             # Cálculo
             "energy_stored_kwh":    result.energy_stored_kwh,
@@ -74,6 +74,7 @@ def write_cycle(
             "charge_needed":        result.charge_needed,
             "target_soc_pct":       result.target_soc_pct,
             "target_kwh":           result.target_kwh,
+            "valley_day_skip":      result.valley_day_skip,
             # Metadatos
             "solcast_error":        solcast_error,
             "automation_ok":        automation_ok,

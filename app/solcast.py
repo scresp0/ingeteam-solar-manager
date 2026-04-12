@@ -1,8 +1,8 @@
 """
 solcast.py — cliente para la API de Solcast.
 
-Obtiene la previsión de producción solar para el día siguiente
-y devuelve los valores p10, p50 y p90 agregados en kWh.
+Obtiene la previsión de producción solar para los próximos 2 días
+y devuelve los valores p10, p50 y p90 agregados en kWh por día.
 
 Endpoint usado:
   GET https://api.solcast.com.au/rooftop_sites/{resource_id}/forecasts?format=json
@@ -24,46 +24,53 @@ class SolcastError(Exception):
     """Error al obtener o procesar la previsión de Solcast."""
 
 
-def get_tomorrow_forecast(cfg: SolcastConfig, timezone: str = "Europe/Madrid") -> SolarForecast:
+def get_two_day_forecast(
+    cfg: SolcastConfig, timezone: str = "Europe/Madrid"
+) -> tuple[SolarForecast, SolarForecast]:
     """
-    Obtiene la previsión de producción solar para mañana.
-
-    Solicita las próximas `forecast_hours` horas, filtra los intervalos
-    que caen en el día de mañana (en la zona horaria configurada) y
-    suma la energía de cada percentil.
-
-    Args:
-        cfg:      configuración de Solcast (api_key, resource_id, etc.)
-        timezone: zona horaria para determinar qué es "mañana"
+    Obtiene la previsión solar para los próximos 2 días.
 
     Returns:
-        SolarForecast con p10, p50, p90 en kWh para el día siguiente
-
-    Raises:
-        SolcastError: si la API falla o la respuesta no tiene datos para mañana
+        (forecast_day1, forecast_day2) — día 1 = mañana, día 2 = pasado mañana
     """
     raw = _fetch_forecasts(cfg)
     forecasts = raw.get("forecasts", [])
     if not forecasts:
         raise SolcastError("La API de Solcast devolvió una lista de previsiones vacía")
 
-    tomorrow = _get_tomorrow(timezone)
-    logger.debug(f"Filtrando previsiones para: {tomorrow} (tz={timezone})")
+    tz = ZoneInfo(timezone)
+    today = datetime.now(tz).date()
+    day1 = today + timedelta(days=1)
+    day2 = today + timedelta(days=2)
 
-    intervals = _filter_by_date(forecasts, tomorrow, timezone)
-    if not intervals:
+    intervals_day1 = _filter_by_date(forecasts, day1, timezone)
+    intervals_day2 = _filter_by_date(forecasts, day2, timezone)
+
+    if not intervals_day1:
         raise SolcastError(
-            f"No hay previsiones para mañana ({tomorrow}) en la respuesta de Solcast. "
-            f"Comprueba que forecast_hours ({cfg.forecast_hours}) es suficiente."
+            f"No hay previsiones para mañana ({day1}) en la respuesta de Solcast."
         )
 
-    forecast = _aggregate_kwh(intervals)
+    forecast_day1 = _aggregate_kwh(intervals_day1)
+    forecast_day2 = _aggregate_kwh(intervals_day2) if intervals_day2 else SolarForecast(0.0, 0.0, 0.0)
+
     logger.info(
-        f"Previsión Solcast para {tomorrow}: "
-        f"p10={forecast.p10} kWh, p50={forecast.p50} kWh, p90={forecast.p90} kWh "
-        f"({len(intervals)} intervalos)"
+        f"Previsión Solcast día 1 ({day1}): "
+        f"p10={forecast_day1.p10} p50={forecast_day1.p50} p90={forecast_day1.p90} kWh "
+        f"({len(intervals_day1)} intervalos)"
     )
-    return forecast
+    logger.info(
+        f"Previsión Solcast día 2 ({day2}): "
+        f"p10={forecast_day2.p10} p50={forecast_day2.p50} p90={forecast_day2.p90} kWh "
+        f"({len(intervals_day2)} intervalos)"
+    )
+    return forecast_day1, forecast_day2
+
+
+def get_tomorrow_forecast(cfg: SolcastConfig, timezone: str = "Europe/Madrid") -> SolarForecast:
+    """Compatibilidad — devuelve solo el día 1."""
+    day1, _ = get_two_day_forecast(cfg, timezone)
+    return day1
 
 
 def _fetch_forecasts(cfg: SolcastConfig) -> dict:
@@ -103,18 +110,12 @@ def _get_tomorrow(timezone: str) -> date:
 
 
 def _filter_by_date(forecasts: list[dict], target_date: date, timezone: str) -> list[dict]:
-    """
-    Filtra los intervalos de previsión que corresponden a target_date.
-
-    Solcast devuelve period_end en UTC con formato ISO 8601.
-    Convertimos a la zona horaria local antes de filtrar.
-    """
+    """Filtra los intervalos de previsión que corresponden a target_date."""
     tz = ZoneInfo(timezone)
     result = []
     for item in forecasts:
         try:
             period_end_str = item["period_end"]
-            # Solcast usa formato: "2024-01-15T14:00:00.0000000Z"
             period_end_str = period_end_str.rstrip("Z").split(".")[0] + "+00:00"
             period_end_utc = datetime.fromisoformat(period_end_str)
             period_end_local = period_end_utc.astimezone(tz)
@@ -126,21 +127,9 @@ def _filter_by_date(forecasts: list[dict], target_date: date, timezone: str) -> 
 
 
 def _aggregate_kwh(intervals: list[dict]) -> SolarForecast:
-    """
-    Suma la energía de todos los intervalos para obtener el total del día.
-
-    Solcast devuelve pv_estimate (p50), pv_estimate10 (p10) y
-    pv_estimate90 (p90) en kW como potencia media del intervalo.
-    Cada intervalo es de 30 minutos → multiplicamos por 0.5 para obtener kWh.
-    """
-    INTERVAL_HOURS = 0.5  # intervalos de 30 minutos
-
-    p10_kwh = sum(i.get("pv_estimate10", 0.0) * INTERVAL_HOURS for i in intervals)
-    p50_kwh = sum(i.get("pv_estimate",   0.0) * INTERVAL_HOURS for i in intervals)
-    p90_kwh = sum(i.get("pv_estimate90", 0.0) * INTERVAL_HOURS for i in intervals)
-
-    return SolarForecast(
-        p10=round(p10_kwh, 2),
-        p50=round(p50_kwh, 2),
-        p90=round(p90_kwh, 2),
-    )
+    """Suma la energía de todos los intervalos (intervalos de 30 min → × 0.5h)."""
+    INTERVAL_HOURS = 0.5
+    p10 = sum(i.get("pv_estimate10", 0.0) * INTERVAL_HOURS for i in intervals)
+    p50 = sum(i.get("pv_estimate",   0.0) * INTERVAL_HOURS for i in intervals)
+    p90 = sum(i.get("pv_estimate90", 0.0) * INTERVAL_HOURS for i in intervals)
+    return SolarForecast(p10=round(p10, 2), p50=round(p50, 2), p90=round(p90, 2))

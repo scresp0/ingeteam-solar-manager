@@ -294,3 +294,138 @@ def _click_write(page: Page) -> None:
     page.screenshot(path="/app/logs/screenshot_after_write.png")
     logger.debug("Captura post-escritura guardada en /app/logs/screenshot_after_write.png")
     logger.debug("Escribir completado")
+
+
+# ---------------------------------------------------------------------------
+# 6.3.2 — Programación Horaria Descarga de Batería
+# ---------------------------------------------------------------------------
+
+# Etiquetas de 6.3.2 (misma estructura que 6.3.1)
+LABEL_DISC_PROG_1 = "Programación Horaria 1: Descarga de baterías"
+LABEL_DISC_PROG_2 = "Programación Horaria 2: Descarga de baterías"
+
+# Horario de bloqueo de descarga: todo el horario valle
+DISC_HOUR_ON  = 0
+DISC_MIN_ON   = 1
+DISC_HOUR_OFF = 7
+DISC_MIN_OFF  = 59
+
+
+def set_discharge_schedule(
+    cfg: InverterConfig,
+    discharge_blocked: bool,
+    dry_run: bool = False,
+) -> None:
+    """
+    Configura la programación horaria de descarga en la web del inversor (6.3.2).
+
+    Si discharge_blocked=False: desactiva ambas programaciones (descarga libre)
+    Si discharge_blocked=True:
+        Programación 1: Entre semana (L-V), 00:01 - 07:59
+        Programación 2: Fin de semana (S-D), 00:01 - 07:59
+        → El inversor no descarga la batería durante el valle
+        → Consume de red en su lugar
+
+    Args:
+        cfg:               configuración del inversor
+        discharge_blocked: si True, bloquea descarga durante el valle
+        dry_run:           si True, navega y rellena pero NO pulsa Escribir
+    """
+    action = "BLOQUEAR descarga durante valle" if discharge_blocked else "Descarga libre"
+    logger.info(f"{'[DRY RUN] ' if dry_run else ''}Configurando descarga horaria: {action}")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-zygote",
+                "--single-process",
+            ]
+        )
+        context = browser.new_context(
+            ignore_https_errors=True,
+            locale="es-ES",
+            timezone_id="Europe/Madrid",
+        )
+        page = context.new_page()
+        page.set_default_timeout(cfg.browser_timeout_seconds * 1000)
+
+        try:
+            _login(page, cfg)
+            _navigate_to_discharge_schedule(page)
+            _read_current_values(page)
+
+            if not discharge_blocked:
+                _set_select_by_exact_label(page, LABEL_DISC_PROG_1, SCHEDULE_DISABLED)
+                _set_select_by_exact_label(page, LABEL_DISC_PROG_2, SCHEDULE_DISABLED)
+            else:
+                # Programación 1 — entre semana
+                _set_select_by_exact_label(page, LABEL_DISC_PROG_1, SCHEDULE_WEEKDAY)
+                _set_input_by_index(page, "Hora On",    0, str(DISC_HOUR_ON))
+                _set_input_by_index(page, "Minuto On",  0, str(DISC_MIN_ON))
+                _set_input_by_index(page, "Hora Off",   0, str(DISC_HOUR_OFF))
+                _set_input_by_index(page, "Minuto Off", 0, str(DISC_MIN_OFF))
+
+                # Programación 2 — fin de semana
+                _set_select_by_exact_label(page, LABEL_DISC_PROG_2, SCHEDULE_WEEKEND)
+                _set_input_by_index(page, "Hora On",    1, str(DISC_HOUR_ON))
+                _set_input_by_index(page, "Minuto On",  1, str(DISC_MIN_ON))
+                _set_input_by_index(page, "Hora Off",   1, str(DISC_HOUR_OFF))
+                _set_input_by_index(page, "Minuto Off", 1, str(DISC_MIN_OFF))
+
+            if dry_run:
+                logger.info("[DRY RUN] Valores descarga rellenados — NO se pulsa Escribir")
+            else:
+                _click_write(page)
+                logger.info(f"Programación descarga guardada (blocked={discharge_blocked})")
+
+        except PlaywrightTimeout as e:
+            raise AutomationError(f"Timeout en la interfaz web (6.3.2): {e}") from e
+        except AutomationError:
+            raise
+        except Exception as e:
+            raise AutomationError(f"Error inesperado en automatización descarga: {e}") from e
+        finally:
+            context.close()
+            browser.close()
+
+
+def _navigate_to_discharge_schedule(page: Page) -> None:
+    """Navega a Configuración → Ajustes avanzados → 6.3.2."""
+    logger.debug("Navegando a Configuración (6.3.2)")
+
+    page.screenshot(path="/app/logs/screenshot_after_login.png")
+    logger.debug("Captura guardada en /app/logs/screenshot_after_login.png")
+
+    logger.debug("Clic en Configuración (menú lateral)")
+    page.wait_for_selector("text=Configuración", timeout=15000)
+    page.locator("text=Configuración").first.click()
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(3000)
+
+    page.evaluate("""
+        () => {
+            const btns = Array.from(document.querySelectorAll('.inv-sett-top-cont button'));
+            const btn = btns.find(b => b.innerText.includes('Ajustes') || b.innerText.includes('Advanced'));
+            if (btn) btn.click();
+            else throw new Error('Botón Ajustes avanzados no encontrado');
+        }
+    """)
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(3000)
+
+    # Clic en 6.3.2
+    page.locator("text=6.3.2").first.click()
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(1000)
+
+    logger.debug("Pulsando Leer")
+    page.locator("button.btn-success").click()
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(2000)
+    logger.debug("En pantalla 6.3.2 Programación Horaria: Descarga de Batería")
