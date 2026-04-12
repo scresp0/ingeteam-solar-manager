@@ -130,12 +130,20 @@ with patch("app.decision.date") as mock_date:
     assert r.clamped
     ok("clamped al max_soc=50%")
 
-    # Caso 4: batería media + día medio → no cargar (suficiente)
+    # Caso 4: batería alta + día muy soleado → no cargar
+    inp = make_inp(90, forecast_day1=FORECAST_SUNNY)
+    r = decide_charge(inp)
+    print(f"  Batería 90% + soleado: charge={r.charge_needed}")
+    assert not r.charge_needed
+    ok("batería alta + soleado → no cargar")
+
+    # Caso 4b: verificar el umbral — batería 80% + medio SÍ carga (déficit real)
     inp = make_inp(80, forecast_day1=FORECAST_MEDIUM)
     r = decide_charge(inp)
-    print(f"  Batería 80% + medio: charge={r.charge_needed}")
-    assert not r.charge_needed
-    ok("batería media + medio → no cargar")
+    # Solar ef=7.2, amanecer=14.54, usable=7.78, needed=9.8 → déficit=2.02 → carga
+    print(f"  Batería 80% + medio: charge={r.charge_needed} (déficit esperado ~2 kWh)")
+    assert r.charge_needed
+    ok("batería 80% + medio → carga (déficit real ~2 kWh)")
 
 # ---------------------------------------------------------------------------
 # Tests de decide_charge — mañana es día valle
