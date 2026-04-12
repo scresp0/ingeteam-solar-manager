@@ -8,8 +8,10 @@ Endpoint usado:
   GET https://api.solcast.com.au/rooftop_sites/{resource_id}/forecasts?format=json
 """
 
+import json
 import logging
 from datetime import datetime, date, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import requests
@@ -19,9 +21,41 @@ from app.decision import SolarForecast
 
 logger = logging.getLogger(__name__)
 
+CACHE_PATH = Path("/app/logs/solcast_cache.json")
+CACHE_MAX_AGE_HOURS = 12
+
 
 class SolcastError(Exception):
     """Error al obtener o procesar la previsión de Solcast."""
+
+
+def _load_cache() -> dict | None:
+    """Carga la caché si existe y tiene menos de CACHE_MAX_AGE_HOURS horas."""
+    try:
+        if not CACHE_PATH.exists():
+            return None
+        data = json.loads(CACHE_PATH.read_text())
+        cached_at = datetime.fromisoformat(data["cached_at"])
+        age_hours = (datetime.now() - cached_at).total_seconds() / 3600
+        if age_hours > CACHE_MAX_AGE_HOURS:
+            logger.debug(f"Caché Solcast expirada ({age_hours:.1f}h > {CACHE_MAX_AGE_HOURS}h)")
+            return None
+        logger.info(f"Usando caché Solcast ({age_hours:.1f}h de antigüedad)")
+        return data
+    except Exception as e:
+        logger.debug(f"No se pudo leer caché Solcast: {e}")
+        return None
+
+
+def _save_cache(raw: dict) -> None:
+    """Guarda la respuesta de Solcast en caché con timestamp."""
+    try:
+        CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        data = {"cached_at": datetime.now().isoformat(), "raw": raw}
+        CACHE_PATH.write_text(json.dumps(data))
+        logger.debug(f"Caché Solcast guardada en {CACHE_PATH}")
+    except Exception as e:
+        logger.warning(f"No se pudo guardar caché Solcast: {e}")
 
 
 def get_two_day_forecast(
@@ -29,11 +63,18 @@ def get_two_day_forecast(
 ) -> tuple[SolarForecast, SolarForecast]:
     """
     Obtiene la previsión solar para los próximos 2 días.
+    Usa caché de hasta 12 horas para no consumir llamadas de la API.
 
     Returns:
         (forecast_day1, forecast_day2) — día 1 = mañana, día 2 = pasado mañana
     """
-    raw = _fetch_forecasts(cfg)
+    # Intentar usar caché
+    cached = _load_cache()
+    if cached:
+        raw = cached["raw"]
+    else:
+        raw = _fetch_forecasts(cfg)
+        _save_cache(raw)
     forecasts = raw.get("forecasts", [])
     if not forecasts:
         raise SolcastError("La API de Solcast devolvió una lista de previsiones vacía")
