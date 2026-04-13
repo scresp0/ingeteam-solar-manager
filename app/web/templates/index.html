@@ -595,6 +595,13 @@ function applyStatus(d) {
 
   // History row
   addHistoryRow(d);
+
+  // Añade esto al final de applyStatus(d) { ... }
+  if (d.forecast) {
+    renderForecast(d.forecast);
+  } else {
+    renderForecast();
+  }
 }
 
 function setMetric(id, val, cls, sub) {
