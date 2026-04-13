@@ -47,10 +47,23 @@ def create_app(cfg: AppConfig) -> FastAPI:
 
     @app.get("/api/status")
     async def status():
-        """Lee el estado actual del inversor vía MODBUS."""
+        """Lee el estado del inversor + forecast de Solcast."""
         try:
             from app.inverter import read_inverter_state
             state = read_inverter_state(cfg.inverter)
+
+            # Obtener forecast real (mismo que usa el main)
+            from app.solcast import get_two_day_forecast
+            try:
+                forecast_day1, _ = get_two_day_forecast(cfg.solcast, cfg.system.timezone)
+                # Convertir a formato que entiende el frontend
+                forecast_data = {
+                    "hours": list(range(6, 21)),   # 6h a 20h
+                    "kwh": [forecast_day1.p50] * 15  # valor p50 repetido (simple)
+                }
+            except:
+                forecast_data = None
+
             return {
                 "ok": True,
                 "inverter_status": state.inverter_status,
@@ -61,6 +74,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
                 "battery_voltage_v": state.battery_voltage_v,
                 "battery_temp_c": state.battery_temp_c,
                 "timestamp": datetime.now().isoformat(),
+                "forecast": forecast_data
             }
         except Exception as e:
             return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
