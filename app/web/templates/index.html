@@ -341,7 +341,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
       <div class="card">
         <div class="card-head">
           <span class="card-title">Forecast solar · mañana</span>
-          <span style="font-size:11px;font-family:var(--mono);color:var(--muted2)">Solcast</span>
+          <span style="font-size:11px;font-family:var(--mono);color:var(--muted2)" id="f-date">Solcast</span>
         </div>
         <div class="card-body">
           <div class="forecast-chart">
@@ -595,13 +595,6 @@ function applyStatus(d) {
 
   // History row
   addHistoryRow(d);
-
-  // Añade esto al final de applyStatus(d) { ... }
-  if (d.forecast) {
-    renderForecast(d.forecast);
-  } else {
-    renderForecast();
-  }
 }
 
 function setMetric(id, val, cls, sub) {
@@ -654,21 +647,104 @@ function renderHistory() {
     </tr>`).join('');
 }
 
-// ══ Forecast (simulado — conectar a /api/forecast cuando exista) ═══
-const F_HOURS = [6,7,8,9,10,11,12,13,14,15,16,17,18,19,20];
-const F_KWH   = [0.1,0.4,0.9,1.3,1.6,1.75,1.82,1.85,1.7,1.4,1.05,0.65,0.3,0.1,0.02];
-function renderForecast() {
-  const max = Math.max(...F_KWH);
-  const total = F_KWH.reduce((a,b)=>a+b,0).toFixed(1);
-  const peakIdx = F_KWH.indexOf(max);
-  const barsEl = document.getElementById('forecast-bars');
-  const lblsEl = document.getElementById('forecast-xlabels');
-  barsEl.innerHTML = F_HOURS.map((h,i) => `<div class="fbar ${i===peakIdx?'peak':''}" style="height:${Math.max(4,F_KWH[i]/max*68)}px" title="${h}h: ${F_KWH[i]} kW"></div>`).join('');
-  lblsEl.innerHTML = F_HOURS.map(h => `<span>${h}</span>`).join('');
-  document.getElementById('f-total').textContent = total + ' kWh';
-  document.getElementById('f-peak').textContent = max.toFixed(2) + ' kW · ' + F_HOURS[peakIdx] + 'h';
+// ══ Forecast real desde /api/forecast ══════════════════
+let forecastLoaded = false;
+
+async function loadForecast() {
+  const barsEl  = document.getElementById('forecast-bars');
+  const lblsEl  = document.getElementById('forecast-xlabels');
+  const totalEl = document.getElementById('f-total');
+  const peakEl  = document.getElementById('f-peak');
+  const dateEl  = document.getElementById('f-date');
+
+  // Indicador de carga
+  barsEl.innerHTML = '<div style="width:100%;display:flex;align-items:center;justify-content:center;color:var(--muted2);font-size:12px;gap:6px"><span class="spinner"></span> Cargando forecast…</div>';
+  lblsEl.innerHTML = '';
+
+  try {
+    const r = await fetch('/api/forecast');
+    const d = await r.json();
+
+    if (!d.ok) {
+      barsEl.innerHTML = `<div style="width:100%;text-align:center;font-size:12px;color:var(--red)">Error: ${escHtml(d.error)}</div>`;
+      return;
+    }
+
+    const hours  = d.hours;
+    const p50    = d.p50_kw;
+    const p10    = d.p10_kw;
+    const p90    = d.p90_kw;
+    const max    = Math.max(...p50, 0.01);
+    const peakIdx = p50.indexOf(Math.max(...p50));
+
+    // Barras: p10 como base opaca, p50 como barra principal, p90 como contorno
+    barsEl.innerHTML = hours.map((h, i) => {
+      const h50 = Math.max(4, (p50[i] / max) * 68);
+      const h10 = Math.max(2, (p10[i] / max) * 68);
+      const h90 = Math.max(4, (p90[i] / max) * 68);
+      const isPeak = i === peakIdx;
+      // Stack: p10 (fondo sólido) + p50 (barra principal) superpuestos, p90 como outline detrás
+      return `<div style="flex:1;min-width:0;position:relative;display:flex;align-items:flex-end;height:72px" title="${h}h — p10:${p10[i]} p50:${p50[i]} p90:${p90[i]} kW">
+        <div style="position:absolute;bottom:0;left:0;right:0;height:${h90}px;border-radius:3px 3px 0 0;border:1px solid rgba(240,165,0,0.18);background:transparent"></div>
+        <div class="fbar${isPeak?' peak':''}" style="position:relative;z-index:1;width:100%;height:${h50}px;border-radius:3px 3px 0 0"></div>
+      </div>`;
+    }).join('');
+
+    lblsEl.innerHTML = hours.map(h => `<span>${h}</span>`).join('');
+
+    totalEl.textContent = d.total_p50_kwh + ' kWh';
+    peakEl.textContent  = max.toFixed(2) + ' kW · ' + hours[peakIdx] + 'h';
+
+    // Fecha y fuente de caché
+    if (dateEl) {
+      const cachedDate = d.cached_at ? new Date(d.cached_at).toLocaleString('es-ES', {hour12:false}) : '';
+      dateEl.textContent = d.date + (cachedDate ? ' · caché ' + cachedDate : '');
+    }
+
+    // Actualizar decisión con totales reales
+    updateDecisionBadge(d.total_p50_kwh, d.total_p10_kwh, d.total_p90_kwh);
+    forecastLoaded = true;
+
+  } catch(e) {
+    barsEl.innerHTML = `<div style="width:100%;text-align:center;font-size:12px;color:var(--red)">Error cargando forecast: ${escHtml(e.message)}</div>`;
+  }
 }
-renderForecast();
+
+function updateDecisionBadge(p50, p10, p90) {
+  // Si ya tenemos SOC del inversor, recalcula la decisión localmente
+  // para mostrar el badge correcto sin esperar al ciclo nocturno
+  const socEl = document.getElementById('soc-num');
+  const socPct = parseFloat(socEl?.textContent) || null;
+  if (socPct === null || isNaN(socPct)) return;
+
+  const CAPACITY = 10.0;  // kWh — idealmente vendría del config
+  const NIGHT_CONS = 3.5;
+  const MIN_SOC = 35;
+  const DAILY_CONS = 10.0;
+  const MARGIN = 1.0;
+
+  const energyStored = (socPct / 100) * CAPACITY;
+  const energyAtDawn = Math.max((MIN_SOC / 100) * CAPACITY, energyStored - NIGHT_CONS);
+  const energyUsable = Math.max(0, energyAtDawn - (MIN_SOC / 100) * CAPACITY);
+  const needed = Math.max(0, DAILY_CONS + MARGIN - p50);
+  const deficit = Math.max(0, needed - energyUsable);
+
+  const badge = document.getElementById('decision-badge');
+  const note  = document.getElementById('decision-note');
+  if (!badge || !note) return;
+
+  if (deficit === 0) {
+    badge.className = 'decision-badge no-charge';
+    badge.querySelector('span').textContent = 'No cargar esta noche';
+    note.innerHTML = `Solar mañana <strong>${p50} kWh</strong> (p50) + batería <strong>${energyAtDawn.toFixed(1)} kWh</strong> cubre el consumo. Rango p10–p90: ${p10}–${p90} kWh.`;
+  } else {
+    badge.className = 'decision-badge charge';
+    badge.querySelector('span').textContent = 'Cargar esta noche';
+    note.innerHTML = `Déficit estimado <strong>${deficit.toFixed(1)} kWh</strong>. Solar mañana <strong>${p50} kWh</strong> (p50) insuficiente. Rango p10–p90: ${p10}–${p90} kWh.`;
+  }
+}
+
+loadForecast();
 
 // ══ Logs ═══════════════════════════════════════════
 function appendLog(ts, lvl, msg) {
@@ -792,4 +868,4 @@ refreshStatus();
 setInterval(refreshStatus, 30000);
 </script>
 </body>
-</html> 
+</html>
