@@ -28,7 +28,7 @@ tariff:
   # Hora de ejecución del ciclo nocturno (HH:MM)
   # Debe ser antes del inicio del horario valle para que la carga
   # quede programada antes de que empiece
-  schedule_at: "23:55"
+  schedule_at: "23:45"
   weekend_days: [5, 6]
   holidays:
     - "2026-01-01"
