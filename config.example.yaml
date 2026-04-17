@@ -58,30 +58,31 @@ installation:
 # -----------------------------------------------------------------------------
 tariff:
   # Hora de ejecución del ciclo nocturno (HH:MM)
-  schedule_at: "23:55"      # hora a la que se lanza el script cada noche
+  schedule_at: "23:55"
 
-  # Días de la semana: 0=lunes, 1=martes, ..., 5=sábado, 6=domingo
-  weekend_days: [5, 6]      # sábado y domingo siempre valle
-  # Añade aquí los días festivos nacionales en formato YYYY-MM-DD
+  # Hora límite de "madrugada" (0-12).
+  # Si el programa se ejecuta ANTES de esta hora, actúa como si fuera
+  # la noche del día anterior (cubre retrasos del scheduler o reinicios
+  # accidentales en los primeros minutos del nuevo día).
+  # Debe ser <= hora de fin del periodo valle (normalmente 8).
+  night_cutoff_hour: 8
+
+  weekend_days: [5, 6]
   holidays: []
 
   periods:
     valley:
       intervals:
         - { start: "00:00", end: "08:00" }
-      # En fin de semana/festivo se añade automáticamente 08:00-24:00
-
     flat:
       intervals:
         - { start: "08:00", end: "10:00" }
         - { start: "14:00", end: "18:00" }
         - { start: "22:00", end: "24:00" }
-
     peak:
       intervals:
         - { start: "10:00", end: "14:00" }
         - { start: "18:00", end: "22:00" }
-
 # -----------------------------------------------------------------------------
 # Lógica de carga de baterías
 # -----------------------------------------------------------------------------

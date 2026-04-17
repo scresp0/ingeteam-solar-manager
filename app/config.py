@@ -75,21 +75,23 @@ class TariffConfig(BaseModel):
     weekend_days: List[int] = [5, 6]   # 0=lunes..6=domingo
     holidays: List[str] = []           # ["YYYY-MM-DD", ...]
     periods: TariffPeriods
+    # Hora límite (exclusive) antes de la cual se considera que
+    # el programa se ejecuta en la "noche anterior".
+    # Ej: ejecución a las 00:30 del viernes → actúa como si fuera
+    # la noche del jueves. Debe ser <= hora de fin del valle (08:00).
+    night_cutoff_hour: int = Field(default=8, ge=0, le=12)
 
     @field_validator("holidays", mode="before")
     @classmethod
     def coerce_holidays_to_str(cls, v):
-        """Convierte objetos date a string ISO — YAML parsea fechas como date automáticamente."""
         return [d.isoformat() if hasattr(d, "isoformat") else str(d) for d in (v or [])]
 
     def is_valley_day(self, d: date) -> bool:
-        """True si el día es fin de semana o festivo (todo el día es valle)."""
         if d.weekday() in self.weekend_days:
             return True
         return d.isoformat() in self.holidays
 
     def get_valley_intervals(self, d: date) -> List[TariffInterval]:
-        """Devuelve los intervalos valle para un día concreto."""
         if self.is_valley_day(d):
             return [TariffInterval(start="00:00", end="24:00")]
         return self.periods.get_intervals("valley")

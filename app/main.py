@@ -118,11 +118,14 @@ def run(cfg: AppConfig) -> bool:
     )
 
     # 4. Decisiones independientes
-    charge   = decide_charge(inp, dry_run=cfg.system.dry_run)
-    discharge = decide_discharge(inp)
+    cutoff    = cfg.tariff.night_cutoff_hour
 
-    logger.info("\n" + charge_summary(inp, charge))
-    logger.info("\n" + discharge_summary(inp, discharge))
+    charge    = decide_charge(inp, dry_run=cfg.system.dry_run,
+                          night_cutoff_hour=cutoff)
+    discharge = decide_discharge(inp, night_cutoff_hour=cutoff)
+
+    logger.info("\n" + charge_summary(inp, charge, night_cutoff_hour=cutoff))
+    logger.info("\n" + discharge_summary(inp, discharge, night_cutoff_hour=cutoff))
 
     # 5. Configurar inversor — 6.3.1 carga
     try:
