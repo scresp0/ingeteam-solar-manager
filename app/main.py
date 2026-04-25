@@ -197,8 +197,8 @@ def main() -> None:
 
     setup_logging(cfg)
     logger = logging.getLogger(__name__)
-    import socket
-    hostname = socket.gethostname()
+    import os, socket
+    hostname = os.environ.get("HOST_HOSTNAME") or socket.gethostname()
     logger.info(f"solar-manager v{VERSION} arrancando en {hostname} (dry_run={cfg.system.dry_run})")
 
     if cfg.system.web_enabled:

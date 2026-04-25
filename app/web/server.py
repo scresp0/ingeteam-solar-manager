@@ -27,12 +27,13 @@ from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+import os
 import socket
 
 from app.config import AppConfig
 from app.version import VERSION
 
-_HOSTNAME = socket.gethostname()
+_HOSTNAME = os.environ.get("HOST_HOSTNAME") or socket.gethostname()
 
 logger = logging.getLogger(__name__)
 
