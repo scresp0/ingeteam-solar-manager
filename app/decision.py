@@ -193,10 +193,10 @@ def decide_charge(
         charge_needed=True,
         target_soc_pct=round(target_soc, 1),
         target_kwh=round(target_kwh, 2),
-        to_charge_kwh=round(deficit, 2),
+        to_charge_kwh=round(max(0.0, target_kwh - energy_stored), 2),
         solar_effective_kwh=round(solar_effective, 2),
         energy_stored_kwh=round(energy_stored, 2),
-        energy_at_dawn_kwh=round(energy_at_dawn, 2),
+        energy_at_dawn_kwh=round(target_kwh, 2),
         deficit_kwh=round(deficit, 2),
         clamped=clamped,
         dry_run=dry_run,
@@ -233,25 +233,31 @@ def decide_discharge(
     energy_stored   = (inp.soc_actual_pct / 100.0) * inp.battery_capacity_kwh
     energy_min      = (inp.min_soc_pct    / 100.0) * inp.battery_capacity_kwh
 
-    solar_day1      = _solar_effective(inp.forecast_day1, inp.risk_factor)
-    energy_end_day1 = max(energy_min, energy_stored + solar_day1 - inp.daily_consumption_kwh)
+    solar_day1  = _solar_effective(inp.forecast_day1, inp.risk_factor)
+    solar_day2  = _solar_effective(inp.forecast_day2, inp.risk_factor)
+    needed_day2 = max(0.0, inp.daily_consumption_kwh + inp.safety_margin_kwh - solar_day2)
 
-    solar_day2         = _solar_effective(inp.forecast_day2, inp.risk_factor)
-    energy_usable_day2 = max(0.0, energy_end_day1 - energy_min)
-    needed_day2        = max(0.0, inp.daily_consumption_kwh + inp.safety_margin_kwh - solar_day2)
-    deficit_day2       = max(0.0, needed_day2 - energy_usable_day2)
+    # Criterio de decisión: escenario sin bloqueo (conservador)
+    energy_end_no_block    = max(energy_min, energy_stored + solar_day1 - inp.daily_consumption_kwh)
+    energy_usable_no_block = max(0.0, energy_end_no_block - energy_min)
+    deficit_no_block       = max(0.0, needed_day2 - energy_usable_no_block)
 
-    if deficit_day2 == 0.0:
+    if deficit_no_block == 0.0:
         return DischargeDecision(
             discharge_blocked=False,
             reason="solar de 2 días suficiente — descarga libre",
-            energy_end_day1_kwh=round(energy_end_day1, 2),
+            energy_end_day1_kwh=round(energy_end_no_block, 2),
             deficit_day2_kwh=0.0,
         )
 
+    # Con bloqueo el consumo nocturno (00:01–07:59) pasa a la red → batería retiene night_consumption_kwh más
+    energy_end_day1    = max(energy_min, energy_stored + solar_day1 - (inp.daily_consumption_kwh - inp.night_consumption_kwh))
+    energy_usable_day2 = max(0.0, energy_end_day1 - energy_min)
+    deficit_day2       = max(0.0, needed_day2 - energy_usable_day2)
+
     return DischargeDecision(
         discharge_blocked=True,
-        reason=f"déficit día 2 = {round(deficit_day2, 2)} kWh — reservar batería",
+        reason=f"déficit día 2 = {round(deficit_no_block, 2)} kWh sin bloqueo — reservar batería",
         energy_end_day1_kwh=round(energy_end_day1, 2),
         deficit_day2_kwh=round(deficit_day2, 2),
     )
@@ -289,6 +295,7 @@ def charge_summary(
         lines.append(f"  → NO cargar (mañana {dia_es} {tomorrow.strftime('%d/%m')} es valle todo el día)")
     elif result.charge_needed:
         lines.append(f"  → CARGAR de red: SOC objetivo = {result.target_soc_pct}% ({result.target_kwh} kWh)")
+        lines.append(f"    Carga desde red              : {result.to_charge_kwh} kWh")
         if result.clamped:
             lines.append(f"    (limitado por min={inp.min_soc_pct}% / max={inp.max_soc_pct}%)")
     else:

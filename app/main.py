@@ -16,6 +16,7 @@ import logging
 import sys
 from pathlib import Path
 
+from app.version import VERSION
 from app.config import load_config, AppConfig
 from app.solcast import get_two_day_forecast, SolcastError
 from app.inverter import read_inverter_state, InverterError
@@ -196,7 +197,7 @@ def main() -> None:
 
     setup_logging(cfg)
     logger = logging.getLogger(__name__)
-    logger.info(f"solar-manager arrancando (dry_run={cfg.system.dry_run})")
+    logger.info(f"solar-manager v{VERSION} arrancando (dry_run={cfg.system.dry_run})")
 
     if cfg.system.web_enabled:
         import threading

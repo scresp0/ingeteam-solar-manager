@@ -23,12 +23,57 @@ Opciones del desplegable de tipo:
   3 = Fin de semana (S-D)
 """
 
+import json
 import logging
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeout
 
 from app.config import InverterConfig
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Estado persistente de la programación aplicada al inversor
+# ---------------------------------------------------------------------------
+
+_STATE_FILE = "/app/logs/inverter_schedule_state.json"
+
+
+@dataclass
+class _ScheduleState:
+    charge_needed: bool = False
+    target_soc_pct: int = 0
+    discharge_blocked: bool = False
+
+
+def _load_schedule_state(path: str = _STATE_FILE) -> Optional[_ScheduleState]:
+    """Lee el último estado de programación aplicado desde disco."""
+    try:
+        data = json.loads(Path(path).read_text())
+        return _ScheduleState(
+            charge_needed=bool(data.get("charge_needed", False)),
+            target_soc_pct=int(data.get("target_soc_pct", 0)),
+            discharge_blocked=bool(data.get("discharge_blocked", False)),
+        )
+    except Exception:
+        return None
+
+
+def _save_schedule_state(state: _ScheduleState, path: str = _STATE_FILE) -> None:
+    """Persiste el estado de programación aplicado al inversor."""
+    try:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({
+            "charge_needed": state.charge_needed,
+            "target_soc_pct": state.target_soc_pct,
+            "discharge_blocked": state.discharge_blocked,
+        }, indent=2))
+    except Exception as e:
+        logger.warning(f"No se pudo guardar estado de programación: {e}")
 
 # Horario valle a programar
 VALLEY_HOUR_ON  = 0
@@ -79,6 +124,15 @@ def set_charge_schedule(
     soc = int(round(target_soc_pct)) if charge_needed else 0
     action = f"SOC objetivo = {soc}%" if charge_needed else "DESACTIVAR carga de red"
     logger.info(f"{'[DRY RUN] ' if dry_run else ''}Configurando carga horaria: {action}")
+
+    if not dry_run:
+        last = _load_schedule_state()
+        if last is not None and last.charge_needed == charge_needed and last.target_soc_pct == soc:
+            logger.info(
+                f"6.3.1 sin cambios (charge={charge_needed}, SOC={soc}%) — "
+                "configuración ya aplicada, Playwright no necesario"
+            )
+            return
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -131,6 +185,10 @@ def set_charge_schedule(
                 logger.info("[DRY RUN] Valores rellenados correctamente — NO se pulsa Escribir")
             else:
                 _click_write(page)
+                state = _load_schedule_state() or _ScheduleState()
+                state.charge_needed = charge_needed
+                state.target_soc_pct = soc
+                _save_schedule_state(state)
                 logger.info(f"Programación horaria guardada (SOC={soc}%)")
 
         except PlaywrightTimeout as e:
@@ -334,6 +392,15 @@ def set_discharge_schedule(
     action = "BLOQUEAR descarga durante valle" if discharge_blocked else "Descarga libre"
     logger.info(f"{'[DRY RUN] ' if dry_run else ''}Configurando descarga horaria: {action}")
 
+    if not dry_run:
+        last = _load_schedule_state()
+        if last is not None and last.discharge_blocked == discharge_blocked:
+            logger.info(
+                f"6.3.2 sin cambios (blocked={discharge_blocked}) — "
+                "configuración ya aplicada, Playwright no necesario"
+            )
+            return
+
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
@@ -382,6 +449,9 @@ def set_discharge_schedule(
                 logger.info("[DRY RUN] Valores descarga rellenados — NO se pulsa Escribir")
             else:
                 _click_write(page)
+                state = _load_schedule_state() or _ScheduleState()
+                state.discharge_blocked = discharge_blocked
+                _save_schedule_state(state)
                 logger.info(f"Programación descarga guardada (blocked={discharge_blocked})")
 
         except PlaywrightTimeout as e:

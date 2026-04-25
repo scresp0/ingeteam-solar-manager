@@ -28,6 +28,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import AppConfig
+from app.version import VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +45,11 @@ def create_app(cfg: AppConfig) -> FastAPI:
     @app.get("/", response_class=HTMLResponse)
     async def dashboard():
         html = Path(__file__).parent / "templates" / "index.html"
-        return html.read_text(encoding="utf-8")
+        return html.read_text(encoding="utf-8").replace("{{VERSION}}", VERSION)
+
+    @app.get("/api/version")
+    async def version():
+        return {"version": VERSION}
 
     @app.get("/api/status")
     async def status():
