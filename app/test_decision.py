@@ -249,15 +249,15 @@ ok("solar suficiente en 2 días → descarga libre")
 inp = make_inp(40, forecast_day1=FORECAST_SUNNY, forecast_day2=FORECAST_CLOUDY)
 d = decide_discharge(inp, _ref_date=REF_SAB)
 print(f"  Batería 40% + soleado día1 + nublado día2: blocked={d.discharge_blocked}, deficit={d.deficit_day2_kwh}")
-assert not d.discharge_blocked
-assert d.deficit_day2_kwh > 0  # déficit calculado e informado, pero no se bloquea
-ok("día valle → descarga libre aunque haya déficit en día 2 (info en log)")
+assert d.discharge_blocked
+assert d.deficit_day2_kwh > 0
+ok("déficit en día 2 → bloquear descarga")
 
 inp = make_inp(70, forecast_day1=FORECAST_CLOUDY, forecast_day2=FORECAST_CLOUDY)
 d = decide_discharge(inp, _ref_date=REF_SAB)
-print(f"  Batería 70% + nublado nublado: blocked={d.discharge_blocked}, deficit={d.deficit_day2_kwh}")
-assert not d.discharge_blocked
-ok("día valle → descarga libre siempre (déficit se informa pero no bloquea)")
+print(f"  Batería 70% + nublado nublado: blocked={d.discharge_blocked}")
+assert d.discharge_blocked
+ok("ambos días nublados + batería media → bloquear")
 
 inp = make_inp(95, forecast_day1=FORECAST_SUNNY, forecast_day2=FORECAST_CLOUDY)
 d = decide_discharge(inp, _ref_date=REF_SAB)
@@ -271,12 +271,12 @@ ok(f"batería muy alta → {'bloquear' if d.discharge_blocked else 'descarga lib
 
 print("\n=== decide_discharge — ejecución en madrugada ===")
 
-# ref=sábado → mañana=domingo (valle) → siempre descarga libre
+# ref=sábado → mañana=domingo (valle) → evalúa bloqueo
 inp = make_inp(40, forecast_day1=FORECAST_SUNNY, forecast_day2=FORECAST_CLOUDY)
 d = decide_discharge(inp, _ref_date=date(2026, 4, 11))
-print(f"\n  Ref=sábado + déficit día2: blocked={d.discharge_blocked}, deficit={d.deficit_day2_kwh}")
-assert not d.discharge_blocked
-ok("ref=sábado → mañana=domingo valle → descarga libre siempre")
+print(f"\n  Ref=sábado + déficit día2: blocked={d.discharge_blocked}")
+assert d.discharge_blocked
+ok("ref=sábado → mañana=domingo valle → bloquea descarga")
 
 # ref=domingo → mañana=lunes (laborable) → descarga libre
 inp = make_inp(40, forecast_day1=FORECAST_SUNNY, forecast_day2=FORECAST_CLOUDY)
