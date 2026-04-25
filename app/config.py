@@ -221,7 +221,6 @@ def _apply_env_overrides(data: dict) -> dict:
         ("charging", "risk_factor"):                         "RISK_FACTOR",
         ("system", "dry_run"):                               "DRY_RUN",
         ("system", "log_level"):                             "LOG_LEVEL",
-        ("charging", "risk_factor"):                         "RISK_FACTOR",
         ("charging", "min_soc_pct"):                         "MIN_SOC_PCT",
         ("charging", "max_soc_pct"):                         "MAX_SOC_PCT",
         ("charging", "safety_margin_kwh"):                   "SAFETY_MARGIN_KWH",
