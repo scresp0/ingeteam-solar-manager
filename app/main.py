@@ -197,7 +197,9 @@ def main() -> None:
 
     setup_logging(cfg)
     logger = logging.getLogger(__name__)
-    logger.info(f"solar-manager v{VERSION} arrancando (dry_run={cfg.system.dry_run})")
+    import socket
+    hostname = socket.gethostname()
+    logger.info(f"solar-manager v{VERSION} arrancando en {hostname} (dry_run={cfg.system.dry_run})")
 
     if cfg.system.web_enabled:
         import threading
