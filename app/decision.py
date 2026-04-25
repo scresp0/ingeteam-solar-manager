@@ -230,6 +230,10 @@ def decide_discharge(
             reason="mañana es día laborable — descarga libre",
         )
 
+    # Mañana es día valle todo el día (fin de semana o festivo):
+    # se permite siempre la descarga libre. La electricidad es barata todo el día
+    # y no tiene sentido bloquear la batería durante las horas nocturnas valle.
+    # Se calculan las métricas de día 2 solo para informar en el log/InfluxDB.
     energy_stored   = (inp.soc_actual_pct / 100.0) * inp.battery_capacity_kwh
     energy_min      = (inp.min_soc_pct    / 100.0) * inp.battery_capacity_kwh
 
@@ -241,17 +245,10 @@ def decide_discharge(
     needed_day2        = max(0.0, inp.daily_consumption_kwh + inp.safety_margin_kwh - solar_day2)
     deficit_day2       = max(0.0, needed_day2 - energy_usable_day2)
 
-    if deficit_day2 == 0.0:
-        return DischargeDecision(
-            discharge_blocked=False,
-            reason="solar de 2 días suficiente — descarga libre",
-            energy_end_day1_kwh=round(energy_end_day1, 2),
-            deficit_day2_kwh=0.0,
-        )
-
+    deficit_info = f"déficit día 2 estimado = {round(deficit_day2, 2)} kWh" if deficit_day2 > 0 else "solar día 2 suficiente"
     return DischargeDecision(
-        discharge_blocked=True,
-        reason=f"déficit día 2 = {round(deficit_day2, 2)} kWh — reservar batería",
+        discharge_blocked=False,
+        reason=f"día valle todo el día — descarga libre ({deficit_info})",
         energy_end_day1_kwh=round(energy_end_day1, 2),
         deficit_day2_kwh=round(deficit_day2, 2),
     )
