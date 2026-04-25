@@ -17,7 +17,7 @@ services:
 
     environment:
       - TZ=Europe/Madrid
-      - HOST_HOSTNAME=${HOSTNAME}
+      - HOST_HOSTNAME=${HOST_HOSTNAME}
 
     shm_size: '256mb'
 
