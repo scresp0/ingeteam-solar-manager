@@ -70,10 +70,15 @@ def _parse_decision(log: str) -> tuple:
             m = re.search(r'SOC[^\d]*([\d.]+)\s*%', line, re.I)
             if m:
                 soc = float(m.group(1))
-        # Forecast p50 desde la línea de Solcast día 1
-        m = re.search(r'Previsión Solcast día 1.*p50=([\d.]+)', line)
+        # Solar efectiva (valor ponderado p10/p50 que usa el algoritmo)
+        m = re.search(r'solar efectiva ([\d.]+) kWh', line)
         if m:
             forecast = float(m.group(1))
+        # Fallback: p50 de Solcast (días valle, donde el one-liner no incluye solar efectiva)
+        if forecast is None:
+            m = re.search(r'Previsión Solcast día 1.*p50=([\d.]+)', line)
+            if m:
+                forecast = float(m.group(1))
         # Consumo nocturno dinámico o de config
         m = re.search(r'Consumo nocturno(?:\s+dinámico)?: ([\d.]+) kWh', line)
         if m:
@@ -228,7 +233,7 @@ def _build_html(
         bar_color = _C["ok"] if soc >= 60 else (_C["warn"] if soc >= 35 else _C["err"])
         rows += _kv_row("SOC batería", f"{soc:.0f}%", bar_color)
     if forecast is not None:
-        rows += _kv_row("Forecast solar (mañana)", f"{forecast:.1f} kWh")
+        rows += _kv_row("Solar efectiva mañana", f"{forecast:.1f} kWh")
     if night_kwh is not None:
         source_badge = (
             f'<span style="background:#e8f4fd;color:#2980b9;font-size:10px;'

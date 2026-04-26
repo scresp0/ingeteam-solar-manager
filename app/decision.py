@@ -353,7 +353,8 @@ def charge_oneliner(
         return (
             f"[CARGA] NO · valle {dia_es} {tomorrow.strftime('%d/%m')} · "
             f"SOC {inp.soc_actual_pct}% · "
-            f"solar p10/p50 {inp.forecast_day1.p10}/{inp.forecast_day1.p50} kWh"
+            f"solar efectiva {result.solar_effective_kwh} kWh "
+            f"(p10/p50 {inp.forecast_day1.p10}/{inp.forecast_day1.p50} kWh)"
         )
     if not result.charge_needed:
         return (
