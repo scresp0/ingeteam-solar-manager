@@ -730,11 +730,17 @@ function renderForecastBars() {
     const isCurr   = h === currentHour;
     const actualKw = _todayByHour[h];
     const hActual  = (actualKw != null && actualKw > 0) ? Math.max(2, (actualKw / max) * 68) : 0;
-    const tip = `${h}h — p10:${p10[i]} p50:${p50[i]} p90:${p90[i]} kW${actualKw != null ? ' · real hoy:' + actualKw + ' kW' : ''}`;
-    return `<div style="flex:1;min-width:0;position:relative;display:flex;align-items:flex-end;height:72px" title="${tip}">
-      <div style="position:absolute;bottom:0;left:0;right:0;height:${h90}px;border-radius:3px 3px 0 0;border:1px solid rgba(240,165,0,0.18);background:transparent"></div>
-      <div class="fbar${isCurr ? ' current' : ''}" style="position:relative;z-index:1;width:100%;height:${h50}px;border-radius:3px 3px 0 0"></div>
-      ${hActual > 0 ? `<div style="position:absolute;bottom:0;left:0;right:0;height:${hActual}px;border-radius:3px 3px 0 0;background:rgba(63,185,80,0.7);z-index:2;pointer-events:none"></div>` : ''}
+    const tip = `${h}h — forecast p50:${p50[i]} kW${actualKw != null ? ' · real hoy:' + actualKw + ' kW' : ''}`;
+    return `<div style="flex:1;min-width:0;display:flex;align-items:flex-end;height:72px;gap:1px" title="${tip}">
+      <div style="flex:1;position:relative;display:flex;align-items:flex-end;height:72px;">
+        <div style="position:absolute;bottom:0;left:0;right:0;height:${h90}px;border-radius:2px 2px 0 0;border:1px solid rgba(240,165,0,0.18);background:transparent;pointer-events:none"></div>
+        <div class="fbar${isCurr ? ' current' : ''}" style="position:relative;z-index:1;width:100%;height:${h50}px;border-radius:2px 2px 0 0"></div>
+      </div>
+      <div style="flex:1;display:flex;align-items:flex-end;height:72px;">
+        ${hActual > 0
+          ? `<div style="width:100%;height:${hActual}px;border-radius:2px 2px 0 0;background:rgba(63,185,80,0.75);border:1px solid rgba(63,185,80,0.35)"></div>`
+          : `<div style="width:100%;height:2px;background:rgba(255,255,255,0.03)"></div>`}
+      </div>
     </div>`;
   }).join('');
 
