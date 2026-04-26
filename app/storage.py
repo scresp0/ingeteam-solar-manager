@@ -1,17 +1,23 @@
 """
 storage.py — almacenamiento de datos en InfluxDB 2.x.
 
-Guarda dos tipos de puntos por ciclo nocturno:
+Guarda tres tipos de puntos por ciclo nocturno:
 
 1. measurement: ciclo_carga
    — decisión tomada por el algoritmo + estado del inversor en ese momento
 
 2. measurement: stats_diarias
    — acumulados del día anterior leídos del datalogger del inversor
+
+3. measurement: solar_media_hora
+   — producción solar y forecast en intervalos de 30 min
+     forecast_p50/p10/p90_kwh: escritos en el ciclo nocturno para mañana
+     real_kwh: escritos al día siguiente con los datos del datalogger
+     Timestamps en "hora local española etiquetada como UTC" (igual que stats_diarias)
 """
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app.config import InfluxDBConfig
 from app.decision import DecisionInput, ChargeDecision
@@ -256,15 +262,87 @@ from(bucket: "{cfg.bucket}")
         return None
 
 
-def _write_point(cfg: InfluxDBConfig, point: dict) -> None:
-    """Escribe un punto en InfluxDB usando la API HTTP v2."""
+def write_half_hour_solar(cfg: InfluxDBConfig, stats: DailyStats) -> None:
+    """
+    Guarda la producción solar real (ayer) en resolución de 30 min.
+
+    Escribe 48 puntos en solar_media_hora con el campo real_kwh.
+    Timestamps en "hora local española etiquetada como UTC" (igual que stats_diarias).
+    """
+    if not cfg.enabled:
+        return
+
+    midnight_utc = datetime.combine(stats.date, datetime.min.time()).replace(tzinfo=timezone.utc)
+    points = [
+        {
+            "measurement": "solar_media_hora",
+            "time": (midnight_utc + timedelta(minutes=slot * 30)).isoformat(),
+            "fields": {"real_kwh": kwh},
+        }
+        for slot, kwh in enumerate(stats.half_hour_solar_kwh)
+    ]
+    _write_points(cfg, points)
+    logger.info(f"Solar media hora {stats.date} guardado en InfluxDB ({len(points)} slots)")
+
+
+def write_half_hour_forecast(
+    cfg: InfluxDBConfig,
+    intervals: list[dict],
+    tz_name: str = "Europe/Madrid",
+) -> None:
+    """
+    Guarda el forecast de Solcast para mañana en resolución de 30 min.
+
+    Escribe hasta 48 puntos en solar_media_hora con campos forecast_p50/p10/p90_kwh.
+    Convierte period_end UTC a hora local y etiqueta como UTC para alinear con real_kwh.
+    """
+    if not cfg.enabled or not intervals:
+        return
+
+    from zoneinfo import ZoneInfo
+    _tz = ZoneInfo(tz_name)
+
+    points = []
+    for item in intervals:
+        try:
+            end_str = item["period_end"].rstrip("Z").split(".")[0] + "+00:00"
+            end_utc = datetime.fromisoformat(end_str)
+            end_local = end_utc.astimezone(_tz)
+            start_local = end_local - timedelta(minutes=30)
+            # "local labeled UTC" — mismo convenio que stats_diarias
+            ts = datetime(
+                start_local.year, start_local.month, start_local.day,
+                start_local.hour, start_local.minute, 0,
+                tzinfo=timezone.utc,
+            )
+            points.append({
+                "measurement": "solar_media_hora",
+                "time": ts.isoformat(),
+                "fields": {
+                    "forecast_p50_kwh": round(item.get("pv_estimate",   0.0) * 0.5, 4),
+                    "forecast_p10_kwh": round(item.get("pv_estimate10", 0.0) * 0.5, 4),
+                    "forecast_p90_kwh": round(item.get("pv_estimate90", 0.0) * 0.5, 4),
+                },
+            })
+        except (KeyError, ValueError) as e:
+            logger.warning(f"Intervalo Solcast con formato inesperado, ignorado: {e}")
+
+    if not points:
+        return
+
+    _write_points(cfg, points)
+    logger.info(f"Forecast media hora guardado en InfluxDB ({len(points)} slots)")
+
+
+def _write_points(cfg: InfluxDBConfig, points: list[dict]) -> None:
+    """Escribe una lista de puntos en InfluxDB en un único batch."""
     try:
-        from influxdb_client import InfluxDBClient, WriteOptions
+        from influxdb_client import InfluxDBClient
         from influxdb_client.client.write_api import SYNCHRONOUS
 
         with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
             write_api = client.write_api(write_options=SYNCHRONOUS)
-            write_api.write(bucket=cfg.bucket, record=point)
+            write_api.write(bucket=cfg.bucket, record=points)
 
     except ImportError:
         raise StorageError(
@@ -273,3 +351,7 @@ def _write_point(cfg: InfluxDBConfig, point: dict) -> None:
         )
     except Exception as e:
         raise StorageError(f"Error escribiendo en InfluxDB: {e}") from e
+
+
+def _write_point(cfg: InfluxDBConfig, point: dict) -> None:
+    _write_points(cfg, [point])

@@ -113,6 +113,23 @@ def get_tomorrow_forecast(cfg: SolcastConfig, timezone: str = "Europe/Madrid") -
     return day1
 
 
+def get_day1_intervals(cfg: SolcastConfig, timezone: str = "Europe/Madrid") -> list[dict]:
+    """
+    Devuelve los intervalos de 30 min de Solcast para mañana.
+    Reutiliza la caché guardada por get_two_day_forecast — no hace llamada extra a la API.
+    """
+    cached = _load_cache(cfg.cache_ttl_hours)
+    if cached:
+        raw = cached["raw"]
+    else:
+        raw = _fetch_forecasts(cfg)
+        _save_cache(raw)
+
+    tz = ZoneInfo(timezone)
+    day1 = (datetime.now(tz) + timedelta(days=1)).date()
+    return _filter_by_date(raw.get("forecasts", []), day1, timezone)
+
+
 def _fetch_forecasts(cfg: SolcastConfig) -> dict:
     """Llama a la API de Solcast y devuelve el JSON completo."""
     url = (

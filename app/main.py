@@ -18,7 +18,7 @@ from pathlib import Path
 
 from app.version import VERSION
 from app.config import load_config, AppConfig
-from app.solcast import get_two_day_forecast, SolcastError
+from app.solcast import get_two_day_forecast, get_day1_intervals, SolcastError
 from app.inverter import read_inverter_state, InverterError
 from app.decision import (
     DecisionInput, decide_charge, decide_discharge,
@@ -29,7 +29,10 @@ from app.decision import (
 from app.automation import set_charge_schedule, set_discharge_schedule, AutomationError
 from app.notifier import CycleEmailNotifier
 from app.logger_reader import get_yesterday_stats, LoggerReaderError
-from app.storage import write_cycle, write_daily_stats, get_avg_night_consumption, get_dynamic_risk_factor, StorageError
+from app.storage import (
+    write_cycle, write_daily_stats, write_half_hour_solar, write_half_hour_forecast,
+    get_avg_night_consumption, get_dynamic_risk_factor, StorageError,
+)
 
 
 def setup_logging(cfg: AppConfig) -> None:
@@ -64,6 +67,7 @@ def run(cfg: AppConfig) -> bool:
         logger.info("Modo DRY RUN activo — no se modificará el inversor")
 
     # 1. Previsión solar — día 1 y día 2
+    intervals_day1: list[dict] = []
     if cfg.system.dry_run:
         forecast_day1 = SolarForecast(p10=10.0, p50=20.0, p90=30.0)
         forecast_day2 = SolarForecast(p10=8.0, p50=18.0, p90=28.0)
@@ -72,6 +76,7 @@ def run(cfg: AppConfig) -> bool:
         try:
             logger.info("Obteniendo previsión solar de Solcast...")
             forecast_day1, forecast_day2 = get_two_day_forecast(cfg.solcast, cfg.system.timezone)
+            intervals_day1 = get_day1_intervals(cfg.solcast, cfg.system.timezone)
         except SolcastError as e:
             logger.error(f"Error al obtener previsión solar: {e}")
             logger.warning("Usando previsión conservadora de 0 kWh como fallback")
@@ -211,6 +216,7 @@ def run(cfg: AppConfig) -> bool:
     try:
         stats = get_yesterday_stats(cfg.inverter)
         write_daily_stats(cfg.influxdb, stats)
+        write_half_hour_solar(cfg.influxdb, stats)
     except (LoggerReaderError, StorageError) as e:
         logger.warning(f"No se pudieron guardar stats diarias: {e}")
 
@@ -223,6 +229,7 @@ def run(cfg: AppConfig) -> bool:
             solcast_error=(forecast_day1.p10 == 0.0 and forecast_day1.p50 == 0.0),
             automation_ok=True,
         )
+        write_half_hour_forecast(cfg.influxdb, intervals_day1, cfg.system.timezone)
     except StorageError as e:
         logger.warning(f"No se pudo guardar ciclo en InfluxDB: {e}")
 

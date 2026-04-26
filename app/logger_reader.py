@@ -42,7 +42,8 @@ class DailyStats:
     night_consumption_kwh: float  # consumo 00:00–07:59 (PacGrid)
     soc_start_pct: float
     soc_end_pct: float
-    records: int             # número de registros del día (max 1440)
+    records: int                      # número de registros del día (max 1440)
+    half_hour_solar_kwh: list[float]  # 48 slots × 30 min, kWh por slot
 
 
 class LoggerReaderError(Exception):
@@ -153,6 +154,7 @@ def _get_device_id(cfg: InverterConfig, host: str, date_str: str) -> str:
 def _calculate_stats(records: list[dict], target_date: date, device_id: str) -> DailyStats:
     """Calcula los acumulados diarios a partir de los registros minuto a minuto."""
     INTERVAL_H = 1 / 60  # cada registro = 1 minuto = 1/60 hora
+    SLOT_MINUTES = 30
 
     # Producción solar (Pdc1 + Pdc2 en W → kWh)
     solar_kwh = sum(
@@ -193,6 +195,13 @@ def _calculate_stats(records: list[dict], target_date: date, device_id: str) -> 
     soc_start = records[0].get("Sbatt", 0)
     soc_end   = records[-1].get("Sbatt", 0)
 
+    # Producción solar por slot de 30 min (48 slots, "local labeled UTC")
+    half_hour: list[float] = []
+    for slot in range(48):
+        slot_recs = records[slot * SLOT_MINUTES : (slot + 1) * SLOT_MINUTES]
+        kwh = sum((r.get("Pdc1", 0) + r.get("Pdc2", 0)) * INTERVAL_H for r in slot_recs) / 1000
+        half_hour.append(round(kwh, 4))
+
     return DailyStats(
         date=target_date,
         device_id=device_id,
@@ -204,4 +213,5 @@ def _calculate_stats(records: list[dict], target_date: date, device_id: str) -> 
         soc_start_pct=soc_start,
         soc_end_pct=soc_end,
         records=len(records),
+        half_hour_solar_kwh=half_hour,
     )
