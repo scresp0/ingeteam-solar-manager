@@ -29,7 +29,7 @@ from app.decision import (
 from app.automation import set_charge_schedule, set_discharge_schedule, AutomationError
 from app.notifier import CycleEmailNotifier
 from app.logger_reader import get_yesterday_stats, LoggerReaderError
-from app.storage import write_cycle, write_daily_stats, StorageError
+from app.storage import write_cycle, write_daily_stats, get_avg_night_consumption, StorageError
 
 
 def setup_logging(cfg: AppConfig) -> None:
@@ -104,14 +104,34 @@ def run(cfg: AppConfig) -> bool:
         min_soc = state.min_soc_pct
         logger.info(f"SOC mínimo leído del inversor: {min_soc}% (config: {cfg.charging.min_soc_pct}%)")
 
-    # 3. Construir input compartido por ambas funciones de decisión
+    # 3. Consumo nocturno: valor dinámico desde InfluxDB o fallback de config
+    night_consumption_kwh = cfg.charging.night_consumption_kwh
+    avg_night = get_avg_night_consumption(
+        cfg.influxdb,
+        window_days=cfg.charging.night_consumption_window_days,
+        min_days=cfg.charging.night_consumption_min_days,
+    )
+    if avg_night is not None:
+        logger.info(
+            f"Consumo nocturno dinámico: {avg_night} kWh "
+            f"(media {cfg.charging.night_consumption_window_days}d · "
+            f"fallback config: {cfg.charging.night_consumption_kwh} kWh)"
+        )
+        night_consumption_kwh = avg_night
+    else:
+        logger.info(
+            f"Consumo nocturno: {night_consumption_kwh} kWh "
+            f"(config — menos de {cfg.charging.night_consumption_min_days} días en InfluxDB)"
+        )
+
+    # 4. Construir input compartido por ambas funciones de decisión
     inp = DecisionInput(
         forecast_day1=forecast_day1,
         forecast_day2=forecast_day2,
         soc_actual_pct=soc_actual,
         battery_capacity_kwh=cfg.installation.battery_capacity_kwh,
         daily_consumption_kwh=cfg.installation.average_daily_consumption_kwh,
-        night_consumption_kwh=cfg.charging.night_consumption_kwh,
+        night_consumption_kwh=night_consumption_kwh,
         risk_factor=cfg.charging.risk_factor,
         min_soc_pct=min_soc,
         max_soc_pct=cfg.charging.max_soc_pct,
@@ -120,7 +140,7 @@ def run(cfg: AppConfig) -> bool:
         holidays=cfg.tariff.holidays,
     )
 
-    # 4. Decisiones independientes
+    # 5. Decisiones independientes
     cutoff    = cfg.tariff.night_cutoff_hour
 
     charge    = decide_charge(inp, dry_run=cfg.system.dry_run,

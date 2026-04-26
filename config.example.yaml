@@ -91,7 +91,13 @@ charging:
   min_soc_pct: 15
   max_soc_pct: 95
   safety_margin_kwh: 1.0
-  night_consumption_kwh: 3.5  # consumo estimado en horario valle (00:00-08:00)
+  # Consumo estimado en horario valle (00:00-08:00).
+  # Actúa como fallback mientras no haya suficientes días históricos en InfluxDB.
+  # Una vez acumulados night_consumption_min_days días, el sistema usa la media
+  # de los últimos night_consumption_window_days días calculada automáticamente.
+  night_consumption_kwh: 3.5
+  night_consumption_min_days: 14    # días mínimos para activar el valor dinámico
+  night_consumption_window_days: 30 # ventana deslizante para la media (días)
 
 # -----------------------------------------------------------------------------
 # Sistema

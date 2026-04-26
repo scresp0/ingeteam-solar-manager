@@ -102,7 +102,11 @@ class ChargingConfig(BaseModel):
     min_soc_pct: float = Field(default=15.0, ge=0.0, le=100.0)
     max_soc_pct: float = Field(default=95.0, ge=0.0, le=100.0)
     safety_margin_kwh: float = Field(default=1.0, ge=0.0)
+    # Fallback usado mientras no haya suficientes días históricos en InfluxDB
     night_consumption_kwh: float = Field(default=3.5, ge=0.0)
+    # Consumo nocturno dinámico: mínimo de días y ventana deslizante
+    night_consumption_min_days: int = Field(default=14, ge=1)
+    night_consumption_window_days: int = Field(default=30, ge=7)
 
     @field_validator("max_soc_pct")
     @classmethod

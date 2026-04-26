@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 LOGGER_PATH = "/inverter/log"
 
 
+_NIGHT_MINUTES = 480  # 00:00–07:59 (8 h × 60 min)
+
+
 @dataclass
 class DailyStats:
     """Acumulados diarios calculados a partir del datalogger."""
@@ -36,6 +39,7 @@ class DailyStats:
     grid_consumed_kwh: float
     grid_exported_kwh: float
     consumption_kwh: float
+    night_consumption_kwh: float  # consumo 00:00–07:59 (PacGrid)
     soc_start_pct: float
     soc_end_pct: float
     records: int             # número de registros del día (max 1440)
@@ -173,6 +177,18 @@ def _calculate_stats(records: list[dict], target_date: date, device_id: str) -> 
         for r in records
     ) / 1000
 
+    # Consumo nocturno 00:00–07:59: primeros _NIGHT_MINUTES registros
+    # PacGrid a esa hora ≈ potencia a cargas (sin producción solar)
+    night_recs = records[:_NIGHT_MINUTES]
+    if night_recs:
+        raw_night = sum(r.get("PacGrid", 0) * INTERVAL_H for r in night_recs) / 1000
+        # Prorratear si el día tiene menos registros de los esperados
+        if len(night_recs) < _NIGHT_MINUTES:
+            raw_night *= _NIGHT_MINUTES / len(night_recs)
+        night_consumption_kwh = max(0.0, raw_night)
+    else:
+        night_consumption_kwh = 0.0
+
     # SOC inicio y fin
     soc_start = records[0].get("Sbatt", 0)
     soc_end   = records[-1].get("Sbatt", 0)
@@ -184,6 +200,7 @@ def _calculate_stats(records: list[dict], target_date: date, device_id: str) -> 
         grid_consumed_kwh=round(grid_consumed_kwh, 3),
         grid_exported_kwh=round(grid_exported_kwh, 3),
         consumption_kwh=round(consumption_kwh, 3),
+        night_consumption_kwh=round(night_consumption_kwh, 3),
         soc_start_pct=soc_start,
         soc_end_pct=soc_end,
         records=len(records),

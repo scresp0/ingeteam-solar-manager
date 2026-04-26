@@ -107,13 +107,14 @@ def write_daily_stats(cfg: InfluxDBConfig, stats: DailyStats) -> None:
             "device_id": stats.device_id,
         },
         "fields": {
-            "solar_kwh":           stats.solar_kwh,
-            "grid_consumed_kwh":   stats.grid_consumed_kwh,
-            "grid_exported_kwh":   stats.grid_exported_kwh,
-            "consumption_kwh":     stats.consumption_kwh,
-            "soc_start_pct":       stats.soc_start_pct,
-            "soc_end_pct":         stats.soc_end_pct,
-            "records":             float(stats.records),
+            "solar_kwh":              stats.solar_kwh,
+            "grid_consumed_kwh":      stats.grid_consumed_kwh,
+            "grid_exported_kwh":      stats.grid_exported_kwh,
+            "consumption_kwh":        stats.consumption_kwh,
+            "night_consumption_kwh":  stats.night_consumption_kwh,
+            "soc_start_pct":          stats.soc_start_pct,
+            "soc_end_pct":            stats.soc_end_pct,
+            "records":                float(stats.records),
         }
     }
 
@@ -122,6 +123,53 @@ def write_daily_stats(cfg: InfluxDBConfig, stats: DailyStats) -> None:
         f"Stats {stats.date} guardadas en InfluxDB "
         f"(solar={stats.solar_kwh} kWh, red={stats.grid_consumed_kwh} kWh)"
     )
+
+
+def get_avg_night_consumption(
+    cfg: InfluxDBConfig,
+    window_days: int = 30,
+    min_days: int = 14,
+) -> float | None:
+    """
+    Devuelve el consumo nocturno medio (kWh, 00:00–07:59) de los últimos
+    window_days días almacenados en InfluxDB.
+
+    Devuelve None si:
+    - InfluxDB no está habilitado
+    - Hay menos de min_days registros válidos en la ventana
+    - La consulta falla (se loguea como warning)
+    """
+    if not cfg.enabled:
+        return None
+
+    query = f"""
+from(bucket: "{cfg.bucket}")
+  |> range(start: -{window_days}d)
+  |> filter(fn: (r) => r._measurement == "stats_diarias" and r._field == "night_consumption_kwh")
+  |> filter(fn: (r) => r._value > 0.5)
+"""
+    try:
+        from influxdb_client import InfluxDBClient
+        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
+            tables = client.query_api().query(query, org=cfg.org)
+            values = [rec.get_value() for table in tables for rec in table.records]
+
+        if len(values) < min_days:
+            logger.debug(
+                f"Consumo nocturno dinámico: solo {len(values)} días válidos "
+                f"(mínimo {min_days}) — usando fallback"
+            )
+            return None
+
+        avg = sum(values) / len(values)
+        logger.debug(f"Consumo nocturno dinámico: {len(values)} días, media={avg:.3f} kWh")
+        return round(avg, 3)
+
+    except ImportError:
+        raise StorageError("influxdb-client no está instalado.")
+    except Exception as e:
+        logger.warning(f"No se pudo consultar consumo nocturno dinámico en InfluxDB: {e}")
+        return None
 
 
 def _write_point(cfg: InfluxDBConfig, point: dict) -> None:
