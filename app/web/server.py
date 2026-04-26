@@ -311,10 +311,40 @@ def create_app(cfg: AppConfig) -> FastAPI:
                 window_days=cfg.charging.risk_factor_window_days,
                 min_days=cfg.charging.risk_factor_min_days,
             )
-            return night, rf
+
+            night_count = 0
+            rf_count = 0
+            if cfg.influxdb.enabled:
+                try:
+                    from influxdb_client import InfluxDBClient
+                    wd_n = cfg.charging.night_consumption_window_days
+                    wd_r = cfg.charging.risk_factor_window_days + 2
+                    q_n = f'''from(bucket:"{cfg.influxdb.bucket}")
+  |> range(start: -{wd_n}d)
+  |> filter(fn:(r) => r._measurement=="stats_diarias" and r._field=="night_consumption_kwh")
+  |> filter(fn:(r) => r._value > 0.5)
+  |> count()'''
+                    q_r = f'''from(bucket:"{cfg.influxdb.bucket}")
+  |> range(start: -{wd_r}d)
+  |> filter(fn:(r) => r._measurement=="stats_diarias" and r._field=="solar_kwh")
+  |> filter(fn:(r) => r._value > 0.5)
+  |> count()'''
+                    with InfluxDBClient(url=cfg.influxdb.url, token=cfg.influxdb.token,
+                                        org=cfg.influxdb.org) as client:
+                        api = client.query_api()
+                        for t in api.query(q_n, org=cfg.influxdb.org):
+                            for rec in t.records:
+                                night_count = int(rec.get_value())
+                        for t in api.query(q_r, org=cfg.influxdb.org):
+                            for rec in t.records:
+                                rf_count = int(rec.get_value())
+                except Exception:
+                    pass
+
+            return night, rf, night_count, rf_count
 
         try:
-            night, rf = await asyncio.to_thread(_compute)
+            night, rf, night_count, rf_count = await asyncio.to_thread(_compute)
         except Exception as e:
             return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -323,11 +353,15 @@ def create_app(cfg: AppConfig) -> FastAPI:
             "night_consumption_kwh": night if night is not None else cfg.charging.night_consumption_kwh,
             "night_dynamic": night is not None,
             "night_config_kwh": cfg.charging.night_consumption_kwh,
+            "night_min_days": cfg.charging.night_consumption_min_days,
             "night_window_days": cfg.charging.night_consumption_window_days,
+            "night_valid_days": night_count,
             "risk_factor": rf if rf is not None else cfg.charging.risk_factor,
             "risk_dynamic": rf is not None,
             "risk_config": cfg.charging.risk_factor,
+            "risk_min_days": cfg.charging.risk_factor_min_days,
             "risk_window_days": cfg.charging.risk_factor_window_days,
+            "risk_valid_days": rf_count,
         }
 
     @app.get("/api/today_solar")

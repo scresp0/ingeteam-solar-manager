@@ -161,7 +161,6 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .forecast-bars { display: flex; align-items: flex-end; gap: 3px; height: 72px; }
 .fbar { flex: 1; min-width: 0; border-radius: 3px 3px 0 0; background: rgba(240,165,0,.2); border: 1px solid rgba(240,165,0,.12); cursor: pointer; transition: background .15s; }
 .fbar:hover { background: rgba(240,165,0,.42); }
-.fbar.current { background: rgba(88,166,255,.5); border-color: rgba(88,166,255,.4); }
 .forecast-xlabels { display: flex; gap: 3px; }
 .forecast-xlabels span { flex: 1; min-width: 0; text-align: center; font-size: 9px; color: var(--muted2); font-family: var(--mono); overflow: hidden; }
 .forecast-footer { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 8px; }
@@ -403,7 +402,7 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
             <div id="forecast-legend" style="display:none;gap:12px;font-size:10px;color:var(--muted);margin-top:5px">
               <span><span style="display:inline-block;width:8px;height:8px;background:rgba(240,165,0,0.4);border-radius:1px;margin-right:3px;vertical-align:middle"></span>Forecast mañana (p50)</span>
               <span><span style="display:inline-block;width:8px;height:8px;background:rgba(63,185,80,0.7);border-radius:1px;margin-right:3px;vertical-align:middle"></span>Real hoy</span>
-              <span><span style="display:inline-block;width:8px;height:8px;background:rgba(88,166,255,0.5);border-radius:1px;margin-right:3px;vertical-align:middle"></span>Hora actual</span>
+              <span style="color:var(--blue);font-weight:600">↑ hora actual</span>
             </div>
           </div>
           <div class="forecast-footer">
@@ -734,7 +733,7 @@ function renderForecastBars() {
     return `<div style="flex:1;min-width:0;display:flex;align-items:flex-end;height:72px;gap:1px" title="${tip}">
       <div style="flex:1;position:relative;display:flex;align-items:flex-end;height:72px;">
         <div style="position:absolute;bottom:0;left:0;right:0;height:${h90}px;border-radius:2px 2px 0 0;border:1px solid rgba(240,165,0,0.18);background:transparent;pointer-events:none"></div>
-        <div class="fbar${isCurr ? ' current' : ''}" style="position:relative;z-index:1;width:100%;height:${h50}px;border-radius:2px 2px 0 0"></div>
+        <div class="fbar" style="position:relative;z-index:1;width:100%;height:${h50}px;border-radius:2px 2px 0 0"></div>
       </div>
       <div style="flex:1;display:flex;align-items:flex-end;height:72px;">
         ${hActual > 0
@@ -798,22 +797,25 @@ async function loadParams() {
     const rfEl    = document.getElementById('inv-rf');
     if (!nightEl || !rfEl) return;
 
-    const badge = (dyn, title) =>
-      `<span class="param-badge ${dyn ? 'dyn' : 'cfg'}" title="${title}">${dyn ? 'din' : 'cfg'}</span>`;
+    const badge = (dyn, validDays, minDays, title) => {
+      const cls  = dyn ? 'dyn' : 'cfg';
+      const label = dyn ? 'din' : (validDays > 0 ? `${validDays}/${minDays}d` : 'cfg');
+      return `<span class="param-badge ${cls}" title="${title}">${label}</span>`;
+    };
 
     nightEl.innerHTML =
       `${d.night_consumption_kwh.toFixed(2)} kWh` +
-      badge(d.night_dynamic,
+      badge(d.night_dynamic, d.night_valid_days, d.night_min_days,
         d.night_dynamic
-          ? `Media ${d.night_window_days}d desde InfluxDB`
-          : `Valor fijo de config (${d.night_config_kwh} kWh)`);
+          ? `Media de ${d.night_valid_days} días (ventana ${d.night_window_days}d) desde InfluxDB`
+          : `Config: ${d.night_config_kwh} kWh · ${d.night_valid_days}/${d.night_min_days} días válidos acumulados`);
 
     rfEl.innerHTML =
       `${d.risk_factor.toFixed(3)}` +
-      badge(d.risk_dynamic,
+      badge(d.risk_dynamic, d.risk_valid_days, d.risk_min_days,
         d.risk_dynamic
-          ? `Media ${d.risk_window_days}d calibrada desde InfluxDB`
-          : `Valor fijo de config (${d.risk_config})`);
+          ? `Media de ${d.risk_valid_days} días (ventana ${d.risk_window_days}d) calibrada desde InfluxDB`
+          : `Config: ${d.risk_config} · ${d.risk_valid_days}/${d.risk_min_days} días válidos acumulados`);
   } catch(e) {}
 }
 
