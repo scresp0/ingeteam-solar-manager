@@ -67,6 +67,9 @@ La versión se muestra en el log de arranque, en el header de la web (`/`) y en 
 - Nunca leer el día actual del datalogger (datos incompletos) — siempre ayer o antes
 - Backfill incremental: consultar último timestamp almacenado antes de pedir más datos
 - Timestamps: hora local española almacenada con designación UTC (decisión consciente por simplicidad)
+- `ciclo_carga`: sin tags; timestamp = hora de ejecución UTC (~22-23h UTC)
+- `stats_diarias`: tag `device_id`; timestamp = medianoche UTC del día de datos
+- JOIN ciclo↔stats: `forecast_date = ciclo_UTC.date() + timedelta(days=1)` — no requiere columna extra
 
 ### SMTP (notifier.py)
 - Usar **hostname** (no IP) para que TLS funcione
@@ -80,6 +83,26 @@ La versión se muestra en el log de arranque, en el header de la web (`/`) y en 
   - `$HOSTNAME` no está exportada en macOS; `$(hostname)` funciona en ambos sistemas
   - `docker-compose.yml` espera la variable `${HOST_HOSTNAME}`, que el Makefile provee
   - Otros targets: `make down`, `make restart`, `make build`, `make logs`, `make shell`
+
+## Parámetros dinámicos (calibración automática desde InfluxDB)
+
+Dos parámetros se calculan automáticamente a partir del histórico almacenado en InfluxDB, usando el valor de `config.yaml` como fallback mientras no haya suficientes días:
+
+### Consumo nocturno dinámico (`storage.get_avg_night_consumption`)
+- Fuente: campo `night_consumption_kwh` de `stats_diarias` (primeros 480 min del día = 00:00–07:59)
+- Ventana deslizante configurable (`night_consumption_window_days`, default 30d)
+- Mínimo de días válidos para activarse (`night_consumption_min_days`, default 14)
+- Filtro: solo registros > 0.5 kWh (descarta días con datos erróneos)
+
+### Risk factor dinámico (`storage.get_dynamic_risk_factor`)
+- Fórmula por día: `rf_óptimo = (solar_real - p50) / (p10 - p50)`, clamp [0,1]
+- JOIN en Python: para cada `ciclo_carga` (∼22-23h UTC), `forecast_date = UTC.date() + 1 día`
+  coincide con el timestamp de `stats_diarias` (medianoche UTC del día de datos).
+  Funciona correctamente para ejecuciones normales (23:55) y reinicios hasta ~01:00 UTC.
+  Ejecuciones entre 01:00-07:59 UTC son descartadas silenciosamente (lookup devuelve None).
+- Mismos parámetros de ventana/mínimo que el consumo nocturno (`risk_factor_*_days`)
+
+Ambos parámetros se registran en el log (`INFO`) y aparecen en el email con badge **dinámico**/**config**.
 
 ## Lógica de decisión (resumen)
 
@@ -95,6 +118,7 @@ si deficit == 0 → NO cargar
 si deficit > 0  → CARGAR hasta target_soc = min_soc + deficit (clamped a max_soc)
 ```
 
+- `risk_factor` y `night_consumption_kwh` son dinámicos (ver sección anterior).
 - `energy_at_dawn_kwh` en `ChargeDecision`: cuando se carga, muestra `target_kwh` (energía real al amanecer tras la carga), no el hipotético sin carga.
 - `to_charge_kwh`: kWh reales que entrará desde la red (`target_kwh - energy_stored`), distinto de `deficit_kwh`.
 
@@ -105,6 +129,9 @@ Solo actúa cuando mañana (día 1) es día valle. Usa **dos pasadas**:
 2. **Valores reportados** (precisos): recalcula `energy_end_day1` *con* bloqueo activo (el consumo nocturno 00:01–07:59 pasa a la red, la batería retiene `night_consumption_kwh` extra) → el `deficit_day2_kwh` del resultado refleja el déficit real después del bloqueo.
 
 El motivo ("reason") siempre muestra el déficit *sin bloqueo* para explicar por qué se decidió bloquear.
+
+### Formato de log de decisiones
+`decision.py` expone `charge_oneliner()` y `discharge_oneliner()` que emiten líneas con prefijo `[CARGA]`/`[DESCARGA]` al nivel INFO. El detalle completo va a DEBUG. Estos prefijos los parsean tanto la web UI (badges de color, secciones colapsables) como `notifier.py` (tarjetas en el email HTML).
 
 ## Repositorio y git
 - **origin** (principal): `git@git.metafrase.net:scresp0/recarga-bateria-ingeteam.git` (Gitea autohospedado)
