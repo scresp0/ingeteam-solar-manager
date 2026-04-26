@@ -294,6 +294,42 @@ def create_app(cfg: AppConfig) -> FastAPI:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    @app.get("/api/params")
+    async def params():
+        """Parámetros dinámicos actuales del algoritmo (consumo nocturno y risk factor)."""
+        import asyncio
+
+        def _compute():
+            from app.storage import get_avg_night_consumption, get_dynamic_risk_factor
+            night = get_avg_night_consumption(
+                cfg.influxdb,
+                window_days=cfg.charging.night_consumption_window_days,
+                min_days=cfg.charging.night_consumption_min_days,
+            )
+            rf = get_dynamic_risk_factor(
+                cfg.influxdb,
+                window_days=cfg.charging.risk_factor_window_days,
+                min_days=cfg.charging.risk_factor_min_days,
+            )
+            return night, rf
+
+        try:
+            night, rf = await asyncio.to_thread(_compute)
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+        return {
+            "ok": True,
+            "night_consumption_kwh": night if night is not None else cfg.charging.night_consumption_kwh,
+            "night_dynamic": night is not None,
+            "night_config_kwh": cfg.charging.night_consumption_kwh,
+            "night_window_days": cfg.charging.night_consumption_window_days,
+            "risk_factor": rf if rf is not None else cfg.charging.risk_factor,
+            "risk_dynamic": rf is not None,
+            "risk_config": cfg.charging.risk_factor,
+            "risk_window_days": cfg.charging.risk_factor_window_days,
+        }
+
     @app.get("/api/today_solar")
     async def today_solar():
         """Producción solar real de hoy (datalogger del inversor, minuto a minuto)."""

@@ -137,6 +137,14 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .inv-row .k { color: var(--muted); }
 .inv-row .v { font-family: var(--mono); font-size: 12px; }
 
+/* ── Param badge (dinámico / config) ────────────── */
+.param-badge {
+  font-size: 9px; font-weight: 600; padding: 1px 5px; border-radius: 3px;
+  letter-spacing: .3px; text-transform: uppercase; margin-left: 5px; vertical-align: middle;
+}
+.param-badge.dyn { background: var(--blued);  color: var(--blue);  }
+.param-badge.cfg { background: var(--bg4);    color: var(--muted2); }
+
 /* ── Decision badge ──────────────────────────────── */
 .decision-wrap { display: flex; flex-direction: column; gap: 9px; }
 .decision-badge {
@@ -361,6 +369,9 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
               <div class="inv-row"><span class="k">Estado bat.</span><span class="v" id="inv-batstatus">—</span></div>
               <div class="inv-row"><span class="k">SOH</span><span class="v" id="inv-soh">—</span></div>
               <div class="inv-row"><span class="k">Última lectura</span><span class="v" id="inv-ts" style="color:var(--muted2)">—</span></div>
+              <div class="divider" style="margin:5px 0"></div>
+              <div class="inv-row"><span class="k">Cons. nocturno</span><span class="v" id="inv-night">—</span></div>
+              <div class="inv-row"><span class="k">Risk factor</span><span class="v" id="inv-rf">—</span></div>
             </div>
           </div>
 
@@ -771,6 +782,35 @@ async function loadForecast() {
   }
 }
 
+async function loadParams() {
+  try {
+    const r = await fetch('/api/params');
+    const d = await r.json();
+    if (!d.ok) return;
+
+    const nightEl = document.getElementById('inv-night');
+    const rfEl    = document.getElementById('inv-rf');
+    if (!nightEl || !rfEl) return;
+
+    const badge = (dyn, title) =>
+      `<span class="param-badge ${dyn ? 'dyn' : 'cfg'}" title="${title}">${dyn ? 'din' : 'cfg'}</span>`;
+
+    nightEl.innerHTML =
+      `${d.night_consumption_kwh.toFixed(2)} kWh` +
+      badge(d.night_dynamic,
+        d.night_dynamic
+          ? `Media ${d.night_window_days}d desde InfluxDB`
+          : `Valor fijo de config (${d.night_config_kwh} kWh)`);
+
+    rfEl.innerHTML =
+      `${d.risk_factor.toFixed(3)}` +
+      badge(d.risk_dynamic,
+        d.risk_dynamic
+          ? `Media ${d.risk_window_days}d calibrada desde InfluxDB`
+          : `Valor fijo de config (${d.risk_config})`);
+  } catch(e) {}
+}
+
 async function loadTodaySolar() {
   try {
     const r = await fetch('/api/today_solar');
@@ -1013,6 +1053,8 @@ function switchTabTo(name) {
 // ══ Init ═══════════════════════════════════════════
 refreshStatus();
 setInterval(refreshStatus, 30000);
+loadParams();
+setInterval(loadParams, 600000);
 loadTodaySolar();
 setInterval(loadTodaySolar, 60000);
 </script>
