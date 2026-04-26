@@ -102,6 +102,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
 .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+.grid-5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
 
 /* ── Cards ───────────────────────────────────────── */
 .card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius2); overflow: hidden; }
@@ -152,7 +153,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .forecast-bars { display: flex; align-items: flex-end; gap: 3px; height: 72px; }
 .fbar { flex: 1; min-width: 0; border-radius: 3px 3px 0 0; background: rgba(240,165,0,.2); border: 1px solid rgba(240,165,0,.12); cursor: pointer; transition: background .15s; }
 .fbar:hover { background: rgba(240,165,0,.42); }
-.fbar.peak { background: rgba(240,165,0,.5); border-color: rgba(240,165,0,.5); }
+.fbar.current { background: rgba(88,166,255,.5); border-color: rgba(88,166,255,.4); }
 .forecast-xlabels { display: flex; gap: 3px; }
 .forecast-xlabels span { flex: 1; min-width: 0; text-align: center; font-size: 9px; color: var(--muted2); font-family: var(--mono); overflow: hidden; }
 .forecast-footer { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 8px; }
@@ -324,9 +325,10 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
   <div class="tab-panel active" id="tab-dashboard">
 
     <!-- Metric tiles -->
-    <div class="grid-4" id="metric-grid">
+    <div class="grid-5" id="metric-grid">
       <div class="metric"><div class="metric-label">SOC batería</div><div class="metric-value" id="m-soc">—</div><div class="metric-sub" id="m-soc-sub">Mín configurado: 35%</div></div>
       <div class="metric"><div class="metric-label">Potencia batería</div><div class="metric-value blue" id="m-pow">—</div><div class="metric-sub" id="m-pow-sub">W</div></div>
+      <div class="metric"><div class="metric-label">Producción solar</div><div class="metric-value green" id="m-solar">—</div><div class="metric-sub" id="m-solar-sub">W ahora</div></div>
       <div class="metric"><div class="metric-label">Tensión batería</div><div class="metric-value" id="m-volt">—</div><div class="metric-sub">V</div></div>
       <div class="metric"><div class="metric-label">Temperatura</div><div class="metric-value" id="m-temp">—</div><div class="metric-sub">ºC</div></div>
     </div>
@@ -387,6 +389,11 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
               <div style="width:100%;display:flex;align-items:center;justify-content:center;color:var(--muted2);font-size:12px">—</div>
             </div>
             <div class="forecast-xlabels" id="forecast-xlabels"></div>
+            <div id="forecast-legend" style="display:none;gap:12px;font-size:10px;color:var(--muted);margin-top:5px">
+              <span><span style="display:inline-block;width:8px;height:8px;background:rgba(240,165,0,0.4);border-radius:1px;margin-right:3px;vertical-align:middle"></span>Forecast mañana (p50)</span>
+              <span><span style="display:inline-block;width:8px;height:8px;background:rgba(63,185,80,0.7);border-radius:1px;margin-right:3px;vertical-align:middle"></span>Real hoy</span>
+              <span><span style="display:inline-block;width:8px;height:8px;background:rgba(88,166,255,0.5);border-radius:1px;margin-right:3px;vertical-align:middle"></span>Hora actual</span>
+            </div>
           </div>
           <div class="forecast-footer">
             <div><div class="f-total-lbl">Total estimado</div><span class="f-total-val" id="f-total">— kWh</span></div>
@@ -687,17 +694,52 @@ function renderHistory() {
 
 // ══ Forecast real desde /api/forecast ══════════════════
 let forecastLoaded = false;
+let _forecastData  = null;
+let _todayByHour   = {};   // h (0-23) → kW promedio real hoy
+
+function renderForecastBars() {
+  if (!_forecastData) return;
+  const d = _forecastData;
+  const { hours, p50_kw: p50, p10_kw: p10, p90_kw: p90 } = d;
+
+  const maxForecast = Math.max(...p50, 0.01);
+  const maxActual   = Object.values(_todayByHour).length ? Math.max(...Object.values(_todayByHour)) : 0;
+  const max         = Math.max(maxForecast, maxActual, 0.01);
+  const currentHour = new Date().getHours();
+  const hasActual   = Object.keys(_todayByHour).length > 0;
+
+  const barsEl = document.getElementById('forecast-bars');
+  const lblsEl = document.getElementById('forecast-xlabels');
+  const legend = document.getElementById('forecast-legend');
+  if (legend) legend.style.display = hasActual ? 'flex' : 'none';
+
+  barsEl.innerHTML = hours.map((h, i) => {
+    const h50      = Math.max(4, (p50[i] / max) * 68);
+    const h90      = Math.max(4, (p90[i] / max) * 68);
+    const isCurr   = h === currentHour;
+    const actualKw = _todayByHour[h];
+    const hActual  = (actualKw != null && actualKw > 0) ? Math.max(2, (actualKw / max) * 68) : 0;
+    const tip = `${h}h — p10:${p10[i]} p50:${p50[i]} p90:${p90[i]} kW${actualKw != null ? ' · real hoy:' + actualKw + ' kW' : ''}`;
+    return `<div style="flex:1;min-width:0;position:relative;display:flex;align-items:flex-end;height:72px" title="${tip}">
+      <div style="position:absolute;bottom:0;left:0;right:0;height:${h90}px;border-radius:3px 3px 0 0;border:1px solid rgba(240,165,0,0.18);background:transparent"></div>
+      <div class="fbar${isCurr ? ' current' : ''}" style="position:relative;z-index:1;width:100%;height:${h50}px;border-radius:3px 3px 0 0"></div>
+      ${hActual > 0 ? `<div style="position:absolute;bottom:0;left:0;right:0;height:${hActual}px;border-radius:3px 3px 0 0;background:rgba(63,185,80,0.7);z-index:2;pointer-events:none"></div>` : ''}
+    </div>`;
+  }).join('');
+
+  lblsEl.innerHTML = hours.map(h =>
+    `<span${h === currentHour ? ' style="color:var(--blue);font-weight:600"' : ''}>${h}</span>`
+  ).join('');
+}
 
 async function loadForecast() {
   const barsEl  = document.getElementById('forecast-bars');
-  const lblsEl  = document.getElementById('forecast-xlabels');
   const totalEl = document.getElementById('f-total');
   const peakEl  = document.getElementById('f-peak');
   const dateEl  = document.getElementById('f-date');
 
-  // Indicador de carga
   barsEl.innerHTML = '<div style="width:100%;display:flex;align-items:center;justify-content:center;color:var(--muted2);font-size:12px;gap:6px"><span class="spinner"></span> Cargando forecast…</div>';
-  lblsEl.innerHTML = '';
+  document.getElementById('forecast-xlabels').innerHTML = '';
 
   try {
     const r = await fetch('/api/forecast');
@@ -708,44 +750,41 @@ async function loadForecast() {
       return;
     }
 
-    const hours  = d.hours;
-    const p50    = d.p50_kw;
-    const p10    = d.p10_kw;
-    const p90    = d.p90_kw;
-    const max    = Math.max(...p50, 0.01);
-    const peakIdx = p50.indexOf(Math.max(...p50));
+    _forecastData = d;
+    renderForecastBars();
 
-    // Barras: p10 como base opaca, p50 como barra principal, p90 como contorno
-    barsEl.innerHTML = hours.map((h, i) => {
-      const h50 = Math.max(4, (p50[i] / max) * 68);
-      const h10 = Math.max(2, (p10[i] / max) * 68);
-      const h90 = Math.max(4, (p90[i] / max) * 68);
-      const isPeak = i === peakIdx;
-      // Stack: p10 (fondo sólido) + p50 (barra principal) superpuestos, p90 como outline detrás
-      return `<div style="flex:1;min-width:0;position:relative;display:flex;align-items:flex-end;height:72px" title="${h}h — p10:${p10[i]} p50:${p50[i]} p90:${p90[i]} kW">
-        <div style="position:absolute;bottom:0;left:0;right:0;height:${h90}px;border-radius:3px 3px 0 0;border:1px solid rgba(240,165,0,0.18);background:transparent"></div>
-        <div class="fbar${isPeak?' peak':''}" style="position:relative;z-index:1;width:100%;height:${h50}px;border-radius:3px 3px 0 0"></div>
-      </div>`;
-    }).join('');
-
-    lblsEl.innerHTML = hours.map(h => `<span>${h}</span>`).join('');
-
+    const max     = Math.max(...d.p50_kw, 0.01);
+    const peakIdx = d.p50_kw.indexOf(Math.max(...d.p50_kw));
     totalEl.textContent = d.total_p50_kwh + ' kWh';
-    peakEl.textContent  = max.toFixed(2) + ' kW · ' + hours[peakIdx] + 'h';
+    peakEl.textContent  = max.toFixed(2) + ' kW · ' + d.hours[peakIdx] + 'h';
 
-    // Fecha y fuente de caché
     if (dateEl) {
       const cachedDate = d.cached_at ? new Date(d.cached_at).toLocaleString('es-ES', {hour12:false}) : '';
       dateEl.textContent = d.date + (cachedDate ? ' · caché ' + cachedDate : '');
     }
 
-    // Actualizar decisión con totales reales
     updateDecisionBadge(d.total_p50_kwh, d.total_p10_kwh, d.total_p90_kwh);
     forecastLoaded = true;
 
   } catch(e) {
     barsEl.innerHTML = `<div style="width:100%;text-align:center;font-size:12px;color:var(--red)">Error cargando forecast: ${escHtml(e.message)}</div>`;
   }
+}
+
+async function loadTodaySolar() {
+  try {
+    const r = await fetch('/api/today_solar');
+    const d = await r.json();
+    if (!d.ok) return;
+
+    const w = d.current_solar_w;
+    setMetric('m-solar', w + ' W', w > 50 ? 'green' : '', d.total_solar_kwh + ' kWh hoy');
+
+    _todayByHour = {};
+    d.hours.forEach((h, i) => { _todayByHour[h] = d.solar_kw[i]; });
+
+    renderForecastBars();
+  } catch(e) {}
 }
 
 function updateDecisionBadge(p50, p10, p90) {
@@ -974,6 +1013,8 @@ function switchTabTo(name) {
 // ══ Init ═══════════════════════════════════════════
 refreshStatus();
 setInterval(refreshStatus, 30000);
+loadTodaySolar();
+setInterval(loadTodaySolar, 60000);
 </script>
 </body>
 </html>

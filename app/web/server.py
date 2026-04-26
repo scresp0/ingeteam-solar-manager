@@ -294,6 +294,64 @@ def create_app(cfg: AppConfig) -> FastAPI:
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    @app.get("/api/today_solar")
+    async def today_solar():
+        """Producción solar real de hoy (datalogger del inversor, minuto a minuto)."""
+        import asyncio
+        import requests as _req
+        from datetime import date as _date
+
+        today = _date.today()
+        date_str = today.isoformat()
+        host = cfg.inverter.get_modbus_host()
+        device_id = cfg.inverter.device_id
+        if not device_id:
+            return JSONResponse(status_code=503, content={"ok": False, "error": "INVERTER_DEVICE_ID no configurado"})
+
+        url = f"http://{host}/inverter/log/{device_id}/{date_str}"
+
+        def _fetch():
+            r = _req.get(url, auth=(cfg.inverter.username, cfg.inverter.password), timeout=15)
+            r.raise_for_status()
+            return r.json()
+
+        try:
+            data = await asyncio.to_thread(_fetch)
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+        records = [entry["val"] for entry in data.get("data", [])]
+        if not records:
+            return {"ok": True, "date": date_str, "hours": [], "solar_kw": [],
+                    "current_solar_w": 0, "total_solar_kwh": 0.0}
+
+        last = records[-1]
+        current_solar_w = round(last.get("Pdc1", 0) + last.get("Pdc2", 0))
+
+        total_solar_kwh = round(
+            sum(r.get("Pdc1", 0) + r.get("Pdc2", 0) for r in records) / 1000 / 60, 2
+        )
+
+        # Agrupar por hora: registro i → hora local i//60 (datalogger en hora local)
+        by_hour: dict[int, list] = {}
+        for i, r in enumerate(records):
+            by_hour.setdefault(i // 60, []).append(r.get("Pdc1", 0) + r.get("Pdc2", 0))
+
+        hours_out, solar_kw_out = [], []
+        for h in sorted(by_hour):
+            avg_w = sum(by_hour[h]) / len(by_hour[h])
+            hours_out.append(h)
+            solar_kw_out.append(round(avg_w / 1000, 3))
+
+        return {
+            "ok": True,
+            "date": date_str,
+            "hours": hours_out,
+            "solar_kw": solar_kw_out,
+            "current_solar_w": current_solar_w,
+            "total_solar_kwh": total_solar_kwh,
+        }
+
     @app.get("/api/logs")
     async def get_logs(lines: int = 100):
         """Devuelve las últimas N líneas del fichero de log."""
