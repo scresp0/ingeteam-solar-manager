@@ -59,11 +59,11 @@ _C = {
 
 def _parse_decision(log: str) -> tuple:
     """
-    Extrae del log: soc (float|None), forecast_p50 (float|None),
-    charge (bool|None), mode (str|None).
+    Extrae del log: soc, forecast_p50, charge, night_kwh, night_dynamic.
     Compatible con el formato one-liner [CARGA]/[DESCARGA].
     """
-    soc = charge = forecast = mode = None
+    soc = charge = forecast = night_kwh = None
+    night_dynamic = False
     for line in log.splitlines():
         # SOC desde la línea del inversor (primer match)
         if soc is None:
@@ -74,6 +74,11 @@ def _parse_decision(log: str) -> tuple:
         m = re.search(r'Previsión Solcast día 1.*p50=([\d.]+)', line)
         if m:
             forecast = float(m.group(1))
+        # Consumo nocturno dinámico o de config
+        m = re.search(r'Consumo nocturno(?:\s+dinámico)?: ([\d.]+) kWh', line)
+        if m:
+            night_kwh = float(m.group(1))
+            night_dynamic = 'dinámico' in line
         # Decisión de carga — formato one-liner [CARGA]
         body_m = re.search(r' — (.+)$', line)
         body = body_m.group(1).strip() if body_m else line.strip()
@@ -87,7 +92,7 @@ def _parse_decision(log: str) -> tuple:
                 charge = True
             elif re.search(r'charge_needed\s*=\s*False', line):
                 charge = False
-    return soc, forecast, charge, mode
+    return soc, forecast, charge, night_kwh, night_dynamic
 
 
 _DECISION_STYLES = {
@@ -200,7 +205,7 @@ def _build_html(
     start_time: datetime,
     dry_run: bool,
 ) -> str:
-    soc, forecast, charge, _ = _parse_decision(log_content)
+    soc, forecast, charge, night_kwh, night_dynamic = _parse_decision(log_content)
 
     # Cabecera semántica
     if not success:
@@ -224,6 +229,17 @@ def _build_html(
         rows += _kv_row("SOC batería", f"{soc:.0f}%", bar_color)
     if forecast is not None:
         rows += _kv_row("Forecast solar (mañana)", f"{forecast:.1f} kWh")
+    if night_kwh is not None:
+        source_badge = (
+            f'<span style="background:#e8f4fd;color:#2980b9;font-size:10px;'
+            f'font-weight:700;padding:1px 6px;border-radius:3px;'
+            f'letter-spacing:.3px;margin-left:6px;">dinámico</span>'
+            if night_dynamic else
+            f'<span style="background:#f5f5f5;color:#888;font-size:10px;'
+            f'font-weight:700;padding:1px 6px;border-radius:3px;'
+            f'letter-spacing:.3px;margin-left:6px;">config</span>'
+        )
+        rows += _kv_row("Consumo nocturno", f"{night_kwh:.2f} kWh{source_badge}")
     rows += _kv_row("Duración del ciclo", f"{duration_s}s")
     rows += _kv_row("Timestamp", f"{date_str} {time_str}")
 
