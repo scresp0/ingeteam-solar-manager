@@ -56,73 +56,111 @@ _C = {
 # Helpers HTML (inline styles — sin CSS externo para compatibilidad email)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _log_line_color(line: str) -> str:
-    if "ERROR" in line:   return "#ff6b6b"
-    if "WARNING" in line: return "#ffd93d"
-    if "INFO" in line:    return "#a8c4e0"
-    return "#6b8cae"
-
-
-# Patrón que identifica una línea de log estándar: empieza con timestamp
-_LOG_LINE_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
-
-
-def _render_log_lines(log_content: str) -> str:
-    """
-    Convierte el texto de log en HTML coloreado distinguiendo:
-    - Líneas estándar (con timestamp): color por nivel (INFO/WARNING/ERROR)
-    - Líneas de bloque/continuación (sin timestamp): color tenue + indentación
-      Dentro de estas, las que empiezan por → o contienen === se destacan.
-    """
-    html = ""
-    for raw_line in log_content.strip().splitlines():
-        escaped = raw_line.replace("&", "&amp;").replace("<", "&lt;")
-
-        if _LOG_LINE_RE.match(raw_line):
-            color  = _log_line_color(raw_line)
-            indent = ""
-        elif raw_line.strip() == "":
-            html += '<div style="height:4px;"></div>\n'
-            continue
-        elif raw_line.lstrip().startswith("→"):
-            color  = "#ffffff"
-            indent = "padding-left:16px;"
-        elif "===" in raw_line:
-            color  = "#7ecbff"
-            indent = ""
-        else:
-            color  = "#5d8aaa"
-            indent = "padding-left:16px;"
-
-        html += (
-            f'<div style="padding:1px 0;font-size:11.5px;color:{color};'
-            f'line-height:1.55;white-space:pre-wrap;word-break:break-word;{indent}">'
-            f'{escaped}</div>\n'
-        )
-    return html
-
 
 def _parse_decision(log: str) -> tuple:
     """
-    Extrae del log: soc (float|None), forecast (float|None),
+    Extrae del log: soc (float|None), forecast_p50 (float|None),
     charge (bool|None), mode (str|None).
+    Compatible con el formato one-liner [CARGA]/[DESCARGA].
     """
     soc = charge = forecast = mode = None
     for line in log.splitlines():
-        m = re.search(r'SOC[^\d]*([\d.]+)\s*%', line, re.I)
-        if m:
-            soc = float(m.group(1))
-        m = re.search(r'[Ff]orecast[^\d]*([\d.]+)\s*kWh', line)
+        # SOC desde la línea del inversor (primer match)
+        if soc is None:
+            m = re.search(r'SOC[^\d]*([\d.]+)\s*%', line, re.I)
+            if m:
+                soc = float(m.group(1))
+        # Forecast p50 desde la línea de Solcast día 1
+        m = re.search(r'Previsión Solcast día 1.*p50=([\d.]+)', line)
         if m:
             forecast = float(m.group(1))
-        if re.search(r'charge_needed\s*=\s*True|carga.*activ', line, re.I):
+        # Decisión de carga — formato one-liner [CARGA]
+        body_m = re.search(r' — (.+)$', line)
+        body = body_m.group(1).strip() if body_m else line.strip()
+        if body.startswith('[CARGA] SÍ'):
             charge = True
-        if re.search(r'charge_needed\s*=\s*False|sin carga|desactiv', line, re.I):
+        elif body.startswith('[CARGA] NO'):
             charge = False
-        m = re.search(r'[Mm]odo[^\w]+([\w\s%]+?)(?:\s*(?:→|select|configur|aplicad)|\s*$)', line)
-        if m:
-            mode = m.group(1).strip()
+        # Compatibilidad con formato anterior
+        if charge is None:
+            if re.search(r'charge_needed\s*=\s*True', line):
+                charge = True
+            elif re.search(r'charge_needed\s*=\s*False', line):
+                charge = False
     return soc, forecast, charge, mode
+
+
+_DECISION_STYLES = {
+    'charge':    ('#2980b9', '#ebf5fb', 'CARGA'),
+    'no-charge': ('#27ae60', '#f0fff4', 'NO CARGA'),
+    'blocked':   ('#e67e22', '#fef9f0', 'BLOQUEADA'),
+    'free':      ('#27ae60', '#f0fff4', 'LIBRE'),
+}
+
+
+def _extract_decision_lines(log: str) -> list[tuple]:
+    """
+    Busca las líneas [CARGA]/[DESCARGA] del log y devuelve
+    lista de (tag, color, bg, badge_text, body).
+    """
+    rows = []
+    for raw in log.splitlines():
+        m = re.search(r' — (.+)$', raw)
+        body = m.group(1).strip() if m else raw.strip()
+
+        if body.startswith('[CARGA] SÍ'):
+            tag, color, bg, badge = 'charge', *_DECISION_STYLES['charge']
+            text = re.sub(r'^\[CARGA\] SÍ ?·? ?', '→ ', body).strip()
+        elif body.startswith('[CARGA] NO'):
+            tag, color, bg, badge = 'no-charge', *_DECISION_STYLES['no-charge']
+            text = re.sub(r'^\[CARGA\] NO ?·? ?', '', body).strip()
+        elif body.startswith('[DESCARGA] BLOQUEADA'):
+            tag, color, bg, badge = 'blocked', *_DECISION_STYLES['blocked']
+            text = re.sub(r'^\[DESCARGA\] BLOQUEADA ?·? ?', '', body).strip()
+        elif body.startswith('[DESCARGA] LIBRE'):
+            tag, color, bg, badge = 'free', *_DECISION_STYLES['free']
+            text = re.sub(r'^\[DESCARGA\] LIBRE ?·? ?', '', body).strip()
+        else:
+            continue
+        rows.append((tag, color, bg, badge, text))
+    return rows
+
+
+def _render_decision_cards(log: str, success: bool) -> str:
+    """
+    Renderiza las líneas de decisión como tarjetas HTML con badge de color.
+    Si el ciclo falló y no hay decisiones, muestra las últimas líneas del log.
+    """
+    rows = _extract_decision_lines(log)
+
+    if not rows:
+        if not success:
+            # Mostrar las últimas líneas en caso de error sin decisiones
+            last = log.strip().splitlines()[-8:]
+            lines_html = ''.join(
+                f'<div style="font-size:11.5px;color:#ff6b6b;padding:1px 0;white-space:pre-wrap;">'
+                f'{l.replace("&","&amp;").replace("<","&lt;")}</div>'
+                for l in last
+            )
+            return (
+                f'<div style="background:#2a1a1a;border-radius:6px;padding:12px 16px;">'
+                f'{lines_html}</div>'
+            )
+        return '<p style="color:#6b7a8d;font-size:13px;">Sin decisiones en el log.</p>'
+
+    html = ''
+    for _, color, bg, badge, text in rows:
+        html += (
+            f'<div style="border-left:3px solid {color};background:{bg};'
+            f'border-radius:0 6px 6px 0;padding:10px 14px;margin:5px 0;">'
+            f'<span style="background:{color};color:#fff;font-size:10px;font-weight:700;'
+            f'padding:2px 8px;border-radius:3px;letter-spacing:.5px;text-transform:uppercase;'
+            f'margin-right:10px;font-family:monospace;">{badge}</span>'
+            f'<span style="font-size:12.5px;color:#2c3e50;">'
+            f'{text.replace("&","&amp;").replace("<","&lt;")}</span>'
+            f'</div>\n'
+        )
+    return html
 
 
 def _soc_bar(soc: float | None) -> str:
@@ -162,7 +200,7 @@ def _build_html(
     start_time: datetime,
     dry_run: bool,
 ) -> str:
-    soc, forecast, charge, mode = _parse_decision(log_content)
+    soc, forecast, charge, _ = _parse_decision(log_content)
 
     # Cabecera semántica
     if not success:
@@ -186,17 +224,10 @@ def _build_html(
         rows += _kv_row("SOC batería", f"{soc:.0f}%", bar_color)
     if forecast is not None:
         rows += _kv_row("Forecast solar (mañana)", f"{forecast:.1f} kWh")
-    if mode:
-        rows += _kv_row(
-            "Modo inversor configurado",
-            f'<span style="background:{accent};color:#fff;padding:2px 10px;'
-            f'border-radius:99px;font-size:12px;">{mode}</span>',
-        )
     rows += _kv_row("Duración del ciclo", f"{duration_s}s")
     rows += _kv_row("Timestamp", f"{date_str} {time_str}")
 
-    # Log renderizado con coloreado por tipo de línea
-    log_lines_html = _render_log_lines(log_content)
+    decision_cards_html = _render_decision_cards(log_content, success)
 
     return f"""<!DOCTYPE html>
 <html lang="es">
@@ -235,7 +266,7 @@ def _build_html(
     </td>
   </tr>
 
-  <!-- CUERPO — resumen (ancho acotado) -->
+  <!-- CUERPO — resumen -->
   <tr>
     <td style="background:{_C['card']};border-radius:0 0 14px 14px;
                padding:28px 36px 32px;
@@ -250,30 +281,23 @@ def _build_html(
     </td>
   </tr>
 
-</table><!-- fin tabla 560px -->
-
-<!-- LOG — tabla independiente al 90% del wrapper para mantener márgenes -->
-<table width="90%" cellpadding="0" cellspacing="0" style="margin-top:16px;margin-left:auto;margin-right:auto;">
+  <!-- DECISIONES DEL CICLO -->
   <tr>
-    <td style="padding:0 0 4px;">
+    <td style="padding:20px 0 0;">
       <div style="font-size:11px;font-weight:700;color:{_C['muted']};
                   letter-spacing:1.5px;text-transform:uppercase;margin-bottom:10px;">
-        Log de ejecución
+        Decisiones del ciclo
       </div>
-      <div style="background:{_C['mono_bg']};border-radius:10px;padding:18px 22px;
-                  font-family:'SF Mono','Fira Code','Consolas',monospace;
-                  overflow-x:auto;border:1px solid #2d3f55;width:100%;
-                  box-sizing:border-box;">
-        {log_lines_html}
-      </div>
+      {decision_cards_html}
     </td>
   </tr>
-</table>
+
+</table><!-- fin tabla 560px -->
 
 <!-- PIE -->
 <table width="100%" cellpadding="0" cellspacing="0">
   <tr>
-    <td style="padding:18px 0 4px;text-align:center;">
+    <td style="padding:24px 0 4px;text-align:center;">
       <p style="margin:0;font-size:11px;color:{_C['muted']};">
         Ingeteam INGECON SUN STORAGE 1PLAY TL-M &nbsp;·&nbsp; solar-manager
       </p>

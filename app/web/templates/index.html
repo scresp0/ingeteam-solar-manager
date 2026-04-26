@@ -238,6 +238,43 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 /* ── Divider ─────────────────────────────────────── */
 .divider { height: 1px; background: var(--border); margin: 4px 0; }
 
+/* ── Log decision badges ─────────────────────────── */
+.log-decision {
+  background: var(--bg3); border-radius: 5px;
+  padding: 3px 8px; margin: 2px 0;
+  border-left: 2px solid transparent;
+}
+.log-decision.charge     { border-color: var(--blue); }
+.log-decision.no-charge  { border-color: var(--green); }
+.log-decision.blocked    { border-color: var(--orange); }
+.log-decision.free       { border-color: var(--green); }
+.log-badge {
+  font-family: var(--mono); font-size: 10px; font-weight: 600;
+  padding: 1px 6px; border-radius: 3px; flex-shrink: 0;
+  text-transform: uppercase; letter-spacing: .4px;
+}
+.log-badge.charge    { background: var(--blued);   color: var(--blue);   }
+.log-badge.no-charge { background: var(--greend);  color: var(--green);  }
+.log-badge.blocked   { background: var(--oranged); color: var(--orange); }
+.log-badge.free      { background: var(--greend);  color: var(--green);  }
+
+/* ── Log section collapsibles (DEBUG mode) ───────── */
+details.log-section { margin: 3px 0; }
+details.log-section > summary.log-section-hd {
+  padding: 4px 10px; cursor: pointer; list-style: none;
+  font-family: var(--mono); font-size: 11px; color: var(--muted2);
+  display: flex; align-items: center; gap: 6px;
+  border-radius: 4px; user-select: none;
+}
+details.log-section > summary.log-section-hd:hover { color: var(--muted); background: var(--bg3); }
+details.log-section > summary.log-section-hd::before { content: '▶'; font-size: 7px; transition: transform .15s; }
+details.log-section[open] > summary.log-section-hd::before { transform: rotate(90deg); }
+.log-detail {
+  padding: 1px 10px 1px 24px; line-height: 1.7;
+  font-family: var(--mono); font-size: 11px; color: var(--muted2);
+  background: #070b0f;
+}
+
 </style>
 </head>
 <body>
@@ -748,15 +785,6 @@ function updateDecisionBadge(p50, p10, p90) {
 loadForecast();
 
 // ══ Logs ═══════════════════════════════════════════
-function appendLog(ts, lvl, msg) {
-  const out = document.getElementById('log-output');
-  const line = document.createElement('div');
-  line.className = 'log-line';
-  line.innerHTML = `<span class="log-ts">${ts}</span><span class="log-lvl ${lvl}">${lvl}</span><span class="log-msg">${escHtml(msg)}</span>`;
-  out.appendChild(line);
-  if (document.getElementById('log-follow').checked) out.scrollTop = out.scrollHeight;
-}
-function clearLog() { document.getElementById('log-output').innerHTML = ''; }
 function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function parseLogLevel(line) {
   if (/\bERROR\b/i.test(line)) return 'ERR';
@@ -764,6 +792,85 @@ function parseLogLevel(line) {
   if (/\bDEBUG\b/i.test(line)) return 'DBG';
   if (/\bOK\b|completad|correc/i.test(line)) return 'OK';
   return 'INFO';
+}
+
+// Extrae el cuerpo del mensaje (después del " — " del formatter de Python)
+function _msgBody(raw) {
+  const m = raw.match(/ — (.+)$/s);
+  return m ? m[1].trim() : raw.trim();
+}
+
+// Detecta badge de decisión y devuelve {badge, cls, decCls, body} o null
+function _decisionBadge(raw) {
+  const body = _msgBody(raw);
+  if (body.startsWith('[CARGA] SÍ'))
+    return { badge:'CARGA', cls:'charge',    decCls:'charge',   body: body.replace(/^\[CARGA\] SÍ ?·? ?/, '→ ') };
+  if (body.startsWith('[CARGA] NO'))
+    return { badge:'NO CARGA', cls:'no-charge', decCls:'no-charge', body: body.replace(/^\[CARGA\] NO ?·? ?/, '') };
+  if (body.startsWith('[DESCARGA] BLOQUEADA'))
+    return { badge:'BLOQUEADA', cls:'blocked',   decCls:'blocked',   body: body.replace(/^\[DESCARGA\] BLOQUEADA ?·? ?/, '') };
+  if (body.startsWith('[DESCARGA] LIBRE'))
+    return { badge:'LIBRE',    cls:'free',       decCls:'free',      body: body.replace(/^\[DESCARGA\] LIBRE ?·? ?/, '') };
+  return null;
+}
+
+// Estado para agrupar secciones === ... === (modo DEBUG)
+let _activeSec = null;
+
+function appendLog(ts, lvl, raw) {
+  if (!raw || !raw.trim()) return;
+  const out = document.getElementById('log-output');
+  const scroll = () => { if (document.getElementById('log-follow').checked) out.scrollTop = out.scrollHeight; };
+
+  // Sección colapsable: línea que es exactamente "=== Texto ==="
+  const secMatch = raw.trim().match(/^(=== .+ ===)$/);
+  if (secMatch) {
+    const det = document.createElement('details');
+    det.className = 'log-section';
+    const sum = document.createElement('summary');
+    sum.className = 'log-section-hd';
+    sum.textContent = secMatch[1];
+    det.appendChild(sum);
+    out.appendChild(det);
+    _activeSec = det;
+    scroll();
+    return;
+  }
+
+  // Línea de detalle dentro de una sección activa (sin timestamp = continuación de bloque multilínea)
+  const isTimestamped = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(raw);
+  if (_activeSec && !isTimestamped) {
+    const div = document.createElement('div');
+    div.className = 'log-detail';
+    div.textContent = raw;
+    _activeSec.appendChild(div);
+    scroll();
+    return;
+  }
+  if (isTimestamped) _activeSec = null;
+
+  // Badge de decisión [CARGA] / [DESCARGA]
+  const dec = _decisionBadge(raw);
+  if (dec) {
+    const line = document.createElement('div');
+    line.className = `log-line log-decision ${dec.decCls}`;
+    line.innerHTML = `<span class="log-ts">${ts}</span><span class="log-badge ${dec.cls}">${dec.badge}</span><span class="log-msg">${escHtml(dec.body)}</span>`;
+    out.appendChild(line);
+    scroll();
+    return;
+  }
+
+  // Línea normal
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  line.innerHTML = `<span class="log-ts">${ts}</span><span class="log-lvl ${lvl}">${lvl}</span><span class="log-msg">${escHtml(raw)}</span>`;
+  out.appendChild(line);
+  scroll();
+}
+
+function clearLog() {
+  document.getElementById('log-output').innerHTML = '';
+  _activeSec = null;
 }
 
 // ══ Tests ══════════════════════════════════════════
@@ -834,7 +941,7 @@ async function loadFileLogs() {
   clearLog();
   setJobStatus('running','Cargando log del fichero…');
   try {
-    const r = await fetch('/api/logs?lines=200');
+    const r = await fetch('/api/logs?lines=300');
     const { lines } = await r.json();
     const now = new Date().toLocaleTimeString('es-ES');
     lines.forEach(l => appendLog(now, parseLogLevel(l), l));

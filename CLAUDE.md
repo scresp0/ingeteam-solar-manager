@@ -75,6 +75,11 @@ La versión se muestra en el log de arranque, en el header de la web (`/`) y en 
 ### Docker
 - `shm_size: '256mb'` en el servicio `solar-manager` — necesario para Chromium
 - Servicio `influxdb` con healthcheck; `solar-manager` depende de él
+- **Arranque recomendado: `make up`** (no `docker compose up -d` directamente)
+  - El `Makefile` inyecta `HOST_HOSTNAME=$(hostname)` antes de llamar a Docker
+  - `$HOSTNAME` no está exportada en macOS; `$(hostname)` funciona en ambos sistemas
+  - `docker-compose.yml` espera la variable `${HOST_HOSTNAME}`, que el Makefile provee
+  - Otros targets: `make down`, `make restart`, `make build`, `make logs`, `make shell`
 
 ## Lógica de decisión (resumen)
 

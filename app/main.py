@@ -22,7 +22,9 @@ from app.solcast import get_two_day_forecast, SolcastError
 from app.inverter import read_inverter_state, InverterError
 from app.decision import (
     DecisionInput, decide_charge, decide_discharge,
-    charge_summary, discharge_summary, SolarForecast
+    charge_summary, discharge_summary,
+    charge_oneliner, discharge_oneliner,
+    SolarForecast
 )
 from app.automation import set_charge_schedule, set_discharge_schedule, AutomationError
 from app.notifier import CycleEmailNotifier
@@ -125,8 +127,10 @@ def run(cfg: AppConfig) -> bool:
                           night_cutoff_hour=cutoff)
     discharge = decide_discharge(inp, night_cutoff_hour=cutoff)
 
-    logger.info("\n" + charge_summary(inp, charge, night_cutoff_hour=cutoff))
-    logger.info("\n" + discharge_summary(inp, discharge, night_cutoff_hour=cutoff))
+    logger.info(charge_oneliner(inp, charge, night_cutoff_hour=cutoff))
+    logger.debug("\n" + charge_summary(inp, charge, night_cutoff_hour=cutoff))
+    logger.info(discharge_oneliner(inp, discharge, night_cutoff_hour=cutoff))
+    logger.debug("\n" + discharge_summary(inp, discharge, night_cutoff_hour=cutoff))
 
     # 5. Configurar inversor — 6.3.1 carga
     try:

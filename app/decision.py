@@ -335,6 +335,67 @@ def discharge_summary(
 
 
 # ---------------------------------------------------------------------------
+# One-liners para el log de producción (INFO level)
+# ---------------------------------------------------------------------------
+
+def charge_oneliner(
+    inp: DecisionInput,
+    result: ChargeDecision,
+    night_cutoff_hour: int = 8,
+    _ref_date: Optional[date] = None,
+) -> str:
+    dias = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
+    ref      = _ref_date if _ref_date is not None else reference_date(night_cutoff_hour)
+    tomorrow = ref + timedelta(days=1)
+    dia_es   = dias[tomorrow.weekday()]
+
+    if result.valley_day_skip:
+        return (
+            f"[CARGA] NO · valle {dia_es} {tomorrow.strftime('%d/%m')} · "
+            f"SOC {inp.soc_actual_pct}% · "
+            f"solar p10/p50 {inp.forecast_day1.p10}/{inp.forecast_day1.p50} kWh"
+        )
+    if not result.charge_needed:
+        return (
+            f"[CARGA] NO · solar suficiente · "
+            f"SOC {inp.soc_actual_pct}% → alba {result.energy_at_dawn_kwh} kWh · "
+            f"solar efectiva {result.solar_effective_kwh} kWh · déficit 0 kWh"
+        )
+    return (
+        f"[CARGA] SÍ → SOC {result.target_soc_pct}% · "
+        f"+{result.to_charge_kwh} kWh desde red · "
+        f"SOC {inp.soc_actual_pct}% → alba {result.energy_at_dawn_kwh} kWh · "
+        f"solar efectiva {result.solar_effective_kwh} kWh · déficit {result.deficit_kwh} kWh"
+    )
+
+
+def discharge_oneliner(
+    inp: DecisionInput,
+    result: DischargeDecision,
+    night_cutoff_hour: int = 8,
+    _ref_date: Optional[date] = None,
+) -> str:
+    dias = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
+    ref      = _ref_date if _ref_date is not None else reference_date(night_cutoff_hour)
+    day2     = ref + timedelta(days=2)
+
+    if not result.discharge_blocked:
+        if "laborable" in result.reason:
+            return "[DESCARGA] LIBRE · mañana es laborable"
+        solar_day2 = round(_solar_effective(inp.forecast_day2, inp.risk_factor), 2)
+        return (
+            f"[DESCARGA] LIBRE · "
+            f"solar {dias[day2.weekday()]} {solar_day2} kWh · "
+            f"déficit 0 kWh · energía fin día1 {result.energy_end_day1_kwh} kWh"
+        )
+    return (
+        f"[DESCARGA] BLOQUEADA · "
+        f"déficit día2 {result.deficit_day2_kwh} kWh · "
+        f"energía fin día1 {result.energy_end_day1_kwh} kWh"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Compatibilidad con código anterior
 # ---------------------------------------------------------------------------
 
