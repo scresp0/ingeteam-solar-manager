@@ -140,9 +140,10 @@ El motivo ("reason") siempre muestra el déficit *sin bloqueo* para explicar por
 | Endpoint | Descripción |
 |---|---|
 | `GET /` | Dashboard HTML (sustituye `{{VERSION}}` y `{{HOSTNAME}}`) |
-| `GET /api/status` | Estado MODBUS del inversor (SOC, potencia, tensión, temp, estados) |
+| `GET /api/status` | Estado MODBUS del inversor (SOC, potencia, tensión, temp, estados) — refresco 30s |
 | `GET /api/forecast` | Forecast Solcast de mañana agrupado por hora (desde caché JSON) |
-| `GET /api/today_solar` | Producción solar real de hoy: datalogger minuto a minuto, agrupado por hora (índice `i → i//60`). Requiere `INVERTER_DEVICE_ID` configurado. Devuelve `current_solar_w`, `total_solar_kwh`, `hours`, `solar_kw`. |
+| `GET /api/today_solar` | Producción solar real de hoy: datalogger minuto a minuto, agrupado por hora (`i → i//60`). Requiere `INVERTER_DEVICE_ID`. Devuelve `current_solar_w`, `total_solar_kwh`, `hours`, `solar_kw`. Refresco 60s. |
+| `GET /api/params` | Parámetros dinámicos activos: `night_consumption_kwh`, `risk_factor`, origen (dinámico/config) y `*_valid_days` (días válidos en InfluxDB dentro de la ventana). Refresco 10min. |
 | `GET /api/logs` | Últimas N líneas del fichero de log |
 | `POST /api/cycle` | Lanza ciclo completo manual (dry_run o real) |
 | `POST /api/run/{test}` | Lanza test unitario en background |
@@ -150,16 +151,27 @@ El motivo ("reason") siempre muestra el déficit *sin bloqueo* para explicar por
 
 ### Dashboard — panel de métricas
 5 tiles: SOC batería · Potencia batería · **Producción solar** · Tensión · Temperatura.
-La producción solar se refresca desde `/api/today_solar` cada 60s (más lento que MODBUS a 30s).
+
+### Dashboard — card "Estado inversor"
+Además del SOC ring y estados del inversor, muestra dos filas de parámetros del algoritmo:
+- **Cons. nocturno**: valor activo (kWh) + badge `din` (dinámico desde InfluxDB) o `X/14d` (días acumulados vs mínimo requerido).
+- **Risk factor**: ídem. Badge `din` cuando supera el umbral, `X/14d` mientras se acumula.
+- Tooltip en cada badge explica el número de días válidos y la ventana configurada.
 
 ### Dashboard — gráfico de forecast
-- **Barra amber**: forecast p50 de mañana; **contorno amber**: rango p90
-- **Barra verde semitransparente** (overlay): producción real de hoy (`_todayByHour`). Escala vertical = max(forecast, actual). Leyenda visible solo cuando hay datos reales.
-- **Hora actual** destacada en azul (`.fbar.current`) y en el eje X, en lugar del pico máximo.
-- Comparación es *hoy real* vs *mañana forecast* — días distintos, útil para validar la forma de la curva.
+- Cada franja horaria dividida en **dos barras de mitad de ancho** (gap 1px):
+  - **Izquierda (amber)**: forecast p50 de mañana; contorno = rango p90.
+  - **Derecha (verde)**: producción real de hoy para esa hora (`_todayByHour`). Sin datos → placeholder de 2px invisible.
+- Escala vertical = max(forecast, actual) para comparación justa.
+- Etiqueta de la hora actual en azul/negrita en el eje X.
+- Leyenda visible solo cuando hay datos reales del día.
+- Comparación válida aunque son días distintos (hoy real vs mañana forecast).
 
 ### Gotcha datalogger para visualización
-`/api/today_solar` lee datos parciales del día actual del datalogger — esto es correcto para visualización. Solo se evita el día actual para el cálculo de stats diarias (que se escriben en InfluxDB con datos completos).
+`/api/today_solar` lee datos parciales del día actual — correcto para visualización. Solo se evita el día actual para stats diarias en InfluxDB (datos incompletos).
+
+### Gotcha `night_consumption_kwh` en InfluxDB
+El campo `night_consumption_kwh` en `stats_diarias` se añadió en v1.25. Registros anteriores no lo tienen → el contador de días válidos arranca desde cero aunque haya meses de `stats_diarias`. El risk factor usa `solar_kwh` (campo original) y acumula datos más rápido.
 
 ## Repositorio y git
 - **origin** (principal): `git@git.metafrase.net:scresp0/recarga-bateria-ingeteam.git` (Gitea autohospedado)
