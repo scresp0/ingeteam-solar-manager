@@ -64,7 +64,8 @@ La versión se muestra en el log de arranque, en el header de la web (`/`) y en 
 - `api_key` va como **parámetro de URL** (`?api_key=...`), no como Bearer token
 
 ### InfluxDB (storage.py / logger_reader.py)
-- Nunca leer el día actual del datalogger (datos incompletos) — siempre ayer o antes
+- Nunca leer el día actual del datalogger **para stats diarias** (datos incompletos) — siempre ayer o antes
+- Leer el día actual del datalogger **sí está permitido** para visualización en tiempo real (`/api/today_solar`)
 - Backfill incremental: consultar último timestamp almacenado antes de pedir más datos
 - Timestamps: hora local española almacenada con designación UTC (decisión consciente por simplicidad)
 - `ciclo_carga`: sin tags; timestamp = hora de ejecución UTC (~22-23h UTC)
@@ -132,6 +133,33 @@ El motivo ("reason") siempre muestra el déficit *sin bloqueo* para explicar por
 
 ### Formato de log de decisiones
 `decision.py` expone `charge_oneliner()` y `discharge_oneliner()` que emiten líneas con prefijo `[CARGA]`/`[DESCARGA]` al nivel INFO. El detalle completo va a DEBUG. Estos prefijos los parsean tanto la web UI (badges de color, secciones colapsables) como `notifier.py` (tarjetas en el email HTML).
+
+## Interfaz web (`app/web/`)
+
+### Endpoints FastAPI (`server.py`)
+| Endpoint | Descripción |
+|---|---|
+| `GET /` | Dashboard HTML (sustituye `{{VERSION}}` y `{{HOSTNAME}}`) |
+| `GET /api/status` | Estado MODBUS del inversor (SOC, potencia, tensión, temp, estados) |
+| `GET /api/forecast` | Forecast Solcast de mañana agrupado por hora (desde caché JSON) |
+| `GET /api/today_solar` | Producción solar real de hoy: datalogger minuto a minuto, agrupado por hora (índice `i → i//60`). Requiere `INVERTER_DEVICE_ID` configurado. Devuelve `current_solar_w`, `total_solar_kwh`, `hours`, `solar_kw`. |
+| `GET /api/logs` | Últimas N líneas del fichero de log |
+| `POST /api/cycle` | Lanza ciclo completo manual (dry_run o real) |
+| `POST /api/run/{test}` | Lanza test unitario en background |
+| `GET /api/stream/{job_id}` | SSE stream de logs de un job |
+
+### Dashboard — panel de métricas
+5 tiles: SOC batería · Potencia batería · **Producción solar** · Tensión · Temperatura.
+La producción solar se refresca desde `/api/today_solar` cada 60s (más lento que MODBUS a 30s).
+
+### Dashboard — gráfico de forecast
+- **Barra amber**: forecast p50 de mañana; **contorno amber**: rango p90
+- **Barra verde semitransparente** (overlay): producción real de hoy (`_todayByHour`). Escala vertical = max(forecast, actual). Leyenda visible solo cuando hay datos reales.
+- **Hora actual** destacada en azul (`.fbar.current`) y en el eje X, en lugar del pico máximo.
+- Comparación es *hoy real* vs *mañana forecast* — días distintos, útil para validar la forma de la curva.
+
+### Gotcha datalogger para visualización
+`/api/today_solar` lee datos parciales del día actual del datalogger — esto es correcto para visualización. Solo se evita el día actual para el cálculo de stats diarias (que se escriben en InfluxDB con datos completos).
 
 ## Repositorio y git
 - **origin** (principal): `git@git.metafrase.net:scresp0/recarga-bateria-ingeteam.git` (Gitea autohospedado)
