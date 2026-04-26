@@ -107,6 +107,9 @@ class ChargingConfig(BaseModel):
     # Consumo nocturno dinámico: mínimo de días y ventana deslizante
     night_consumption_min_days: int = Field(default=14, ge=1)
     night_consumption_window_days: int = Field(default=30, ge=7)
+    # Risk factor dinámico: calibrado desde desviación histórica Solcast vs real
+    risk_factor_min_days: int = Field(default=14, ge=1)
+    risk_factor_window_days: int = Field(default=30, ge=7)
 
     @field_validator("max_soc_pct")
     @classmethod

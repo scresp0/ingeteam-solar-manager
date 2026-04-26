@@ -29,7 +29,7 @@ from app.decision import (
 from app.automation import set_charge_schedule, set_discharge_schedule, AutomationError
 from app.notifier import CycleEmailNotifier
 from app.logger_reader import get_yesterday_stats, LoggerReaderError
-from app.storage import write_cycle, write_daily_stats, get_avg_night_consumption, StorageError
+from app.storage import write_cycle, write_daily_stats, get_avg_night_consumption, get_dynamic_risk_factor, StorageError
 
 
 def setup_logging(cfg: AppConfig) -> None:
@@ -124,7 +124,27 @@ def run(cfg: AppConfig) -> bool:
             f"(config — menos de {cfg.charging.night_consumption_min_days} días en InfluxDB)"
         )
 
-    # 4. Construir input compartido por ambas funciones de decisión
+    # 4. Risk factor: valor dinámico desde InfluxDB o fallback de config
+    risk_factor = cfg.charging.risk_factor
+    dynamic_rf = get_dynamic_risk_factor(
+        cfg.influxdb,
+        window_days=cfg.charging.risk_factor_window_days,
+        min_days=cfg.charging.risk_factor_min_days,
+    )
+    if dynamic_rf is not None:
+        logger.info(
+            f"Risk factor dinámico: {dynamic_rf} "
+            f"(media {cfg.charging.risk_factor_window_days}d · "
+            f"fallback config: {cfg.charging.risk_factor})"
+        )
+        risk_factor = dynamic_rf
+    else:
+        logger.info(
+            f"Risk factor: {risk_factor} "
+            f"(config — menos de {cfg.charging.risk_factor_min_days} días en InfluxDB)"
+        )
+
+    # 5. Construir input compartido por ambas funciones de decisión
     inp = DecisionInput(
         forecast_day1=forecast_day1,
         forecast_day2=forecast_day2,
@@ -132,7 +152,7 @@ def run(cfg: AppConfig) -> bool:
         battery_capacity_kwh=cfg.installation.battery_capacity_kwh,
         daily_consumption_kwh=cfg.installation.average_daily_consumption_kwh,
         night_consumption_kwh=night_consumption_kwh,
-        risk_factor=cfg.charging.risk_factor,
+        risk_factor=risk_factor,
         min_soc_pct=min_soc,
         max_soc_pct=cfg.charging.max_soc_pct,
         safety_margin_kwh=cfg.charging.safety_margin_kwh,
@@ -140,7 +160,7 @@ def run(cfg: AppConfig) -> bool:
         holidays=cfg.tariff.holidays,
     )
 
-    # 5. Decisiones independientes
+    # 6. Decisiones independientes
     cutoff    = cfg.tariff.night_cutoff_hour
 
     charge    = decide_charge(inp, dry_run=cfg.system.dry_run,
@@ -152,7 +172,7 @@ def run(cfg: AppConfig) -> bool:
     logger.info(discharge_oneliner(inp, discharge, night_cutoff_hour=cutoff))
     logger.debug("\n" + discharge_summary(inp, discharge, night_cutoff_hour=cutoff))
 
-    # 5. Configurar inversor — 6.3.1 carga
+    # 7. Configurar inversor — 6.3.1 carga
     try:
         logger.info("Programando carga en el inversor (6.3.1)...")
         set_charge_schedule(
@@ -170,7 +190,7 @@ def run(cfg: AppConfig) -> bool:
         notifier.send(success=False)
         return False
 
-    # 6. Configurar inversor — 6.3.2 descarga
+    # 8. Configurar inversor — 6.3.2 descarga
     try:
         logger.info("Programando descarga en el inversor (6.3.2)...")
         set_discharge_schedule(
@@ -187,7 +207,7 @@ def run(cfg: AppConfig) -> bool:
         notifier.send(success=False)
         return False
 
-    # 7. Stats del día anterior + InfluxDB
+    # 9. Stats del día anterior + InfluxDB
     try:
         stats = get_yesterday_stats(cfg.inverter)
         write_daily_stats(cfg.influxdb, stats)

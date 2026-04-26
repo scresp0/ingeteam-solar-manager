@@ -98,6 +98,10 @@ charging:
   night_consumption_kwh: 3.5
   night_consumption_min_days: 14    # días mínimos para activar el valor dinámico
   night_consumption_window_days: 30 # ventana deslizante para la media (días)
+  # Risk factor dinámico: calibrado desde histórico Solcast vs producción real.
+  # Mientras no haya suficientes días, se usa el risk_factor fijo definido arriba.
+  risk_factor_min_days: 14          # días mínimos de pares (previsión+real) para activarlo
+  risk_factor_window_days: 30       # ventana deslizante para el cálculo (días)
 
 # -----------------------------------------------------------------------------
 # Sistema

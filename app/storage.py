@@ -172,6 +172,90 @@ from(bucket: "{cfg.bucket}")
         return None
 
 
+def get_dynamic_risk_factor(
+    cfg: InfluxDBConfig,
+    window_days: int = 30,
+    min_days: int = 14,
+) -> float | None:
+    """
+    Calcula el risk_factor óptimo comparando predicciones históricas de Solcast
+    con la producción solar real almacenada en InfluxDB.
+
+    Fórmula por día: rf_óptimo = (solar_real - p50) / (p10 - p50), clamp [0,1]
+
+    Devuelve None si:
+    - InfluxDB no está habilitado
+    - Hay menos de min_days pares válidos en la ventana
+    - La consulta falla
+    """
+    if not cfg.enabled:
+        return None
+
+    from datetime import date as date_type, timedelta
+
+    fetch_days = window_days + 2  # margen para desfase UTC+1/+2
+
+    q_ciclo = f"""
+from(bucket: "{cfg.bucket}")
+  |> range(start: -{fetch_days}d)
+  |> filter(fn: (r) => r._measurement == "ciclo_carga" and
+     (r._field == "forecast_p10_kwh" or r._field == "forecast_p50_kwh"))
+  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
+"""
+
+    q_stats = f"""
+from(bucket: "{cfg.bucket}")
+  |> range(start: -{fetch_days}d)
+  |> filter(fn: (r) => r._measurement == "stats_diarias" and r._field == "solar_kwh")
+  |> filter(fn: (r) => r._value > 0.5)
+"""
+
+    try:
+        from influxdb_client import InfluxDBClient
+        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
+            api = client.query_api()
+            ciclo_tables = api.query(q_ciclo, org=cfg.org)
+            stats_tables = api.query(q_stats, org=cfg.org)
+
+        # date -> solar_kwh (timestamp de stats_diarias = medianoche UTC del día)
+        solar_by_date: dict = {}
+        for table in stats_tables:
+            for rec in table.records:
+                solar_by_date[rec.get_time().date()] = rec.get_value()
+
+        rf_values = []
+        for table in ciclo_tables:
+            for rec in table.records:
+                p10 = rec.values.get("forecast_p10_kwh")
+                p50 = rec.values.get("forecast_p50_kwh")
+                if p10 is None or p50 is None or p10 >= p50:
+                    continue
+                # ciclo corre ~22-23h UTC → forecast es para el día siguiente UTC
+                forecast_date = rec.get_time().date() + timedelta(days=1)
+                solar_real = solar_by_date.get(forecast_date)
+                if solar_real is None:
+                    continue
+                rf = (solar_real - p50) / (p10 - p50)
+                rf_values.append(max(0.0, min(1.0, rf)))
+
+        if len(rf_values) < min_days:
+            logger.debug(
+                f"Risk factor dinámico: solo {len(rf_values)} días válidos "
+                f"(mínimo {min_days}) — usando fallback"
+            )
+            return None
+
+        avg_rf = sum(rf_values) / len(rf_values)
+        logger.debug(f"Risk factor dinámico: {len(rf_values)} días, media={avg_rf:.3f}")
+        return round(avg_rf, 3)
+
+    except ImportError:
+        raise StorageError("influxdb-client no está instalado.")
+    except Exception as e:
+        logger.warning(f"No se pudo calcular risk_factor dinámico desde InfluxDB: {e}")
+        return None
+
+
 def _write_point(cfg: InfluxDBConfig, point: dict) -> None:
     """Escribe un punto en InfluxDB usando la API HTTP v2."""
     try:
