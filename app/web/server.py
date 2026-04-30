@@ -366,7 +366,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
 
     @app.get("/api/today_solar")
     async def today_solar():
-        """Producción solar real de hoy (datalogger del inversor, minuto a minuto)."""
+        """Producción solar, consumo casa y flujo de red de hoy (datalogger del inversor, minuto a minuto)."""
         import asyncio
         import requests as _req
         from datetime import date as _date
@@ -393,10 +393,13 @@ def create_app(cfg: AppConfig) -> FastAPI:
         records = [entry["val"] for entry in data.get("data", [])]
         if not records:
             return {"ok": True, "date": date_str, "hours": [], "solar_kw": [],
-                    "current_solar_w": 0, "total_solar_kwh": 0.0}
+                    "current_solar_w": 0, "total_solar_kwh": 0.0,
+                    "current_grid_w": 0, "current_house_w": 0}
 
         last = records[-1]
         current_solar_w = round(last.get("Pdc1", 0) + last.get("Pdc2", 0))
+        current_grid_w = round(last.get("PacMeter", 0))
+        current_house_w = round(last.get("PacGrid", 0))
 
         total_solar_kwh = round(
             sum(r.get("Pdc1", 0) + r.get("Pdc2", 0) for r in records) / 1000 / 60, 2
@@ -420,6 +423,8 @@ def create_app(cfg: AppConfig) -> FastAPI:
             "solar_kw": solar_kw_out,
             "current_solar_w": current_solar_w,
             "total_solar_kwh": total_solar_kwh,
+            "current_grid_w": current_grid_w,
+            "current_house_w": current_house_w,
         }
 
     @app.get("/api/logs")

@@ -103,6 +103,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
 .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
 .grid-5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+.grid-7 { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; }
 
 /* ── Cards ───────────────────────────────────────── */
 .card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius2); overflow: hidden; }
@@ -332,10 +333,12 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
   <div class="tab-panel active" id="tab-dashboard">
 
     <!-- Metric tiles -->
-    <div class="grid-5" id="metric-grid">
+    <div class="grid-7" id="metric-grid">
       <div class="metric"><div class="metric-label">SOC batería</div><div class="metric-value" id="m-soc">—</div><div class="metric-sub" id="m-soc-sub">Mín configurado: 35%</div></div>
       <div class="metric"><div class="metric-label">Potencia batería</div><div class="metric-value blue" id="m-pow">—</div><div class="metric-sub" id="m-pow-sub">W</div></div>
       <div class="metric"><div class="metric-label">Producción solar</div><div class="metric-value green" id="m-solar">—</div><div class="metric-sub" id="m-solar-sub">W ahora</div></div>
+      <div class="metric"><div class="metric-label">Consumo casa</div><div class="metric-value" id="m-house">—</div><div class="metric-sub" id="m-house-sub">W</div></div>
+      <div class="metric"><div class="metric-label">Red</div><div class="metric-value" id="m-grid">—</div><div class="metric-sub" id="m-grid-sub">W</div></div>
       <div class="metric"><div class="metric-label">Tensión batería</div><div class="metric-value" id="m-volt">—</div><div class="metric-sub">V</div></div>
       <div class="metric"><div class="metric-label">Temperatura</div><div class="metric-value" id="m-temp">—</div><div class="metric-sub">ºC</div></div>
     </div>
@@ -827,6 +830,23 @@ async function loadTodaySolar() {
 
     const w = d.current_solar_w;
     setMetric('m-solar', w + ' W', w > 50 ? 'green' : '', d.total_solar_kwh + ' kWh hoy');
+
+    // Consumo casa (PacGrid)
+    if (d.current_house_w !== undefined) {
+      const hw = d.current_house_w;
+      setMetric('m-house', hw + ' W', '', 'consumo');
+    }
+
+    // Red: PacMeter (+ importando de red, - exportando a red)
+    if (d.current_grid_w !== undefined) {
+      const gw = d.current_grid_w;
+      const absGw = Math.abs(gw);
+      const exporting = gw < -50;
+      const importing = gw > 50;
+      const cls = exporting ? 'green' : (importing ? 'amber' : '');
+      const sub = exporting ? 'Exportando a red' : (importing ? 'Importando de red' : 'Sin flujo de red');
+      setMetric('m-grid', absGw + ' W', cls, sub);
+    }
 
     _todayByHour = {};
     d.hours.forEach((h, i) => { _todayByHour[h] = d.solar_kw[i]; });

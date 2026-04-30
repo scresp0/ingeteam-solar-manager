@@ -142,7 +142,7 @@ El motivo ("reason") siempre muestra el déficit *sin bloqueo* para explicar por
 | `GET /` | Dashboard HTML (sustituye `{{VERSION}}` y `{{HOSTNAME}}`) |
 | `GET /api/status` | Estado MODBUS del inversor (SOC, potencia, tensión, temp, estados) — refresco 30s |
 | `GET /api/forecast` | Forecast Solcast de mañana agrupado por hora (desde caché JSON) |
-| `GET /api/today_solar` | Producción solar real de hoy: datalogger minuto a minuto, agrupado por hora (`i → i//60`). Requiere `INVERTER_DEVICE_ID`. Devuelve `current_solar_w`, `total_solar_kwh`, `hours`, `solar_kw`. Refresco 60s. |
+| `GET /api/today_solar` | Producción solar, consumo casa y flujo de red de hoy: datalogger minuto a minuto, agrupado por hora. Requiere `INVERTER_DEVICE_ID`. Devuelve `current_solar_w`, `total_solar_kwh`, `hours`, `solar_kw`, `current_grid_w` (PacMeter: + importando, - exportando), `current_house_w` (PacGrid). Refresco 60s. |
 | `GET /api/params` | Parámetros dinámicos activos: `night_consumption_kwh`, `risk_factor`, origen (dinámico/config) y `*_valid_days` (días válidos en InfluxDB dentro de la ventana). Refresco 10min. |
 | `GET /api/logs` | Últimas N líneas del fichero de log |
 | `POST /api/cycle` | Lanza ciclo completo manual (dry_run o real) |
@@ -150,7 +150,9 @@ El motivo ("reason") siempre muestra el déficit *sin bloqueo* para explicar por
 | `GET /api/stream/{job_id}` | SSE stream de logs de un job |
 
 ### Dashboard — panel de métricas
-5 tiles: SOC batería · Potencia batería · **Producción solar** · Tensión · Temperatura.
+7 tiles: SOC batería · Potencia batería · **Producción solar** · **Consumo casa** · **Red** · Tensión · Temperatura.
+
+`Consumo casa` muestra `PacGrid` (W) del último registro del datalogger. `Red` muestra `|PacMeter|` (W) con label "Exportando a red" (verde, PacMeter < -50) / "Importando de red" (amber, PacMeter > 50) / "Sin flujo de red". Ambos se actualizan cada 60s junto con la producción solar.
 
 ### Dashboard — card "Estado inversor"
 Además del SOC ring y estados del inversor, muestra dos filas de parámetros del algoritmo:
