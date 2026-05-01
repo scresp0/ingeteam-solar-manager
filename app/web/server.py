@@ -7,6 +7,7 @@ Endpoints:
   GET  /api/forecast  → forecast solar por hora (Solcast, con caché)
   POST /api/run/{test} → ejecutar un test
   GET  /api/stream/{job_id} → stream de logs via SSE
+  GET  /api/solar_history → historial forecast vs real (día/semana/mes)
   GET  /api/logs      → últimas líneas del log
   POST /api/cycle     → ejecutar ciclo completo manual
 """
@@ -426,6 +427,69 @@ def create_app(cfg: AppConfig) -> FastAPI:
             "current_grid_w": current_grid_w,
             "current_house_w": current_house_w,
         }
+
+    @app.get("/api/solar_history")
+    async def solar_history(date: str, view: str = "day"):
+        """Historial de producción solar vs forecast desde InfluxDB (día / semana / mes)."""
+        import asyncio as _asyncio
+        from datetime import date as _date, timedelta as _td
+
+        if not cfg.influxdb.enabled:
+            return JSONResponse(status_code=503, content={"ok": False, "error": "InfluxDB no habilitado"})
+
+        def _compute():
+            from app.storage import get_solar_history_day, get_solar_history_range
+            _MONTHS = ["ene","feb","mar","abr","may","jun","jul","ago","sep","oct","nov","dic"]
+
+            try:
+                d = _date.fromisoformat(date)
+            except ValueError:
+                return None, "Fecha inválida"
+
+            today = _date.today()
+
+            def _day_label(dt: _date) -> str:
+                if dt == today:             return "hoy"
+                if dt == today - _td(1):   return "ayer"
+                return f"{dt.day} {_MONTHS[dt.month - 1]}"
+
+            def _short(dt: _date) -> str:
+                return f"{dt.day} {_MONTHS[dt.month - 1]}"
+
+            if view == "day":
+                data = get_solar_history_day(cfg.influxdb, date)
+                return {**data, "ok": True, "date": date, "view": view,
+                        "label": _day_label(d)}, None
+
+            elif view == "week":
+                ws = d - _td(days=d.weekday())      # lunes de la semana
+                we = ws + _td(days=7)
+                data = get_solar_history_range(cfg.influxdb, ws.isoformat(), we.isoformat())
+                label = f"{_short(ws)} – {_short(ws + _td(6))}"
+                return {**data, "ok": True, "date": date, "view": view, "label": label,
+                        "range_start": ws.isoformat(),
+                        "range_end": (we - _td(1)).isoformat()}, None
+
+            elif view == "month":
+                ms = d.replace(day=1)
+                me = (ms.replace(month=ms.month + 1) if ms.month < 12
+                      else ms.replace(year=ms.year + 1, month=1))
+                data = get_solar_history_range(cfg.influxdb, ms.isoformat(), me.isoformat())
+                label = f"{_MONTHS[ms.month - 1].capitalize()} {ms.year}"
+                return {**data, "ok": True, "date": date, "view": view, "label": label,
+                        "range_start": ms.isoformat(),
+                        "range_end": (me - _td(1)).isoformat()}, None
+
+            return None, f"Vista desconocida: {view}"
+
+        try:
+            result, error = await _asyncio.to_thread(_compute)
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+        if error:
+            return JSONResponse(status_code=400, content={"ok": False, "error": error})
+        return result
 
     @app.get("/api/logs")
     async def get_logs(lines: int = 100):

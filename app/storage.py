@@ -334,6 +334,118 @@ def write_half_hour_forecast(
     logger.info(f"Forecast media hora guardado en InfluxDB ({len(points)} slots)")
 
 
+def get_solar_history_day(cfg: InfluxDBConfig, date_str: str) -> dict:
+    """Historial de producción solar y forecast para un día (YYYY-MM-DD)."""
+    if not cfg.enabled:
+        return {}
+    stop = (datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    return _solar_history(cfg, date_str, stop)
+
+
+def get_solar_history_range(cfg: InfluxDBConfig, start_str: str, end_str: str) -> dict:
+    """Media horaria de producción solar y forecast en un rango de fechas (end exclusivo)."""
+    if not cfg.enabled:
+        return {}
+    return _solar_history(cfg, start_str, end_str)
+
+
+def _solar_history(cfg: InfluxDBConfig, start_str: str, end_str: str) -> dict:
+    """Consulta solar_media_hora y devuelve medias horarias de real y forecast."""
+    from collections import defaultdict
+
+    query = f"""
+from(bucket: "{cfg.bucket}")
+  |> range(start: {start_str}T00:00:00Z, stop: {end_str}T00:00:00Z)
+  |> filter(fn: (r) => r._measurement == "solar_media_hora")
+  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
+  |> sort(columns: ["_time"])
+"""
+    try:
+        from influxdb_client import InfluxDBClient
+        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
+            tables = client.query_api().query(query, org=cfg.org)
+            recs = [rec.values for table in tables for rec in table.records]
+    except Exception as e:
+        logger.warning(f"Error consultando solar_media_hora {start_str}→{end_str}: {e}")
+        return {}
+
+    # Acumular por (día, hora) — luego promediamos entre días
+    by_day: dict = defaultdict(lambda: defaultdict(lambda: {
+        "real": 0.0, "p50": 0.0, "p10": 0.0, "p90": 0.0,
+        "has_real": False, "has_fc": False,
+    }))
+
+    for v in recs:
+        ts = v.get("_time")
+        if ts is None:
+            continue
+        h   = ts.hour
+        day = ts.date().isoformat()
+        s   = by_day[day][h]
+
+        real = v.get("real_kwh")
+        p50  = v.get("forecast_p50_kwh")
+        p10  = v.get("forecast_p10_kwh")
+        p90  = v.get("forecast_p90_kwh")
+
+        if real is not None and real >= 0:
+            s["real"] += real
+            s["has_real"] = True
+        if p50 is not None:
+            s["p50"] += p50
+            s["p10"] += (p10 or 0.0)
+            s["p90"] += (p90 or 0.0)
+            s["has_fc"] = True
+
+    all_hours: set = set()
+    for day_data in by_day.values():
+        all_hours.update(day_data.keys())
+    all_hours_sorted = sorted(all_hours)
+
+    if not all_hours_sorted:
+        return {
+            "hours": [], "p50_kw": [], "p10_kw": [], "p90_kw": [], "real_kw": [],
+            "total_p50_kwh": 0.0, "total_real_kwh": 0.0,
+            "has_real": False, "has_forecast": False, "days_with_data": 0,
+        }
+
+    days_with_real = {d for d, dh in by_day.items() if any(s["has_real"] for s in dh.values())}
+    days_with_fc   = {d for d, dh in by_day.items() if any(s["has_fc"]   for s in dh.values())}
+
+    p50_kw, p10_kw, p90_kw, real_kw = [], [], [], []
+    for h in all_hours_sorted:
+        fc_slots = [by_day[d][h] for d in by_day if by_day[d][h]["has_fc"]]
+        re_slots = [by_day[d][h] for d in by_day if by_day[d][h]["has_real"]]
+
+        if fc_slots:
+            n = len(fc_slots)
+            p50_kw.append(round(sum(s["p50"] for s in fc_slots) / n, 4))
+            p10_kw.append(round(sum(s["p10"] for s in fc_slots) / n, 4))
+            p90_kw.append(round(sum(s["p90"] for s in fc_slots) / n, 4))
+        else:
+            p50_kw.append(None); p10_kw.append(None); p90_kw.append(None)
+
+        real_kw.append(
+            round(sum(s["real"] for s in re_slots) / len(re_slots), 4) if re_slots else None
+        )
+
+    total_p50  = round(sum(v for v in p50_kw  if v is not None), 3)
+    total_real = round(sum(v for v in real_kw if v is not None), 3)
+
+    return {
+        "hours":          all_hours_sorted,
+        "p50_kw":         p50_kw,
+        "p10_kw":         p10_kw,
+        "p90_kw":         p90_kw,
+        "real_kw":        real_kw,
+        "total_p50_kwh":  total_p50,
+        "total_real_kwh": total_real,
+        "has_real":       len(days_with_real) > 0,
+        "has_forecast":   len(days_with_fc) > 0,
+        "days_with_data": max(len(days_with_real), len(days_with_fc)),
+    }
+
+
 def _write_points(cfg: InfluxDBConfig, points: list[dict]) -> None:
     """Escribe una lista de puntos en InfluxDB en un único batch."""
     try:

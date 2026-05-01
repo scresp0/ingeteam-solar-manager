@@ -170,6 +170,18 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .f-peak-val  { font-size: 13px; font-family: var(--mono); color: var(--text); }
 .f-peak-lbl  { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 2px; text-align: right; }
 
+/* ── Hist nav (navegación de forecast histórico) ─── */
+.hist-nav { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.hist-nav-btn { background: var(--bg3); border: 1px solid var(--border); color: var(--fg); border-radius: 4px; padding: 1px 9px; font-size: 16px; line-height: 1.4; cursor: pointer; transition: background .15s; flex-shrink: 0; }
+.hist-nav-btn:hover:not(:disabled) { background: var(--bg4,#2a2f3a); }
+.hist-nav-btn:disabled { opacity: .3; cursor: default; }
+.hist-center { flex: 1; display: flex; justify-content: center; }
+.hist-vtabs { display: flex; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; }
+.hist-vtab { background: transparent; border: none; border-right: 1px solid var(--border); color: var(--muted); font-size: 10px; padding: 2px 10px; cursor: pointer; font-family: var(--mono); letter-spacing: .3px; transition: background .15s, color .15s; }
+.hist-vtab:last-child { border-right: none; }
+.hist-vtab:hover:not(.active) { background: var(--bg3); color: var(--fg); }
+.hist-vtab.active { background: var(--bg4,#2a2f3a); color: var(--fg); }
+
 /* ── Log window ──────────────────────────────────── */
 .log-win {
   background: #0a0e13; border-radius: 6px; border: 1px solid var(--border);
@@ -393,10 +405,21 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
       <!-- Forecast solar -->
       <div class="card">
         <div class="card-head">
-          <span class="card-title">Forecast solar · mañana</span>
+          <span class="card-title" id="forecast-card-title">Forecast solar · mañana</span>
           <span style="font-size:11px;font-family:var(--mono);color:var(--muted2)" id="f-date">Solcast</span>
         </div>
         <div class="card-body">
+          <div class="hist-nav">
+            <button class="hist-nav-btn" id="hist-prev" onclick="histNav(-1)" title="Anterior">‹</button>
+            <div class="hist-center">
+              <div class="hist-vtabs">
+                <button class="hist-vtab active" id="hv-day"   onclick="setHistView('day')">Día</button>
+                <button class="hist-vtab"        id="hv-week"  onclick="setHistView('week')">Sem</button>
+                <button class="hist-vtab"        id="hv-month" onclick="setHistView('month')">Mes</button>
+              </div>
+            </div>
+            <button class="hist-nav-btn" id="hist-next" onclick="histNav(1)" disabled title="Siguiente">›</button>
+          </div>
           <div class="forecast-chart">
             <div class="forecast-bars" id="forecast-bars">
               <div style="width:100%;display:flex;align-items:center;justify-content:center;color:var(--muted2);font-size:12px">—</div>
@@ -710,16 +733,25 @@ let forecastLoaded = false;
 let _forecastData  = null;
 let _todayByHour   = {};   // h (0-23) → kW promedio real hoy
 
+// ── Historia solar (navegación) ──
+let _histMode       = false;   // true = mostrando histórico (no live)
+let _histDate       = null;    // YYYY-MM-DD — día ancla actual
+let _histView       = 'day';   // 'day' | 'week' | 'month'
+let _histRealByHour = {};      // h→kW de InfluxDB (días pasados)
+
+function _todayIso() { return new Date().toISOString().slice(0, 10); }
+
 function renderForecastBars() {
   if (!_forecastData) return;
   const d = _forecastData;
   const { hours, p50_kw: p50, p10_kw: p10, p90_kw: p90 } = d;
+  const realByHour  = (_histMode && _histDate !== _todayIso()) ? _histRealByHour : _todayByHour;
 
-  const maxForecast = Math.max(...p50, 0.01);
-  const maxActual   = Object.values(_todayByHour).length ? Math.max(...Object.values(_todayByHour)) : 0;
+  const maxForecast = Math.max(...p50.filter(v => v != null), 0.01);
+  const maxActual   = Object.values(realByHour).length ? Math.max(...Object.values(realByHour)) : 0;
   const max         = Math.max(maxForecast, maxActual, 0.01);
-  const currentHour = new Date().getHours();
-  const hasActual   = Object.keys(_todayByHour).length > 0;
+  const currentHour = _histMode ? -1 : new Date().getHours();
+  const hasActual   = Object.keys(realByHour).length > 0;
 
   const barsEl = document.getElementById('forecast-bars');
   const lblsEl = document.getElementById('forecast-xlabels');
@@ -727,12 +759,11 @@ function renderForecastBars() {
   if (legend) legend.style.display = hasActual ? 'flex' : 'none';
 
   barsEl.innerHTML = hours.map((h, i) => {
-    const h50      = Math.max(4, (p50[i] / max) * 68);
-    const h90      = Math.max(4, (p90[i] / max) * 68);
-    const isCurr   = h === currentHour;
-    const actualKw = _todayByHour[h];
+    const h50      = p50[i] != null ? Math.max(4, (p50[i] / max) * 68) : 0;
+    const h90      = p90[i] != null ? Math.max(4, (p90[i] / max) * 68) : 0;
+    const actualKw = realByHour[h];
     const hActual  = (actualKw != null && actualKw > 0) ? Math.max(2, (actualKw / max) * 68) : 0;
-    const tip = `${h}h — forecast p50:${p50[i]} kW${actualKw != null ? ' · real hoy:' + actualKw + ' kW' : ''}`;
+    const tip = `${h}h — forecast p50:${p50[i] ?? '—'} kW${actualKw != null ? ' · real:' + actualKw + ' kW' : ''}`;
     return `<div style="flex:1;min-width:0;display:flex;align-items:flex-end;height:72px;gap:1px" title="${tip}">
       <div style="flex:1;position:relative;display:flex;align-items:flex-end;height:72px;">
         <div style="position:absolute;bottom:0;left:0;right:0;height:${h90}px;border-radius:2px 2px 0 0;border:1px solid rgba(240,165,0,0.18);background:transparent;pointer-events:none"></div>
@@ -787,6 +818,108 @@ async function loadForecast() {
 
   } catch(e) {
     barsEl.innerHTML = `<div style="width:100%;text-align:center;font-size:12px;color:var(--red)">Error cargando forecast: ${escHtml(e.message)}</div>`;
+  }
+}
+
+// ══ Navegación histórica de forecast ═══════════════════
+
+function switchToLive() {
+  _histMode = false;
+  _histDate = null;
+  _histRealByHour = {};
+  const titleEl = document.getElementById('forecast-card-title');
+  if (titleEl) titleEl.textContent = 'Forecast solar · mañana';
+  _updateHistNav();
+  loadForecast();
+}
+
+function _updateHistNav() {
+  const prev = document.getElementById('hist-prev');
+  const next = document.getElementById('hist-next');
+  if (!prev || !next) return;
+  prev.disabled = false;
+  next.disabled = !_histMode;
+  next.title = _histMode ? 'Siguiente' : 'Ya estás en la vista en vivo (mañana)';
+}
+
+function histNav(dir) {
+  const today = _todayIso();
+  if (!_histMode) {
+    if (dir < 0) loadHistory(today, _histView);
+    return;
+  }
+  const base = new Date(_histDate + 'T12:00:00Z');
+  if      (_histView === 'day')   base.setUTCDate(base.getUTCDate() + dir);
+  else if (_histView === 'week')  base.setUTCDate(base.getUTCDate() + dir * 7);
+  else if (_histView === 'month') base.setUTCMonth(base.getUTCMonth() + dir);
+  const newDate = base.toISOString().slice(0, 10);
+  if (dir > 0 && newDate > today) { switchToLive(); return; }
+  loadHistory(newDate, _histView);
+}
+
+function setHistView(view) {
+  _histView = view;
+  ['day', 'week', 'month'].forEach(v => {
+    const b = document.getElementById('hv-' + v);
+    if (b) b.classList.toggle('active', v === view);
+  });
+  loadHistory(_histMode ? _histDate : _todayIso(), view);
+}
+
+async function loadHistory(date, view) {
+  const barsEl  = document.getElementById('forecast-bars');
+  const totalEl = document.getElementById('f-total');
+  const peakEl  = document.getElementById('f-peak');
+  const dateEl  = document.getElementById('f-date');
+  const titleEl = document.getElementById('forecast-card-title');
+
+  _histMode = true;
+  _histDate = date;
+  _histView = view;
+  _updateHistNav();
+
+  barsEl.innerHTML = '<div style="width:100%;display:flex;align-items:center;justify-content:center;color:var(--muted2);font-size:12px;gap:6px"><span class="spinner"></span> Cargando…</div>';
+  document.getElementById('forecast-xlabels').innerHTML = '';
+
+  try {
+    const r = await fetch(`/api/solar_history?date=${date}&view=${encodeURIComponent(view)}`);
+    const d = await r.json();
+    if (!d.ok) {
+      barsEl.innerHTML = `<div style="width:100%;text-align:center;font-size:12px;color:var(--red)">Sin datos: ${escHtml(d.error ?? 'sin datos')}</div>`;
+      return;
+    }
+
+    _forecastData = { hours: d.hours, p50_kw: d.p50_kw, p10_kw: d.p10_kw,
+                      p90_kw: d.p90_kw, total_p50_kwh: d.total_p50_kwh };
+
+    // Real por hora desde InfluxDB (para hoy se usa _todayByHour live directamente)
+    _histRealByHour = {};
+    if (d.real_kw && date !== _todayIso()) {
+      d.hours.forEach((h, i) => { if (d.real_kw[i] != null) _histRealByHour[h] = d.real_kw[i]; });
+    }
+
+    if (titleEl) titleEl.textContent = `Forecast solar · ${d.label}`;
+
+    const avgLbl = view !== 'day' ? ' (media/día)' : '';
+    if (totalEl) totalEl.textContent = d.total_real_kwh > 0
+      ? `${d.total_real_kwh} kWh real${avgLbl}`
+      : (d.total_p50_kwh ? `${d.total_p50_kwh} kWh est.${avgLbl}` : '— kWh');
+
+    const validP50 = (d.p50_kw || []).filter(v => v != null);
+    if (peakEl && validP50.length) {
+      const pk = Math.max(...validP50);
+      const ph = d.hours[(d.p50_kw || []).indexOf(pk)];
+      peakEl.textContent = `${pk.toFixed(2)} kW · ${ph}h`;
+    } else if (peakEl) peakEl.textContent = '—';
+
+    if (dateEl) {
+      const extra = d.days_with_data > 1 ? ` · ${d.days_with_data} días` : '';
+      dateEl.textContent = d.range_start ? `${d.range_start} – ${d.range_end}${extra}` : date;
+    }
+
+    renderForecastBars();
+  } catch(e) {
+    barsEl.innerHTML = `<div style="width:100%;text-align:center;font-size:12px;color:var(--red)">Error: ${escHtml(e.message)}</div>`;
   }
 }
 
@@ -851,7 +984,7 @@ async function loadTodaySolar() {
     _todayByHour = {};
     d.hours.forEach((h, i) => { _todayByHour[h] = d.solar_kw[i]; });
 
-    renderForecastBars();
+    if (!_histMode || _histDate === _todayIso()) renderForecastBars();
   } catch(e) {}
 }
 
