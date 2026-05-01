@@ -747,9 +747,14 @@ function renderForecastBars() {
   const { hours: fcHours, p50_kw: p50, p10_kw: p10, p90_kw: p90 } = d;
   const realByHour = (_histMode && _histDate !== _todayIso()) ? _histRealByHour : _todayByHour;
 
-  // Unión de horas forecast e reales — permite mostrar barras reales aunque no haya forecast
+  // Unión de horas forecast e reales — filtra horas nocturnas de producción cero
   const allHoursSet = new Set([...(fcHours || []), ...Object.keys(realByHour).map(Number)]);
-  const hours = [...allHoursSet].sort((a, b) => a - b);
+  const hours = [...allHoursSet].sort((a, b) => a - b).filter(h => {
+    const fcIdx  = (fcHours || []).indexOf(h);
+    const p50Val = (fcIdx >= 0 && p50) ? (p50[fcIdx] ?? 0) : 0;
+    const actKw  = realByHour[h] ?? 0;
+    return p50Val > 0.001 || actKw > 0.001;
+  });
 
   const barsEl = document.getElementById('forecast-bars');
   const lblsEl = document.getElementById('forecast-xlabels');
