@@ -783,8 +783,8 @@ function renderForecastBars() {
     const tip = `${h}h — forecast p50:${p50Val ?? '—'} kW${actualKw != null ? ' · real:' + actualKw + ' kW' : ''}`;
     return `<div style="flex:1;min-width:0;display:flex;align-items:flex-end;height:72px;gap:1px" title="${tip}">
       <div style="flex:1;position:relative;display:flex;align-items:flex-end;height:72px;">
-        <div style="position:absolute;bottom:0;left:0;right:0;height:${h90}px;border-radius:2px 2px 0 0;border:1px solid rgba(240,165,0,0.18);background:transparent;pointer-events:none"></div>
-        <div class="fbar" style="position:relative;z-index:1;width:100%;height:${h50}px;border-radius:2px 2px 0 0"></div>
+        ${h90 > 0 ? `<div style="position:absolute;bottom:0;left:0;right:0;height:${h90}px;border-radius:2px 2px 0 0;border:1px solid rgba(240,165,0,0.18);background:transparent;pointer-events:none"></div>` : ''}
+        ${h50 > 0 ? `<div class="fbar" style="position:relative;z-index:1;width:100%;height:${h50}px;border-radius:2px 2px 0 0"></div>` : ''}
       </div>
       <div style="flex:1;display:flex;align-items:flex-end;height:72px;">
         ${hActual > 0
@@ -1043,7 +1043,12 @@ function updateDecisionBadge(p50, p10, p90) {
   }
 }
 
-loadForecast();
+// Mostrar el día de hoy por defecto
+loadHistory(_todayIso(), 'day');
+// Obtener forecast de mañana en background (solo para el badge de decisión)
+fetch('/api/forecast').then(r => r.json()).then(d => {
+  if (d.ok) updateDecisionBadge(d.total_p50_kwh, d.total_p10_kwh, d.total_p90_kwh);
+}).catch(() => {});
 
 // ══ Logs ═══════════════════════════════════════════
 function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }

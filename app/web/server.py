@@ -458,6 +458,23 @@ def create_app(cfg: AppConfig) -> FastAPI:
 
             if view == "day":
                 data = get_solar_history_day(cfg.influxdb, date)
+
+                # Fallback: si InfluxDB no tiene forecast para este día, usar caché Solcast
+                if not data.get("has_forecast"):
+                    sc = _solcast_for_date(date, cfg)
+                    if sc:
+                        real_by_h = dict(zip(data.get("hours", []), data.get("real_kw", [])))
+                        data = {
+                            **data,
+                            "hours":         sc["hours"],
+                            "p50_kw":        sc["p50_kw"],
+                            "p10_kw":        sc["p10_kw"],
+                            "p90_kw":        sc["p90_kw"],
+                            "real_kw":       [real_by_h.get(h) for h in sc["hours"]],
+                            "total_p50_kwh": sc["total_p50_kwh"],
+                            "has_forecast":  True,
+                        }
+
                 return {**data, "ok": True, "date": date, "view": view,
                         "label": _day_label(d)}, None
 
@@ -501,3 +518,57 @@ def create_app(cfg: AppConfig) -> FastAPI:
         return {"lines": all_lines[-lines:]}
 
     return app
+
+
+def _solcast_for_date(target_date_str: str, cfg) -> dict | None:
+    """Lee la caché Solcast y devuelve datos horarios (kW promedio) para una fecha concreta."""
+    import json
+    from pathlib import Path
+    from zoneinfo import ZoneInfo
+    from datetime import date as date_type, timedelta
+
+    cache_path = Path("/app/logs/solcast_cache.json")
+    if not cache_path.exists():
+        return None
+
+    try:
+        cache_data = json.loads(cache_path.read_text(encoding="utf-8"))
+        forecasts = cache_data.get("raw", {}).get("forecasts", [])
+        if not forecasts:
+            return None
+
+        tz = ZoneInfo(cfg.system.timezone)
+        target = date_type.fromisoformat(target_date_str)
+
+        by_hour: dict = {}
+        for item in forecasts:
+            try:
+                ts_str = item["period_end"].rstrip("Z").split(".")[0] + "+00:00"
+                ts_utc = datetime.fromisoformat(ts_str)
+                ts_local = ts_utc.astimezone(tz)
+                slot_start = ts_local - timedelta(minutes=30)
+                if slot_start.date() != target:
+                    continue
+                h = slot_start.hour
+                by_hour.setdefault(h, []).append((
+                    float(item.get("pv_estimate10", 0.0)),
+                    float(item.get("pv_estimate",   0.0)),
+                    float(item.get("pv_estimate90", 0.0)),
+                ))
+            except (KeyError, ValueError):
+                continue
+
+        if not by_hour:
+            return None
+
+        hours = sorted(by_hour.keys())
+        p10_kw  = [round(sum(v[0] for v in by_hour[h]) / len(by_hour[h]), 3) for h in hours]
+        p50_kw  = [round(sum(v[1] for v in by_hour[h]) / len(by_hour[h]), 3) for h in hours]
+        p90_kw  = [round(sum(v[2] for v in by_hour[h]) / len(by_hour[h]), 3) for h in hours]
+        total_p50 = round(sum(v[1] for vals in by_hour.values() for v in vals) * 0.5, 2)
+
+        return {"hours": hours, "p10_kw": p10_kw, "p50_kw": p50_kw, "p90_kw": p90_kw,
+                "total_p50_kwh": total_p50}
+
+    except Exception:
+        return None
