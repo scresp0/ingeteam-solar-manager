@@ -744,26 +744,43 @@ function _todayIso() { return new Date().toISOString().slice(0, 10); }
 function renderForecastBars() {
   if (!_forecastData) return;
   const d = _forecastData;
-  const { hours, p50_kw: p50, p10_kw: p10, p90_kw: p90 } = d;
-  const realByHour  = (_histMode && _histDate !== _todayIso()) ? _histRealByHour : _todayByHour;
+  const { hours: fcHours, p50_kw: p50, p10_kw: p10, p90_kw: p90 } = d;
+  const realByHour = (_histMode && _histDate !== _todayIso()) ? _histRealByHour : _todayByHour;
 
-  const maxForecast = Math.max(...p50.filter(v => v != null), 0.01);
-  const maxActual   = Object.values(realByHour).length ? Math.max(...Object.values(realByHour)) : 0;
-  const max         = Math.max(maxForecast, maxActual, 0.01);
-  const currentHour = _histMode ? -1 : new Date().getHours();
-  const hasActual   = Object.keys(realByHour).length > 0;
+  // Unión de horas forecast e reales — permite mostrar barras reales aunque no haya forecast
+  const allHoursSet = new Set([...(fcHours || []), ...Object.keys(realByHour).map(Number)]);
+  const hours = [...allHoursSet].sort((a, b) => a - b);
 
   const barsEl = document.getElementById('forecast-bars');
   const lblsEl = document.getElementById('forecast-xlabels');
   const legend = document.getElementById('forecast-legend');
-  if (legend) legend.style.display = hasActual ? 'flex' : 'none';
 
-  barsEl.innerHTML = hours.map((h, i) => {
-    const h50      = p50[i] != null ? Math.max(4, (p50[i] / max) * 68) : 0;
-    const h90      = p90[i] != null ? Math.max(4, (p90[i] / max) * 68) : 0;
+  if (hours.length === 0) {
+    barsEl.innerHTML = '<div style="width:100%;text-align:center;color:var(--muted2);font-size:12px;padding:20px 0">Sin datos en InfluxDB para este período</div>';
+    lblsEl.innerHTML = '';
+    if (legend) legend.style.display = 'none';
+    return;
+  }
+
+  const validP50   = p50 ? p50.filter(v => v != null) : [];
+  const maxForecast = validP50.length ? Math.max(...validP50) : 0;
+  const maxActual   = Object.values(realByHour).length ? Math.max(...Object.values(realByHour)) : 0;
+  const max         = Math.max(maxForecast, maxActual, 0.01);
+  const currentHour = _histMode ? -1 : new Date().getHours();
+  const hasActual   = Object.keys(realByHour).length > 0;
+  const hasFc       = validP50.length > 0;
+
+  if (legend) legend.style.display = (hasActual || hasFc) ? 'flex' : 'none';
+
+  barsEl.innerHTML = hours.map(h => {
+    const fcIdx    = (fcHours || []).indexOf(h);
+    const p50Val   = fcIdx >= 0 ? p50[fcIdx] : null;
+    const p90Val   = fcIdx >= 0 ? p90[fcIdx] : null;
+    const h50      = p50Val != null ? Math.max(4, (p50Val / max) * 68) : 0;
+    const h90      = p90Val != null ? Math.max(4, (p90Val / max) * 68) : 0;
     const actualKw = realByHour[h];
     const hActual  = (actualKw != null && actualKw > 0) ? Math.max(2, (actualKw / max) * 68) : 0;
-    const tip = `${h}h — forecast p50:${p50[i] ?? '—'} kW${actualKw != null ? ' · real:' + actualKw + ' kW' : ''}`;
+    const tip = `${h}h — forecast p50:${p50Val ?? '—'} kW${actualKw != null ? ' · real:' + actualKw + ' kW' : ''}`;
     return `<div style="flex:1;min-width:0;display:flex;align-items:flex-end;height:72px;gap:1px" title="${tip}">
       <div style="flex:1;position:relative;display:flex;align-items:flex-end;height:72px;">
         <div style="position:absolute;bottom:0;left:0;right:0;height:${h90}px;border-radius:2px 2px 0 0;border:1px solid rgba(240,165,0,0.18);background:transparent;pointer-events:none"></div>
@@ -901,9 +918,13 @@ async function loadHistory(date, view) {
     if (titleEl) titleEl.textContent = `Forecast solar · ${d.label}`;
 
     const avgLbl = view !== 'day' ? ' (media/día)' : '';
+    // Para "hoy" sin datos en InfluxDB: calcular total desde _todayByHour live
+    const liveTotal = (date === _todayIso() && !d.total_real_kwh)
+      ? Object.values(_todayByHour).reduce((s, v) => s + v, 0).toFixed(2) : null;
     if (totalEl) totalEl.textContent = d.total_real_kwh > 0
       ? `${d.total_real_kwh} kWh real${avgLbl}`
-      : (d.total_p50_kwh ? `${d.total_p50_kwh} kWh est.${avgLbl}` : '— kWh');
+      : (liveTotal && liveTotal > 0 ? `${liveTotal} kWh hoy`
+         : (d.total_p50_kwh ? `${d.total_p50_kwh} kWh est.${avgLbl}` : '— kWh'));
 
     const validP50 = (d.p50_kw || []).filter(v => v != null);
     if (peakEl && validP50.length) {

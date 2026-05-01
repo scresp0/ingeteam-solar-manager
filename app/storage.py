@@ -367,7 +367,11 @@ from(bucket: "{cfg.bucket}")
             recs = [rec.values for table in tables for rec in table.records]
     except Exception as e:
         logger.warning(f"Error consultando solar_media_hora {start_str}→{end_str}: {e}")
-        return {}
+        return {
+            "hours": [], "p50_kw": [], "p10_kw": [], "p90_kw": [], "real_kw": [],
+            "total_p50_kwh": 0.0, "total_real_kwh": 0.0,
+            "has_real": False, "has_forecast": False, "days_with_data": 0,
+        }
 
     # Acumular por (día, hora) — luego promediamos entre días
     by_day: dict = defaultdict(lambda: defaultdict(lambda: {
