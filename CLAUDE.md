@@ -17,7 +17,7 @@ en función de la previsión solar del día siguiente y el SOC actual.
 ## Stack
 - Python + FastAPI + APScheduler
 - pymodbus (lectura MODBUS TCP)
-- Playwright/Chromium (escritura en la web Vue.js del inversor)
+- Playwright/Chromium (lectura y escritura en la web Vue.js del inversor)
 - Solcast API (previsión solar)
 - InfluxDB 2.7 (series temporales)
 - SMTP (notificaciones email HTML)
@@ -32,7 +32,7 @@ app/
 ├── decision.py      # algoritmo decide_charge + decide_discharge
 ├── solcast.py       # cliente Solcast API
 ├── inverter.py      # lector MODBUS TCP
-├── automation.py    # Playwright — configura web del inversor
+├── automation.py    # Playwright — lee y configura web del inversor (6.3.1/6.3.2)
 ├── logger_reader.py # lee datalogger HTTP del inversor
 ├── storage.py       # escribe en InfluxDB
 ├── notifier.py      # email HTML con resultado del ciclo
@@ -52,6 +52,7 @@ La versión se muestra en el log de arranque, en el header de la web (`/`) y en 
 - Direccionamiento **base-0**: registro `30016` → dirección `15`
 - Potencia batería: **positivo = descargando**, negativo = cargando
 - El `min_soc_pct` real se lee del inversor; el de `config.yaml` es fallback
+- **La configuración de programación horaria (6.3.1/6.3.2) NO está expuesta vía MODBUS** — ni en input registers (30xxx) ni en los holding registers documentados. La única forma de leerla es vía Playwright (`read_inverter_schedule`). Battery Status (30022) indica el estado operativo actual, no la configuración.
 
 ### Playwright (automation.py)
 - Vue.js reactivity: usar `type()` + `dispatch_event("input")` + `dispatch_event("change")`
@@ -59,6 +60,9 @@ La versión se muestra en el log de arranque, en el header de la web (`/`) y en 
 - Clic en "Escribir" vía JavaScript para superar estado `disabled`
 - Secuencia de navegación exacta: Configuración → JS click `.inv-sett-top-cont` botón "Ajustes" → sección 6.3.1
 - Flags obligatorios en Linux sin entorno gráfico: `--no-sandbox --disable-dev-shm-usage --disable-gpu --single-process`
+- **Lectura de configuración:** `read_inverter_schedule(cfg)` navega a 6.3.1 y 6.3.2 en una sola sesión Playwright (un solo login), pulsa "Leer" en cada sección y extrae los valores de los selects/inputs via `input_value()`. Devuelve `ScheduleState(charge_active, charge_soc_pct, discharge_blocked)` o `None` si falla. Llama a `_read_current_values` al entrar en 6.3.2 para loguear todos los pares etiqueta=valor reales (útil para verificar que los `LABEL_DISC_PROG_*` coinciden con el DOM del inversor).
+- **Robustez de lectura:** `_get_select_value_by_label` captura cualquier excepción y devuelve `SCHEDULE_DISABLED` ("0") con un `WARNING` en el log si la etiqueta no se encuentra o el valor está vacío. Evita que una etiqueta no encontrada devuelva `""` que se interpretaría falsamente como "bloqueado" (`"" != "0"`).
+- **Flujo de escritura condicionada:** `main.py` llama a `read_inverter_schedule` antes de escribir. Solo lanza `set_charge_schedule` / `set_discharge_schedule` si el estado leído difiere de la decisión del algoritmo (o si es dry_run). El caché JSON (`/app/logs/inverter_schedule_state.json`) ya no condiciona ninguna escritura — solo se mantiene para diagnóstico.
 
 ### Solcast (solcast.py)
 - `api_key` va como **parámetro de URL** (`?api_key=...`), no como Bearer token
@@ -122,6 +126,7 @@ si deficit > 0  → CARGAR hasta target_soc = min_soc + deficit (clamped a max_s
 - `risk_factor` y `night_consumption_kwh` son dinámicos (ver sección anterior).
 - `energy_at_dawn_kwh` en `ChargeDecision`: cuando se carga, muestra `target_kwh` (energía real al amanecer tras la carga), no el hipotético sin carga.
 - `to_charge_kwh`: kWh reales que entrará desde la red (`target_kwh - energy_stored`), distinto de `deficit_kwh`.
+- **`reference_date` y ejecuciones fuera de las 23:55:** el algoritmo asigna correctamente día1/día2 en cualquier hora (corrección de madrugada para hora < `night_cutoff_hour`), pero usa el SOC *actual* como punto de partida, no el SOC estimado a medianoche. Si se ejecuta a mediodía, el SOC puede diferir mucho del SOC real a medianoche → cálculos optimistas. El ciclo programado a las 23:55 es el único que trabaja con las condiciones para las que fue diseñado.
 
 ### decide_discharge
 Solo actúa cuando mañana (día 1) es día valle. Usa **dos pasadas**:
@@ -131,8 +136,21 @@ Solo actúa cuando mañana (día 1) es día valle. Usa **dos pasadas**:
 
 El motivo ("reason") siempre muestra el déficit *sin bloqueo* para explicar por qué se decidió bloquear.
 
-### Formato de log de decisiones
+**Diseño del horario de bloqueo en 6.3.2:**
+- `discharge_blocked=False` → Prog 1 = Desactivado, Prog 2 = Desactivado (descarga siempre libre)
+- `discharge_blocked=True`:
+  - Prog 1 **Entre semana (L-V): 00:01–07:59** — solo el valle; a partir de las 08:00 la batería puede descargar con normalidad.
+  - Prog 2 **Fin de semana (S-D): 00:01–23:59** — todo el día, porque el fin de semana la tarifa es valle las 24h.
+- Los festivos en día laborable (ej. martes festivo) los cubre Prog 1 (L-V) — el inversor los trata como laborable en su calendario; el bloqueo aplica solo 00:01–07:59, que es el valle de ese día (tarifa festivo = tarifa fin de semana en la práctica, pero el inversor no lo distingue).
+
+### Formato de log de decisiones y configuración
 `decision.py` expone `charge_oneliner()` y `discharge_oneliner()` que emiten líneas con prefijo `[CARGA]`/`[DESCARGA]` al nivel INFO. El detalle completo va a DEBUG. Estos prefijos los parsean tanto la web UI (badges de color, secciones colapsables) como `notifier.py` (tarjetas en el email HTML).
+
+`main.py` emite además dos líneas de configuración del inversor al nivel INFO:
+- `[ANTES] Carga (6.3.1): DESACTIVADA | Descarga (6.3.2): LIBRE` — estado real leído del inversor antes de cualquier escritura
+- `[DESPUÉS] Carga (6.3.1): ACTIVA (SOC 85%) | Descarga (6.3.2): BLOQUEADA` — estado aplicado (con prefijo `[DRY RUN]` si aplica)
+
+`notifier.py` parsea estas líneas para renderizar la tabla "Configuración aplicada" (ANTES/DESPUÉS) en el email HTML.
 
 ## Interfaz web (`app/web/`)
 
@@ -160,6 +178,13 @@ Además del SOC ring y estados del inversor, muestra dos filas de parámetros de
 - **Risk factor**: ídem. Badge `din` cuando supera el umbral, `X/14d` mientras se acumula.
 - Tooltip en cada badge explica el número de días válidos y la ventana configurada.
 
+**Badges de decisión del ciclo** (bajo el separador, dentro de la card):
+- Badge de **carga** (`id="decision-badge"`): "Cargar esta noche" (azul) / "No cargar esta noche" (verde) / "Calculando…" (amber).
+- Badge de **descarga** (`id="discharge-badge"`): "Descarga: Bloqueada" (amber) / "Descarga: Permitida" (verde) / "Descarga: —" (amber inicial).
+- Cada badge tiene una nota de texto con el motivo debajo.
+- **Fuente de datos**: en carga de página se hace `fetch('/api/logs?lines=200')` silencioso para escanear las últimas líneas de log y pre-popular ambos badges con la última decisión del ciclo. Durante un ciclo SSE en curso, `appendLog()` llama a `_updateChargeCard(dec)` / `_updateDischargeCard(dec)` en tiempo real al encontrar líneas `[CARGA]` / `[DESCARGA]`.
+- El badge de carga también se actualiza con `updateDecisionBadge()` al cargar el forecast (estimación local sin datos del ciclo real).
+
 ### Dashboard — gráfico de forecast
 - Cada franja horaria dividida en **dos barras de mitad de ancho** (gap 1px):
   - **Izquierda (amber)**: forecast p50 de mañana; contorno = rango p90.
@@ -168,6 +193,12 @@ Además del SOC ring y estados del inversor, muestra dos filas de parámetros de
 - Etiqueta de la hora actual en azul/negrita en el eje X.
 - Leyenda visible solo cuando hay datos reales del día.
 - Comparación válida aunque son días distintos (hoy real vs mañana forecast).
+- **Footer**: "Total estimado" (amber, 18px mono) + "Total producido hoy" (verde, 18px mono, oculto hasta que llegan datos de `/api/today_solar`). Ambos usan `font-weight: 300`.
+
+### Diseño responsive
+Dos breakpoints en `index.html`:
+- **≤ 800px** (tablet / landscape phone): `grid-7` → 4 cols; `grid-3` → 2 cols; padding reducido.
+- **≤ 600px** (portrait phone): `grid-7` → 2 cols; `grid-2` → 1 col (cards apiladas); `grid-3` y `cfg-grid` → 1 col; header compacto (oculta hostname, estado central y reloj); nav con scroll horizontal silencioso; run panel apilado; log 240px; tabla historial con scroll horizontal.
 
 ### Gotcha datalogger para visualización
 `/api/today_solar` lee datos parciales del día actual — correcto para visualización. Solo se evita el día actual para stats diarias en InfluxDB (datos incompletos).

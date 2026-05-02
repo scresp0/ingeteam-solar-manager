@@ -26,7 +26,10 @@ from app.decision import (
     charge_oneliner, discharge_oneliner,
     SolarForecast
 )
-from app.automation import set_charge_schedule, set_discharge_schedule, AutomationError
+from app.automation import (
+    set_charge_schedule, set_discharge_schedule, AutomationError,
+    read_inverter_schedule, ScheduleState,
+)
 from app.notifier import CycleEmailNotifier
 from app.logger_reader import get_yesterday_stats, LoggerReaderError
 from app.storage import (
@@ -177,40 +180,80 @@ def run(cfg: AppConfig) -> bool:
     logger.info(discharge_oneliner(inp, discharge, night_cutoff_hour=cutoff))
     logger.debug("\n" + discharge_summary(inp, discharge, night_cutoff_hour=cutoff))
 
-    # 7. Configurar inversor — 6.3.1 carga
-    try:
-        logger.info("Programando carga en el inversor (6.3.1)...")
-        set_charge_schedule(
-            cfg=cfg.inverter,
-            charge_needed=charge.charge_needed,
-            target_soc_pct=charge.target_soc_pct,
-            dry_run=cfg.system.dry_run,
-        )
-        logger.info(
-            f"{'[DRY RUN] ' if cfg.system.dry_run else ''}"
-            f"6.3.1 configurado: SOC objetivo = {charge.target_soc_pct}%"
-        )
-    except AutomationError as e:
-        logger.error(f"Error al configurar carga (6.3.1): {e}")
-        notifier.send(success=False)
-        return False
+    # 7. Leer configuración actual del inversor (web) — estado ANTES
+    schedule_before: ScheduleState | None = None
+    if not cfg.system.dry_run:
+        try:
+            schedule_before = read_inverter_schedule(cfg.inverter)
+        except Exception as e:
+            logger.warning(f"Error al leer programación del inversor: {e}")
 
-    # 8. Configurar inversor — 6.3.2 descarga
-    try:
-        logger.info("Programando descarga en el inversor (6.3.2)...")
-        set_discharge_schedule(
-            cfg=cfg.inverter,
-            discharge_blocked=discharge.discharge_blocked,
-            dry_run=cfg.system.dry_run,
-        )
+    if schedule_before is not None:
         logger.info(
-            f"{'[DRY RUN] ' if cfg.system.dry_run else ''}"
-            f"6.3.2 configurado: discharge_blocked={discharge.discharge_blocked}"
+            f"[ANTES] Carga (6.3.1): {schedule_before.charge_str()} | "
+            f"Descarga (6.3.2): {schedule_before.discharge_str()}"
         )
-    except AutomationError as e:
-        logger.error(f"Error al configurar descarga (6.3.2): {e}")
-        notifier.send(success=False)
-        return False
+    else:
+        logger.warning(
+            "[ANTES] Configuración del inversor no disponible — "
+            "se aplicará igualmente"
+        )
+
+    # Decidir si hay cambios reales que aplicar
+    charge_soc_target = int(round(charge.target_soc_pct)) if charge.charge_needed else 0
+    charge_needs_update = (
+        schedule_before is None
+        or schedule_before.charge_active != charge.charge_needed
+        or (charge.charge_needed and schedule_before.charge_soc_pct != charge_soc_target)
+    )
+    discharge_needs_update = (
+        schedule_before is None
+        or schedule_before.discharge_blocked != discharge.discharge_blocked
+    )
+
+    # 8. Configurar inversor — 6.3.1 carga
+    if charge_needs_update or cfg.system.dry_run:
+        try:
+            logger.info("Programando carga en el inversor (6.3.1)...")
+            set_charge_schedule(
+                cfg=cfg.inverter,
+                charge_needed=charge.charge_needed,
+                target_soc_pct=charge.target_soc_pct,
+                dry_run=cfg.system.dry_run,
+            )
+        except AutomationError as e:
+            logger.error(f"Error al configurar carga (6.3.1): {e}")
+            notifier.send(success=False)
+            return False
+    else:
+        logger.info("6.3.1 sin cambios — configuración ya correcta en el inversor")
+
+    # 9. Configurar inversor — 6.3.2 descarga
+    if discharge_needs_update or cfg.system.dry_run:
+        try:
+            logger.info("Programando descarga en el inversor (6.3.2)...")
+            set_discharge_schedule(
+                cfg=cfg.inverter,
+                discharge_blocked=discharge.discharge_blocked,
+                dry_run=cfg.system.dry_run,
+            )
+        except AutomationError as e:
+            logger.error(f"Error al configurar descarga (6.3.2): {e}")
+            notifier.send(success=False)
+            return False
+    else:
+        logger.info("6.3.2 sin cambios — configuración ya correcta en el inversor")
+
+    # Log estado DESPUÉS
+    after_charge_str = (
+        f"ACTIVA (SOC {charge_soc_target}%)" if charge.charge_needed else "DESACTIVADA"
+    )
+    after_discharge_str = "BLOQUEADA" if discharge.discharge_blocked else "LIBRE"
+    dry_prefix = "[DRY RUN] " if cfg.system.dry_run else ""
+    logger.info(
+        f"[DESPUÉS] {dry_prefix}Carga (6.3.1): {after_charge_str} | "
+        f"Descarga (6.3.2): {after_discharge_str}"
+    )
 
     # 9. Stats del día anterior + InfluxDB
     try:

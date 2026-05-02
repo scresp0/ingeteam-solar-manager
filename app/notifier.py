@@ -108,8 +108,8 @@ def _parse_decision(log: str) -> tuple:
 _DECISION_STYLES = {
     'charge':    ('#2980b9', '#ebf5fb', 'CARGA'),
     'no-charge': ('#27ae60', '#f0fff4', 'NO CARGA'),
-    'blocked':   ('#e67e22', '#fef9f0', 'BLOQUEADA'),
-    'free':      ('#27ae60', '#f0fff4', 'LIBRE'),
+    'blocked':   ('#e67e22', '#fef9f0', 'DESCARGA: BLOQUEADA'),
+    'free':      ('#27ae60', '#f0fff4', 'DESCARGA: PERMITIDA'),
 }
 
 
@@ -139,6 +139,94 @@ def _extract_decision_lines(log: str) -> list[tuple]:
             continue
         rows.append((tag, color, bg, badge, text))
     return rows
+
+
+def _extract_config_change(log: str) -> tuple[str, str, str, str] | None:
+    """
+    Extrae del log las líneas [ANTES] y [DESPUÉS] de configuración.
+    Devuelve (charge_before, discharge_before, charge_after, discharge_after) o None.
+    """
+    antes_charge = antes_discharge = despues_charge = despues_discharge = None
+    for line in log.splitlines():
+        m = re.search(
+            r'\[ANTES\] Carga \(6\.3\.1\): ([^|]+?) \| Descarga \(6\.3\.2\): (.+)', line
+        )
+        if m:
+            antes_charge = m.group(1).strip()
+            antes_discharge = m.group(2).strip()
+        m = re.search(
+            r'\[DESPUÉS\].*?Carga \(6\.3\.1\): ([^|]+?) \| Descarga \(6\.3\.2\): (.+)', line
+        )
+        if m:
+            despues_charge = m.group(1).strip()
+            despues_discharge = m.group(2).strip()
+    if despues_charge is not None:
+        return (
+            antes_charge or "No disponible",
+            antes_discharge or "No disponible",
+            despues_charge,
+            despues_discharge or "?",
+        )
+    return None
+
+
+def _config_val_color(val: str) -> str:
+    v = val.upper()
+    if "ACTIVA" in v or "BLOQUEADA" in v:
+        return "#e67e22"
+    if "DESACTIVADA" in v or "LIBRE" in v:
+        return "#27ae60"
+    return "#6b7a8d"
+
+
+def _render_config_change(log: str) -> str:
+    """Renderiza la tabla ANTES/DESPUÉS de configuración del inversor."""
+    result = _extract_config_change(log)
+    if result is None:
+        return ""
+    antes_charge, antes_discharge, despues_charge, despues_discharge = result
+
+    def val_cell(v: str, border: bool = True) -> str:
+        color = _config_val_color(v)
+        border_style = f"border-bottom:1px solid {_C['border']};" if border else ""
+        return (
+            f'<td style="padding:8px 14px;font-size:12px;font-weight:700;'
+            f'color:{color};text-align:center;{border_style}">{v}</td>'
+        )
+
+    label_style = (
+        f"padding:8px 14px;font-size:12.5px;color:{_C['text']};"
+        f"border-bottom:1px solid {_C['border']};"
+    )
+    th_style = (
+        f"padding:7px 14px;font-size:10.5px;font-weight:700;color:{_C['muted']};"
+        f"text-transform:uppercase;letter-spacing:.4px;text-align:center;"
+        f"background:#f6f8fa;border-bottom:1px solid {_C['border']};"
+    )
+    th_label_style = th_style + "text-align:left;"
+
+    return (
+        f'<div style="font-size:11px;font-weight:700;color:{_C["muted"]};'
+        f'letter-spacing:1.5px;text-transform:uppercase;margin-bottom:10px;">'
+        f'Configuración aplicada</div>'
+        f'<table width="100%" style="border-collapse:collapse;'
+        f'border:1px solid {_C["border"]};border-radius:6px;overflow:hidden;">'
+        f'<tr>'
+        f'<th style="{th_label_style}">Parámetro</th>'
+        f'<th style="{th_style}">Antes</th>'
+        f'<th style="{th_style}">Después</th>'
+        f'</tr>'
+        f'<tr>'
+        f'<td style="{label_style}">Carga (6.3.1)</td>'
+        f'{val_cell(antes_charge)}{val_cell(despues_charge)}'
+        f'</tr>'
+        f'<tr>'
+        f'<td style="padding:8px 14px;font-size:12.5px;color:{_C["text"]};">'
+        f'Descarga (6.3.2)</td>'
+        f'{val_cell(antes_discharge, border=False)}{val_cell(despues_discharge, border=False)}'
+        f'</tr>'
+        f'</table>'
+    )
 
 
 def _render_decision_cards(log: str, success: bool) -> str:
@@ -265,6 +353,7 @@ def _build_html(
     rows += _kv_row("Timestamp", f"{date_str} {time_str}")
 
     decision_cards_html = _render_decision_cards(log_content, success)
+    config_change_html  = _render_config_change(log_content)
 
     return f"""<!DOCTYPE html>
 <html lang="es">
@@ -328,6 +417,9 @@ def _build_html(
       {decision_cards_html}
     </td>
   </tr>
+
+  <!-- CONFIGURACIÓN APLICADA -->
+  {'<tr><td style="padding:20px 0 0;">' + config_change_html + '</td></tr>' if config_change_html else ''}
 
 </table><!-- fin tabla 560px -->
 

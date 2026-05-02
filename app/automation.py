@@ -1,12 +1,13 @@
 """
-automation.py — automatización Playwright para configurar la programación
-horaria de carga de baterías en la interfaz web del inversor Ingeteam.
+automation.py — automatización Playwright para configurar y leer la programación
+horaria de carga/descarga de baterías en la interfaz web del inversor Ingeteam.
 
 Ruta de navegación:
   Login → Configuración → Ajustes avanzados →
-  6.3.1- Programación Horaria: Carga de Batería desde Red → Escribir
+  6.3.1- Programación Horaria: Carga de Batería desde Red → Leer/Escribir
+  6.3.2- Programación Horaria: Descarga de Batería → Leer/Escribir
 
-Campos en la tabla (textos exactos de las etiquetas):
+Campos en la tabla — 6.3.1 (textos exactos de las etiquetas):
   "Programación Horaria 1: Carga de baterías desde la Red"  → select
   "SOC Grid 1: Carga máxima para mantener las baterías desde la Red" → input
   "Hora On"    (aparece 2 veces, una por cada programación) → input
@@ -16,11 +17,26 @@ Campos en la tabla (textos exactos de las etiquetas):
   "Programación Horaria 2: Carga de baterías desde la Red"  → select
   "SOC Grid 2: Carga máxima para mantener las baterías desde la Red" → input
 
+Campos en la tabla — 6.3.2 (textos exactos de las etiquetas):
+  "Programación Horaria 1: Descarga de baterías"  → select
+  "Hora On"    (aparece 2 veces, una por cada programación) → input
+  "Minuto On"  (ídem) → input
+  "Hora Off"   (ídem) → input
+  "Minuto Off" (ídem) → input
+  "Programación Horaria 2: Descarga de baterías"  → select
+
 Opciones del desplegable de tipo:
   0 = Desactivado
   1 = Toda la semana
   2 = Entre semana (L-V)
   3 = Fin de semana (S-D)
+
+Diseño de bloqueo de descarga (6.3.2):
+  discharge_blocked=False → Prog 1 = Desactivado, Prog 2 = Desactivado
+  discharge_blocked=True  → Prog 1 = Entre semana (L-V), 00:01–07:59
+                            Prog 2 = Fin de semana (S-D), 00:01–23:59
+  L-V: solo bloquea el valle nocturno; a partir de las 08:00 la batería puede descargar.
+  S-D: bloquea todo el día porque el fin de semana la tarifa es valle las 24h.
 """
 
 import json
@@ -49,6 +65,20 @@ class _ScheduleState:
     discharge_blocked: bool = False
 
 
+@dataclass
+class ScheduleState:
+    """Estado de programación leído directamente del inversor vía web."""
+    charge_active: bool
+    charge_soc_pct: int      # SOC objetivo configurado (0 si desactivado)
+    discharge_blocked: bool
+
+    def charge_str(self) -> str:
+        return f"ACTIVA (SOC {self.charge_soc_pct}%)" if self.charge_active else "DESACTIVADA"
+
+    def discharge_str(self) -> str:
+        return "BLOQUEADA" if self.discharge_blocked else "LIBRE"
+
+
 def _load_schedule_state(path: str = _STATE_FILE) -> Optional[_ScheduleState]:
     """Lee el último estado de programación aplicado desde disco."""
     try:
@@ -75,7 +105,7 @@ def _save_schedule_state(state: _ScheduleState, path: str = _STATE_FILE) -> None
     except Exception as e:
         logger.warning(f"No se pudo guardar estado de programación: {e}")
 
-# Horario valle a programar
+# Horario valle a programar (6.3.1 carga)
 VALLEY_HOUR_ON  = 0
 VALLEY_MIN_ON   = 1
 VALLEY_HOUR_OFF = 7
@@ -83,6 +113,7 @@ VALLEY_MIN_OFF  = 59
 
 # Valores del desplegable
 SCHEDULE_DISABLED = "0"  # Desactivado
+SCHEDULE_ALLWEEK  = "1"  # Toda la semana
 SCHEDULE_WEEKDAY  = "2"  # Entre semana (L-V)
 SCHEDULE_WEEKEND  = "3"  # Fin de semana (S-D)
 
@@ -124,15 +155,6 @@ def set_charge_schedule(
     soc = int(round(target_soc_pct)) if charge_needed else 0
     action = f"SOC objetivo = {soc}%" if charge_needed else "DESACTIVAR carga de red"
     logger.info(f"{'[DRY RUN] ' if dry_run else ''}Configurando carga horaria: {action}")
-
-    if not dry_run:
-        last = _load_schedule_state()
-        if last is not None and last.charge_needed == charge_needed and last.target_soc_pct == soc:
-            logger.info(
-                f"6.3.1 sin cambios (charge={charge_needed}, SOC={soc}%) — "
-                "configuración ya aplicada, Playwright no necesario"
-            )
-            return
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -362,11 +384,15 @@ def _click_write(page: Page) -> None:
 LABEL_DISC_PROG_1 = "Programación Horaria 1: Descarga de baterías"
 LABEL_DISC_PROG_2 = "Programación Horaria 2: Descarga de baterías"
 
-# Horario de bloqueo de descarga: todo el horario valle
+# Horario de bloqueo de descarga — común a ambas programaciones
 DISC_HOUR_ON  = 0
-DISC_MIN_ON   = 1
-DISC_HOUR_OFF = 7
-DISC_MIN_OFF  = 59
+DISC_MIN_ON   = 1   # 00:01 (el inversor no acepta 00:00)
+
+# Fin de bloqueo: distinto según el tipo de día
+DISC_WEEKDAY_HOUR_OFF = 7    # 07:59 — L-V: solo el valle (08:00 en adelante puede descargar)
+DISC_WEEKDAY_MIN_OFF  = 59
+DISC_WEEKEND_HOUR_OFF = 23   # 23:59 — S-D: todo el día (fin de semana es valle 24h)
+DISC_WEEKEND_MIN_OFF  = 59
 
 
 def set_discharge_schedule(
@@ -377,29 +403,18 @@ def set_discharge_schedule(
     """
     Configura la programación horaria de descarga en la web del inversor (6.3.2).
 
-    Si discharge_blocked=False: desactiva ambas programaciones (descarga libre)
+    Si discharge_blocked=False: desactiva ambas programaciones (descarga libre siempre)
     Si discharge_blocked=True:
-        Programación 1: Entre semana (L-V), 00:01 - 07:59
-        Programación 2: Fin de semana (S-D), 00:01 - 07:59
-        → El inversor no descarga la batería durante el valle
-        → Consume de red en su lugar
+        Prog 1 Entre semana (L-V): 00:01–07:59  → solo bloquea el valle; a las 08:00 permite descargar
+        Prog 2 Fin de semana (S-D): 00:01–23:59 → bloquea todo el día (fin de semana es valle 24h)
 
     Args:
         cfg:               configuración del inversor
-        discharge_blocked: si True, bloquea descarga durante el valle
+        discharge_blocked: si True, bloquea descarga durante el horario valle
         dry_run:           si True, navega y rellena pero NO pulsa Escribir
     """
-    action = "BLOQUEAR descarga durante valle" if discharge_blocked else "Descarga libre"
+    action = "BLOQUEAR descarga valle (L-V 00:01–07:59 · S-D 00:01–23:59)" if discharge_blocked else "Descarga libre"
     logger.info(f"{'[DRY RUN] ' if dry_run else ''}Configurando descarga horaria: {action}")
-
-    if not dry_run:
-        last = _load_schedule_state()
-        if last is not None and last.discharge_blocked == discharge_blocked:
-            logger.info(
-                f"6.3.2 sin cambios (blocked={discharge_blocked}) — "
-                "configuración ya aplicada, Playwright no necesario"
-            )
-            return
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -431,19 +446,19 @@ def set_discharge_schedule(
                 _set_select_by_exact_label(page, LABEL_DISC_PROG_1, SCHEDULE_DISABLED)
                 _set_select_by_exact_label(page, LABEL_DISC_PROG_2, SCHEDULE_DISABLED)
             else:
-                # Programación 1 — entre semana
+                # Prog 1 — Entre semana (L-V): 00:01–07:59 (solo el valle; puede descargar de 08:00 en adelante)
                 _set_select_by_exact_label(page, LABEL_DISC_PROG_1, SCHEDULE_WEEKDAY)
                 _set_input_by_index(page, "Hora On",    0, str(DISC_HOUR_ON))
                 _set_input_by_index(page, "Minuto On",  0, str(DISC_MIN_ON))
-                _set_input_by_index(page, "Hora Off",   0, str(DISC_HOUR_OFF))
-                _set_input_by_index(page, "Minuto Off", 0, str(DISC_MIN_OFF))
+                _set_input_by_index(page, "Hora Off",   0, str(DISC_WEEKDAY_HOUR_OFF))
+                _set_input_by_index(page, "Minuto Off", 0, str(DISC_WEEKDAY_MIN_OFF))
 
-                # Programación 2 — fin de semana
+                # Prog 2 — Fin de semana (S-D): 00:01–23:59 (todo el día es valle)
                 _set_select_by_exact_label(page, LABEL_DISC_PROG_2, SCHEDULE_WEEKEND)
                 _set_input_by_index(page, "Hora On",    1, str(DISC_HOUR_ON))
                 _set_input_by_index(page, "Minuto On",  1, str(DISC_MIN_ON))
-                _set_input_by_index(page, "Hora Off",   1, str(DISC_HOUR_OFF))
-                _set_input_by_index(page, "Minuto Off", 1, str(DISC_MIN_OFF))
+                _set_input_by_index(page, "Hora Off",   1, str(DISC_WEEKEND_HOUR_OFF))
+                _set_input_by_index(page, "Minuto Off", 1, str(DISC_WEEKEND_MIN_OFF))
 
             if dry_run:
                 logger.info("[DRY RUN] Valores descarga rellenados — NO se pulsa Escribir")
@@ -460,6 +475,122 @@ def set_discharge_schedule(
             raise
         except Exception as e:
             raise AutomationError(f"Error inesperado en automatización descarga: {e}") from e
+        finally:
+            context.close()
+            browser.close()
+
+
+# ---------------------------------------------------------------------------
+# Helpers de lectura de valores del formulario
+# ---------------------------------------------------------------------------
+
+def _get_select_value_by_label(page: Page, label: str) -> str:
+    """
+    Devuelve el valor actual de un select localizado por texto de etiqueta.
+    Devuelve SCHEDULE_DISABLED y loguea un warning si no se encuentra la fila o el valor.
+    """
+    try:
+        row = page.locator("table tr").filter(has_text=label).first
+        value = row.locator("select").input_value()
+        if not value:
+            logger.warning(f"Select '{label[:50]}' encontrado pero sin valor — asumiendo Desactivado")
+            return SCHEDULE_DISABLED
+        return value
+    except Exception as e:
+        logger.warning(f"No se pudo leer select '{label[:50]}': {e} — asumiendo Desactivado")
+        return SCHEDULE_DISABLED
+
+
+def _get_input_value_by_label(page: Page, label: str) -> str:
+    """Devuelve el valor actual de un input localizado por texto de etiqueta."""
+    row = page.locator("table tr").filter(has_text=label).first
+    return row.locator("input").first.input_value()
+
+
+def _read_charge_state(page: Page) -> tuple[bool, int]:
+    """Lee el estado actual de 6.3.1. Devuelve (charge_active, soc_pct)."""
+    prog1 = _get_select_value_by_label(page, LABEL_PROG_1)
+    prog2 = _get_select_value_by_label(page, LABEL_PROG_2)
+    active = prog1 != SCHEDULE_DISABLED or prog2 != SCHEDULE_DISABLED
+    soc = 0
+    if active:
+        try:
+            soc = int(float(_get_input_value_by_label(page, LABEL_SOC_1)))
+        except Exception:
+            pass
+    return active, soc
+
+
+def _read_discharge_state(page: Page) -> bool:
+    """
+    Lee el estado actual de 6.3.2. Devuelve True si la descarga está bloqueada.
+    Loguea los valores brutos para diagnóstico.
+    """
+    prog1 = _get_select_value_by_label(page, LABEL_DISC_PROG_1)
+    prog2 = _get_select_value_by_label(page, LABEL_DISC_PROG_2)
+    logger.debug(f"  6.3.2 Prog1={prog1!r} Prog2={prog2!r}")
+    return prog1 != SCHEDULE_DISABLED or prog2 != SCHEDULE_DISABLED
+
+
+# ---------------------------------------------------------------------------
+# Lectura del estado real del inversor (sin escribir nada)
+# ---------------------------------------------------------------------------
+
+def read_inverter_schedule(cfg: InverterConfig) -> Optional[ScheduleState]:
+    """
+    Lee el estado actual de 6.3.1 (carga) y 6.3.2 (descarga) del inversor vía web.
+
+    Navega en una sola sesión de Playwright a ambas secciones, pulsa Leer en cada
+    una y extrae los valores configurados. No escribe nada.
+
+    Returns:
+        ScheduleState con la configuración actual, o None si no se puede leer.
+    """
+    logger.info("Leyendo programación del inversor vía web (6.3.1 y 6.3.2)...")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-zygote",
+                "--single-process",
+            ],
+        )
+        context = browser.new_context(
+            ignore_https_errors=True,
+            locale="es-ES",
+            timezone_id="Europe/Madrid",
+        )
+        page = context.new_page()
+        page.set_default_timeout(cfg.browser_timeout_seconds * 1000)
+        try:
+            _login(page, cfg)
+
+            _navigate_to_charge_schedule(page)
+            charge_active, charge_soc = _read_charge_state(page)
+
+            _navigate_to_discharge_schedule(page)
+            _read_current_values(page)   # loguea etiquetas y valores reales para diagnóstico
+            discharge_blocked = _read_discharge_state(page)
+
+            state = ScheduleState(
+                charge_active=charge_active,
+                charge_soc_pct=charge_soc,
+                discharge_blocked=discharge_blocked,
+            )
+            logger.info(
+                f"Programación leída del inversor: "
+                f"6.3.1 Carga={state.charge_str()} | "
+                f"6.3.2 Descarga={state.discharge_str()}"
+            )
+            return state
+        except Exception as e:
+            logger.warning(f"No se pudo leer la programación del inversor: {e}")
+            return None
         finally:
             context.close()
             browser.close()

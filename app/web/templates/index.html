@@ -155,6 +155,8 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .decision-badge.charge    { background: var(--blued);  border-color: rgba(88,166,255,.3);  color: var(--blue);  }
 .decision-badge.no-charge { background: var(--greend); border-color: rgba(63,185,80,.3);   color: var(--green); }
 .decision-badge.unknown   { background: var(--oranged);border-color: rgba(210,153,34,.3);  color: var(--orange); }
+.decision-badge.blocked   { background: var(--oranged);border-color: rgba(210,153,34,.3);  color: var(--orange); }
+.decision-badge.free      { background: var(--greend); border-color: rgba(63,185,80,.3);   color: var(--green); }
 .decision-note { font-size: 12px; color: var(--muted); line-height: 1.65; }
 
 /* ── Forecast bars ───────────────────────────────── */
@@ -165,10 +167,12 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .forecast-xlabels { display: flex; gap: 3px; }
 .forecast-xlabels span { flex: 1; min-width: 0; text-align: center; font-size: 9px; color: var(--muted2); font-family: var(--mono); overflow: hidden; }
 .forecast-footer { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 8px; }
-.f-total-val { font-size: 22px; font-weight: 300; font-family: var(--mono); color: var(--accent); }
+.f-total-val { font-size: 18px; font-weight: 300; font-family: var(--mono); color: var(--accent); }
 .f-total-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 2px; }
 .f-peak-val  { font-size: 13px; font-family: var(--mono); color: var(--text); }
 .f-peak-lbl  { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 2px; text-align: right; }
+.f-produced-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-top: 5px; margin-bottom: 1px; }
+.f-produced-val { font-size: 18px; font-weight: 300; font-family: var(--mono); color: var(--green); }
 
 /* ── Hist nav (navegación de forecast histórico) ─── */
 .hist-nav { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
@@ -296,6 +300,55 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
   background: #070b0f;
 }
 
+/* ── Responsive ──────────────────────────────────── */
+/* Tablet / landscape phone (≤ 800px) */
+@media (max-width: 800px) {
+  .main   { padding: 12px 14px; }
+  .grid-7 { grid-template-columns: repeat(4, 1fr); }
+  .grid-3 { grid-template-columns: 1fr 1fr; }
+}
+
+/* Portrait phone (≤ 600px) */
+@media (max-width: 600px) {
+  /* Header: compactar — ocultar elementos secundarios */
+  .header         { padding: 0 12px; }
+  .logo-version   { display: none; }
+  .header-center  { display: none; }
+  #clock          { display: none; }
+  .btn            { padding: 5px 9px; font-size: 12px; gap: 5px; }
+
+  /* Nav: scroll horizontal si no caben las pestañas */
+  .nav            { overflow-x: auto; -webkit-overflow-scrolling: touch; padding: 0 8px; scrollbar-width: none; }
+  .nav::-webkit-scrollbar { display: none; }
+  .nav-tab        { padding: 10px 10px; font-size: 12px; }
+
+  /* Layout principal */
+  .main           { padding: 10px; gap: 10px; }
+  .grid-7         { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .grid-2         { grid-template-columns: 1fr; }
+  .grid-3         { grid-template-columns: 1fr; }
+  .cfg-grid       { grid-template-columns: 1fr; }
+
+  /* Tiles de métricas: valor algo más compacto */
+  .metric-value   { font-size: 20px; }
+
+  /* Run panel: apilar vertical */
+  .run-panel          { flex-direction: column; gap: 10px; }
+  .run-panel-actions  { flex-wrap: wrap; }
+
+  /* Ventana de logs */
+  .log-win        { height: 240px; font-size: 11px; }
+
+  /* Tabla de historial: scroll horizontal */
+  #tab-historial .card-body { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  .hist-table     { font-size: 11px; white-space: nowrap; }
+  .hist-table th,
+  .hist-table td  { padding: 6px 8px; }
+
+  /* Badge de decisión: ligeramente más compacto */
+  .decision-badge { font-size: 13px; padding: 8px 12px; }
+}
+
 </style>
 </head>
 <body>
@@ -398,6 +451,12 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
               <span id="decision-text">Calculando…</span>
             </div>
             <div class="decision-note" id="decision-note">Esperando datos del inversor y Solcast.</div>
+            <div class="divider" style="margin:6px 0"></div>
+            <div class="decision-badge unknown" id="discharge-badge">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="currentColor" stroke-width="1.5"/><path d="M8 5v4M8 11v.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              <span id="discharge-text">Descarga: —</span>
+            </div>
+            <div class="decision-note" id="discharge-note">Última decisión del ciclo nocturno.</div>
           </div>
         </div>
       </div>
@@ -432,7 +491,12 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
             </div>
           </div>
           <div class="forecast-footer">
-            <div><div class="f-total-lbl">Total estimado</div><span class="f-total-val" id="f-total">— kWh</span></div>
+            <div>
+              <div class="f-total-lbl">Total estimado</div>
+              <span class="f-total-val" id="f-total">— kWh</span>
+              <div class="f-produced-lbl" id="f-produced-lbl" style="display:none">Total producido hoy</div>
+              <span class="f-produced-val" id="f-produced" style="display:none">—</span>
+            </div>
             <div style="text-align:right"><div class="f-peak-lbl">Pico</div><span class="f-peak-val" id="f-peak">—</span></div>
           </div>
         </div>
@@ -990,6 +1054,14 @@ async function loadTodaySolar() {
     const w = d.current_solar_w;
     setMetric('m-solar', w + ' W', w > 50 ? 'green' : '', d.total_solar_kwh + ' kWh hoy');
 
+    const prodLbl = document.getElementById('f-produced-lbl');
+    const prodVal = document.getElementById('f-produced');
+    if (prodLbl && prodVal && d.total_solar_kwh !== undefined) {
+      prodLbl.style.display = '';
+      prodVal.style.display = '';
+      prodVal.textContent = d.total_solar_kwh.toFixed(2) + ' kWh';
+    }
+
     // Consumo casa (PacGrid)
     if (d.current_house_w !== undefined) {
       const hw = d.current_house_w;
@@ -1050,9 +1122,23 @@ function updateDecisionBadge(p50, p10, p90) {
 
 // Mostrar el día de hoy por defecto
 loadHistory(_todayIso(), 'day');
-// Obtener forecast de mañana en background (solo para el badge de decisión)
+// Obtener forecast de mañana en background (solo para el badge de decisión de carga)
 fetch('/api/forecast').then(r => r.json()).then(d => {
   if (d.ok) updateDecisionBadge(d.total_p50_kwh, d.total_p10_kwh, d.total_p90_kwh);
+}).catch(() => {});
+
+// Pre-poblar badges de decisión con el último ciclo registrado en el log
+fetch('/api/logs?lines=200').then(r => r.json()).then(d => {
+  const lines = d.lines || [];
+  let lastCharge = null, lastDischarge = null;
+  for (const l of lines) {
+    const dec = _decisionBadge(l);
+    if (!dec) continue;
+    if (dec.decCls === 'charge' || dec.decCls === 'no-charge') lastCharge = dec;
+    else lastDischarge = dec;
+  }
+  if (lastCharge) _updateChargeCard(lastCharge);
+  if (lastDischarge) _updateDischargeCard(lastDischarge);
 }).catch(() => {});
 
 // ══ Logs ═══════════════════════════════════════════
@@ -1079,10 +1165,28 @@ function _decisionBadge(raw) {
   if (body.startsWith('[CARGA] NO'))
     return { badge:'NO CARGA', cls:'no-charge', decCls:'no-charge', body: body.replace(/^\[CARGA\] NO ?·? ?/, '') };
   if (body.startsWith('[DESCARGA] BLOQUEADA'))
-    return { badge:'BLOQUEADA', cls:'blocked',   decCls:'blocked',   body: body.replace(/^\[DESCARGA\] BLOQUEADA ?·? ?/, '') };
+    return { badge:'DESCARGA: BLOQUEADA', cls:'blocked', decCls:'blocked', body: body.replace(/^\[DESCARGA\] BLOQUEADA ?·? ?/, '') };
   if (body.startsWith('[DESCARGA] LIBRE'))
-    return { badge:'LIBRE',    cls:'free',       decCls:'free',      body: body.replace(/^\[DESCARGA\] LIBRE ?·? ?/, '') };
+    return { badge:'DESCARGA: PERMITIDA', cls:'free',    decCls:'free',    body: body.replace(/^\[DESCARGA\] LIBRE ?·? ?/, '') };
   return null;
+}
+
+function _updateChargeCard(dec) {
+  const badge = document.getElementById('decision-badge');
+  const note  = document.getElementById('decision-note');
+  if (!badge || !note) return;
+  badge.className = 'decision-badge ' + dec.decCls;
+  badge.querySelector('span').textContent = dec.decCls === 'charge' ? 'Cargar esta noche' : 'No cargar esta noche';
+  note.textContent = dec.body;
+}
+
+function _updateDischargeCard(dec) {
+  const badge = document.getElementById('discharge-badge');
+  const note  = document.getElementById('discharge-note');
+  if (!badge || !note) return;
+  badge.className = 'decision-badge ' + dec.decCls;
+  badge.querySelector('span').textContent = dec.decCls === 'blocked' ? 'Descarga: Bloqueada' : 'Descarga: Permitida';
+  note.textContent = dec.body;
 }
 
 // Estado para agrupar secciones === ... === (modo DEBUG)
@@ -1127,6 +1231,8 @@ function appendLog(ts, lvl, raw) {
     line.className = `log-line log-decision ${dec.decCls}`;
     line.innerHTML = `<span class="log-ts">${ts}</span><span class="log-badge ${dec.cls}">${dec.badge}</span><span class="log-msg">${escHtml(dec.body)}</span>`;
     out.appendChild(line);
+    if (dec.decCls === 'charge' || dec.decCls === 'no-charge') _updateChargeCard(dec);
+    else _updateDischargeCard(dec);
     scroll();
     return;
   }
