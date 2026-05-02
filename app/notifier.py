@@ -24,8 +24,10 @@ Configuración en config.yaml bajo system.email:
 
 import logging
 import logging.handlers
+import os
 import re
 import smtplib
+import socket
 import ssl
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
@@ -33,6 +35,10 @@ from email.mime.text import MIMEText
 from io import StringIO
 
 from app.config import EmailConfig
+
+
+def _get_hostname() -> str:
+    return os.environ.get("HOST_HOSTNAME") or socket.gethostname()
 
 logger = logging.getLogger(__name__)
 
@@ -302,6 +308,7 @@ def _build_html(
     duration_s: int,
     start_time: datetime,
     dry_run: bool,
+    hostname: str = "",
 ) -> str:
     soc, forecast, charge, night_kwh, night_dynamic, rf_value, rf_dynamic = _parse_decision(log_content)
 
@@ -387,7 +394,7 @@ def _build_html(
         {title}
       </h1>
       <p style="margin:8px 0 0;font-size:13px;color:rgba(255,255,255,.7);">
-        {date_str} · {time_str}
+        {date_str} · {time_str}{f" · {hostname}" if hostname else ""}
       </p>
     </td>
   </tr>
@@ -428,7 +435,7 @@ def _build_html(
   <tr>
     <td style="padding:24px 0 4px;text-align:center;">
       <p style="margin:0;font-size:11px;color:{_C['muted']};">
-        Ingeteam INGECON SUN STORAGE 1PLAY TL-M &nbsp;·&nbsp; solar-manager
+        Ingeteam INGECON SUN STORAGE 1PLAY TL-M &nbsp;·&nbsp; solar-manager{f" &nbsp;·&nbsp; {hostname}" if hostname else ""}
       </p>
     </td>
   </tr>
@@ -445,12 +452,15 @@ def _build_plain(
     log_content: str,
     duration_s: int,
     start_time: datetime,
+    hostname: str = "",
 ) -> str:
     status = "✓ Completado correctamente" if success else "✗ Finalizado con errores"
+    host_line = f"Host      : {hostname}\n" if hostname else ""
     return (
         f"solar-manager — resumen del ciclo\n"
         f"{'=' * 50}\n"
         f"Fecha     : {start_time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+        f"{host_line}"
         f"Duración  : {duration_s}s\n"
         f"Estado    : {status}\n"
         f"{'=' * 50}\n\n"
@@ -479,6 +489,7 @@ class CycleEmailNotifier:
         self._buffer = StringIO()
         self._handler: logging.Handler | None = None
         self._start_time = datetime.now()
+        self._hostname = _get_hostname()
 
     def attach(self) -> None:
         """Conecta el notifier al root logger para capturar todos los mensajes."""
@@ -535,13 +546,14 @@ class CycleEmailNotifier:
         dry_run = "[DRY RUN]" in log_content
         dry     = " [DRY RUN]" if dry_run else ""
         status  = "OK" if success else "ERROR"
+        host_tag = f"@{self._hostname}" if self._hostname else ""
         subject = (
-            f"[solar-manager] Ciclo {status}{dry} — "
+            f"[solar-manager{host_tag}] Ciclo {status}{dry} — "
             f"{self._start_time.strftime('%Y-%m-%d %H:%M')}"
         )
 
-        html_body  = _build_html(success, log_content, duration_s, self._start_time, dry_run)
-        plain_body = _build_plain(success, log_content, duration_s, self._start_time)
+        html_body  = _build_html(success, log_content, duration_s, self._start_time, dry_run, self._hostname)
+        plain_body = _build_plain(success, log_content, duration_s, self._start_time, self._hostname)
 
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
