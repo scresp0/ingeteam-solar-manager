@@ -79,6 +79,7 @@ La versión se muestra en el log de arranque, en el header de la web (`/`) y en 
 ### SMTP (notifier.py)
 - Usar **hostname** (no IP) para que TLS funcione
 - `verify_ssl: false` para relay interno
+- El hostname del servidor se incluye en el asunto (`[solar-manager@host]`), en la cabecera HTML y en el pie. Se obtiene con `_get_hostname()`: `HOST_HOSTNAME` env var (inyectada por Docker/Makefile) o `socket.gethostname()` como fallback.
 
 ### Docker
 - `shm_size: '256mb'` en el servicio `solar-manager` — necesario para Chromium
