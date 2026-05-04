@@ -163,6 +163,7 @@ El motivo ("reason") siempre muestra el déficit *sin bloqueo* para explicar por
 | `GET /api/forecast` | Forecast Solcast de mañana agrupado por hora (desde caché JSON) |
 | `GET /api/today_solar` | Producción solar, consumo casa y flujo de red de hoy: datalogger minuto a minuto, agrupado por hora. Requiere `INVERTER_DEVICE_ID`. Devuelve `current_solar_w`, `total_solar_kwh`, `hours`, `solar_kw`, `current_grid_w` (PacMeter: + importando, - exportando), `current_house_w` (PacGrid). Refresco 60s. |
 | `GET /api/params` | Parámetros dinámicos activos: `night_consumption_kwh`, `risk_factor`, origen (dinámico/config) y `*_valid_days` (días válidos en InfluxDB dentro de la ventana). Refresco 10min. |
+| `GET /api/solar_history` | Historial forecast vs real desde InfluxDB. Params: `date=YYYY-MM-DD`, `view=day\|week\|month`. Vista semana/mes devuelve medias por hora entre días (`total_p50_kwh` y `total_real_kwh` son "media/día"). Fallback a caché Solcast para el forecast si InfluxDB no tiene datos. |
 | `GET /api/logs` | Últimas N líneas del fichero de log |
 | `POST /api/cycle` | Lanza ciclo completo manual (dry_run o real) |
 | `POST /api/run/{test}` | Lanza test unitario en background |
@@ -188,13 +189,18 @@ Además del SOC ring y estados del inversor, muestra dos filas de parámetros de
 
 ### Dashboard — gráfico de forecast
 - Cada franja horaria dividida en **dos barras de mitad de ancho** (gap 1px):
-  - **Izquierda (amber)**: forecast p50 de mañana; contorno = rango p90.
-  - **Derecha (verde)**: producción real de hoy para esa hora (`_todayByHour`). Sin datos → placeholder de 2px invisible.
+  - **Izquierda (amber)**: forecast p50 del día mostrado; contorno = rango p90.
+  - **Derecha (verde)**: producción real de ese día. Sin datos → placeholder de 2px invisible.
 - Escala vertical = max(forecast, actual) para comparación justa.
-- Etiqueta de la hora actual en azul/negrita en el eje X.
-- Leyenda visible solo cuando hay datos reales del día.
-- Comparación válida aunque son días distintos (hoy real vs mañana forecast).
-- **Footer**: "Total estimado" (amber, 18px mono) + "Total producido hoy" (verde, 18px mono, oculto hasta que llegan datos de `/api/today_solar`). Ambos usan `font-weight: 300`.
+- Etiqueta de la hora actual en azul/negrita en el eje X (oculta en modo histórico).
+- Leyenda visible solo cuando hay datos; labels actualizan con el día seleccionado ("Forecast 3 may (p50)", "Real 3 may"). `↑ hora actual` oculto en días históricos.
+- **Navegación temporal** (botones `‹`/`›` + pestañas Día/Sem/Mes): llama a `GET /api/solar_history`. En vista semana/mes los valores son medias por hora entre días → los totales son "media/día", no suma del período.
+- **Footer** (siempre visible, separado por `border-top`): dos columnas lado a lado:
+  - "Total estimado" (amber 18px mono): siempre el forecast p50.
+  - "Total producido" (verde 18px mono): real de InfluxDB, o live de `/api/today_solar` si es hoy. "— kWh" en gris si sin datos.
+  - En vistas Sem/Mes ambas etiquetas añaden "(media/día)".
+  - `loadTodaySolar()` solo actualiza "Total producido" cuando `!_histMode || _histDate === _todayIso()`, para no sobreescribir vistas históricas.
+- **Layout dinámico**: `.card` es flex-column; `.forecast-body` (clase del card-body del forecast) hace `flex: 1` para rellenar la altura disponible; `.forecast-bars` crece con `flex: 1` en lugar de altura fija. Alturas de barras calculadas desde `barsEl.clientHeight` en cada render.
 
 ### Diseño responsive
 Dos breakpoints en `index.html`:

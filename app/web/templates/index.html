@@ -106,13 +106,14 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .grid-7 { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; }
 
 /* ── Cards ───────────────────────────────────────── */
-.card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius2); overflow: hidden; }
+.card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius2); overflow: hidden; display: flex; flex-direction: column; }
 .card-head {
   padding: 10px 15px; border-bottom: 1px solid var(--border);
   display: flex; align-items: center; justify-content: space-between;
 }
 .card-title { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .65px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
 .card-body { padding: 15px; }
+.forecast-body { flex: 1; display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .card-body.p0 { padding: 0; }
 
 /* ── Metric tiles ────────────────────────────────── */
@@ -160,22 +161,24 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .decision-note { font-size: 12px; color: var(--muted); line-height: 1.65; }
 
 /* ── Forecast bars ───────────────────────────────── */
-.forecast-chart { display: flex; flex-direction: column; gap: 6px; }
-.forecast-bars { display: flex; align-items: flex-end; gap: 3px; height: 72px; }
+.forecast-chart { display: flex; flex-direction: column; gap: 6px; flex: 1; min-height: 0; }
+.forecast-bars { display: flex; align-items: flex-end; gap: 3px; flex: 1; min-height: 80px; }
 .fbar { flex: 1; min-width: 0; border-radius: 3px 3px 0 0; background: rgba(240,165,0,.2); border: 1px solid rgba(240,165,0,.12); cursor: pointer; transition: background .15s; }
 .fbar:hover { background: rgba(240,165,0,.42); }
 .forecast-xlabels { display: flex; gap: 3px; }
 .forecast-xlabels span { flex: 1; min-width: 0; text-align: center; font-size: 9px; color: var(--muted2); font-family: var(--mono); overflow: hidden; }
-.forecast-footer { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 8px; }
+.forecast-footer { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); flex-shrink: 0; }
+.f-totals { display: flex; gap: 28px; }
 .f-total-val { font-size: 18px; font-weight: 300; font-family: var(--mono); color: var(--accent); }
 .f-total-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 2px; }
 .f-peak-val  { font-size: 13px; font-family: var(--mono); color: var(--text); }
 .f-peak-lbl  { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 2px; text-align: right; }
-.f-produced-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-top: 5px; margin-bottom: 1px; }
+.f-produced-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 2px; }
 .f-produced-val { font-size: 18px; font-weight: 300; font-family: var(--mono); color: var(--green); }
+.f-produced-val.empty { color: var(--muted2); }
 
 /* ── Hist nav (navegación de forecast histórico) ─── */
-.hist-nav { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; }
+.hist-nav { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; flex-shrink: 0; }
 .hist-nav-btn { background: var(--bg3); border: 1px solid var(--border); color: var(--fg); border-radius: 4px; padding: 1px 9px; font-size: 16px; line-height: 1.4; cursor: pointer; transition: background .15s; flex-shrink: 0; }
 .hist-nav-btn:hover:not(:disabled) { background: var(--bg4,#2a2f3a); }
 .hist-nav-btn:disabled { opacity: .3; cursor: default; }
@@ -467,7 +470,7 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
           <span class="card-title" id="forecast-card-title">Forecast solar · mañana</span>
           <span style="font-size:11px;font-family:var(--mono);color:var(--muted2)" id="f-date">Solcast</span>
         </div>
-        <div class="card-body">
+        <div class="card-body forecast-body">
           <div class="hist-nav">
             <button class="hist-nav-btn" id="hist-prev" onclick="histNav(-1)" title="Anterior">‹</button>
             <div class="hist-center">
@@ -485,17 +488,21 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
             </div>
             <div class="forecast-xlabels" id="forecast-xlabels"></div>
             <div id="forecast-legend" style="display:none;gap:12px;font-size:10px;color:var(--muted);margin-top:5px">
-              <span><span style="display:inline-block;width:8px;height:8px;background:rgba(240,165,0,0.4);border-radius:1px;margin-right:3px;vertical-align:middle"></span>Forecast mañana (p50)</span>
-              <span><span style="display:inline-block;width:8px;height:8px;background:rgba(63,185,80,0.7);border-radius:1px;margin-right:3px;vertical-align:middle"></span>Real hoy</span>
-              <span style="color:var(--blue);font-weight:600">↑ hora actual</span>
+              <span><span style="display:inline-block;width:8px;height:8px;background:rgba(240,165,0,0.4);border-radius:1px;margin-right:3px;vertical-align:middle"></span><span id="legend-forecast-lbl">Forecast (p50)</span></span>
+              <span><span style="display:inline-block;width:8px;height:8px;background:rgba(63,185,80,0.7);border-radius:1px;margin-right:3px;vertical-align:middle"></span><span id="legend-real-lbl">Real</span></span>
+              <span id="legend-current-hour" style="color:var(--blue);font-weight:600">↑ hora actual</span>
             </div>
           </div>
           <div class="forecast-footer">
-            <div>
-              <div class="f-total-lbl">Total estimado</div>
-              <span class="f-total-val" id="f-total">— kWh</span>
-              <div class="f-produced-lbl" id="f-produced-lbl" style="display:none">Total producido hoy</div>
-              <span class="f-produced-val" id="f-produced" style="display:none">—</span>
+            <div class="f-totals">
+              <div>
+                <div class="f-total-lbl" id="f-total-lbl">Total estimado</div>
+                <span class="f-total-val" id="f-total">— kWh</span>
+              </div>
+              <div>
+                <div class="f-produced-lbl" id="f-produced-lbl">Total producido</div>
+                <span class="f-produced-val empty" id="f-produced">— kWh</span>
+              </div>
             </div>
             <div style="text-align:right"><div class="f-peak-lbl">Pico</div><span class="f-peak-val" id="f-peak">—</span></div>
           </div>
@@ -841,21 +848,24 @@ function renderForecastBars() {
 
   if (legend) legend.style.display = (hasActual || hasFc) ? 'flex' : 'none';
 
+  const barH   = barsEl.clientHeight || 120;
+  const usable = Math.max(barH - 4, 20);
+
   barsEl.innerHTML = hours.map(h => {
     const fcIdx    = (fcHours || []).indexOf(h);
     const p50Val   = fcIdx >= 0 ? p50[fcIdx] : null;
     const p90Val   = fcIdx >= 0 ? p90[fcIdx] : null;
-    const h50      = p50Val != null ? Math.max(4, (p50Val / max) * 68) : 0;
-    const h90      = p90Val != null ? Math.max(4, (p90Val / max) * 68) : 0;
+    const h50      = p50Val != null ? Math.max(4, (p50Val / max) * usable) : 0;
+    const h90      = p90Val != null ? Math.max(4, (p90Val / max) * usable) : 0;
     const actualKw = realByHour[h];
-    const hActual  = (actualKw != null && actualKw > 0) ? Math.max(2, (actualKw / max) * 68) : 0;
+    const hActual  = (actualKw != null && actualKw > 0) ? Math.max(2, (actualKw / max) * usable) : 0;
     const tip = `${h}h — forecast p50:${p50Val ?? '—'} kW${actualKw != null ? ' · real:' + actualKw + ' kW' : ''}`;
-    return `<div style="flex:1;min-width:0;display:flex;align-items:flex-end;height:72px;gap:1px" title="${tip}">
-      <div style="flex:1;position:relative;display:flex;align-items:flex-end;height:72px;">
+    return `<div style="flex:1;min-width:0;display:flex;align-items:flex-end;height:100%;gap:1px" title="${tip}">
+      <div style="flex:1;position:relative;display:flex;align-items:flex-end;height:100%;">
         ${h90 > 0 ? `<div style="position:absolute;bottom:0;left:0;right:0;height:${h90}px;border-radius:2px 2px 0 0;border:1px solid rgba(240,165,0,0.18);background:transparent;pointer-events:none"></div>` : ''}
         ${h50 > 0 ? `<div class="fbar" style="position:relative;z-index:1;width:100%;height:${h50}px;border-radius:2px 2px 0 0"></div>` : ''}
       </div>
-      <div style="flex:1;display:flex;align-items:flex-end;height:72px;">
+      <div style="flex:1;display:flex;align-items:flex-end;height:100%;">
         ${hActual > 0
           ? `<div style="width:100%;height:${hActual}px;border-radius:2px 2px 0 0;background:rgba(63,185,80,0.75);border:1px solid rgba(63,185,80,0.35)"></div>`
           : `<div style="width:100%;height:2px;background:rgba(255,255,255,0.03)"></div>`}
@@ -986,14 +996,39 @@ async function loadHistory(date, view) {
 
     if (titleEl) titleEl.textContent = `Forecast solar · ${d.label}`;
 
-    const avgLbl = view !== 'day' ? ' (media/día)' : '';
-    // Para "hoy" sin datos en InfluxDB: calcular total desde _todayByHour live
-    const liveTotal = (date === _todayIso() && !d.total_real_kwh)
-      ? Object.values(_todayByHour).reduce((s, v) => s + v, 0).toFixed(2) : null;
-    if (totalEl) totalEl.textContent = d.total_real_kwh > 0
-      ? `${d.total_real_kwh} kWh real${avgLbl}`
-      : (liveTotal && liveTotal > 0 ? `${liveTotal} kWh hoy`
-         : (d.total_p50_kwh ? `${d.total_p50_kwh} kWh est.${avgLbl}` : '— kWh'));
+    // Leyenda
+    const legendFc  = document.getElementById('legend-forecast-lbl');
+    const legendRl  = document.getElementById('legend-real-lbl');
+    const legendCur = document.getElementById('legend-current-hour');
+    const isToday   = date === _todayIso();
+    if (legendFc)  legendFc.textContent  = view === 'day' ? (isToday ? 'Forecast mañana (p50)' : `Forecast ${d.label ?? date} (p50)`) : 'Forecast (p50)';
+    if (legendRl)  legendRl.textContent  = view === 'day' ? (isToday ? 'Real hoy' : `Real ${d.label ?? date}`) : 'Real';
+    if (legendCur) legendCur.style.display = isToday ? '' : 'none';
+
+    const avgSuffix = view !== 'day' ? ' (media/día)' : '';
+
+    // Etiquetas: ambas con el sufijo (media/día) en vistas semana/mes
+    const totalLbl = document.getElementById('f-total-lbl');
+    if (totalLbl) totalLbl.textContent = `Total estimado${avgSuffix}`;
+
+    // Total estimado: siempre el forecast p50
+    if (totalEl) totalEl.textContent = d.total_p50_kwh ? `${d.total_p50_kwh} kWh` : '— kWh';
+
+    // Total producido: real de InfluxDB o live de hoy; siempre visible (gris si sin datos)
+    const prodLbl = document.getElementById('f-produced-lbl');
+    const prodVal = document.getElementById('f-produced');
+    const liveTotal = isToday ? Object.values(_todayByHour).reduce((s, v) => s + v, 0) : 0;
+    const realTotal = d.total_real_kwh > 0 ? d.total_real_kwh : (isToday && liveTotal > 0 ? parseFloat(liveTotal.toFixed(2)) : null);
+    if (prodLbl) prodLbl.textContent = `Total producido${avgSuffix}`;
+    if (prodVal) {
+      if (realTotal !== null) {
+        prodVal.textContent = realTotal.toFixed(2) + ' kWh';
+        prodVal.classList.remove('empty');
+      } else {
+        prodVal.textContent = '— kWh';
+        prodVal.classList.add('empty');
+      }
+    }
 
     const validP50 = (d.p50_kw || []).filter(v => v != null);
     if (peakEl && validP50.length) {
@@ -1054,12 +1089,12 @@ async function loadTodaySolar() {
     const w = d.current_solar_w;
     setMetric('m-solar', w + ' W', w > 50 ? 'green' : '', d.total_solar_kwh + ' kWh hoy');
 
-    const prodLbl = document.getElementById('f-produced-lbl');
-    const prodVal = document.getElementById('f-produced');
-    if (prodLbl && prodVal && d.total_solar_kwh !== undefined) {
-      prodLbl.style.display = '';
-      prodVal.style.display = '';
-      prodVal.textContent = d.total_solar_kwh.toFixed(2) + ' kWh';
+    if (!_histMode || _histDate === _todayIso()) {
+      const prodVal = document.getElementById('f-produced');
+      if (prodVal && d.total_solar_kwh !== undefined) {
+        prodVal.textContent = d.total_solar_kwh.toFixed(2) + ' kWh';
+        prodVal.classList.remove('empty');
+      }
     }
 
     // Consumo casa (PacGrid)
