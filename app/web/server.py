@@ -301,7 +301,9 @@ def create_app(cfg: AppConfig) -> FastAPI:
         import asyncio
 
         def _compute():
-            from app.storage import get_avg_night_consumption, get_dynamic_risk_factor
+            from app.storage import (
+                get_avg_night_consumption, get_dynamic_risk_factor, get_dynamic_solar_bias,
+            )
             night = get_avg_night_consumption(
                 cfg.influxdb,
                 window_days=cfg.charging.night_consumption_window_days,
@@ -312,14 +314,21 @@ def create_app(cfg: AppConfig) -> FastAPI:
                 window_days=cfg.charging.risk_factor_window_days,
                 min_days=cfg.charging.risk_factor_min_days,
             )
+            bias = get_dynamic_solar_bias(
+                cfg.influxdb,
+                window_days=cfg.charging.solar_bias_window_days,
+                min_days=cfg.charging.solar_bias_min_days,
+            )
 
             night_count = 0
             rf_count = 0
+            bias_count = 0
             if cfg.influxdb.enabled:
                 try:
                     from influxdb_client import InfluxDBClient
                     wd_n = cfg.charging.night_consumption_window_days
                     wd_r = cfg.charging.risk_factor_window_days + 2
+                    wd_b = cfg.charging.solar_bias_window_days + 2
                     q_n = f'''from(bucket:"{cfg.influxdb.bucket}")
   |> range(start: -{wd_n}d)
   |> filter(fn:(r) => r._measurement=="stats_diarias" and r._field=="night_consumption_kwh")
@@ -327,6 +336,11 @@ def create_app(cfg: AppConfig) -> FastAPI:
   |> count()'''
                     q_r = f'''from(bucket:"{cfg.influxdb.bucket}")
   |> range(start: -{wd_r}d)
+  |> filter(fn:(r) => r._measurement=="stats_diarias" and r._field=="solar_kwh")
+  |> filter(fn:(r) => r._value > 0.5)
+  |> count()'''
+                    q_b = f'''from(bucket:"{cfg.influxdb.bucket}")
+  |> range(start: -{wd_b}d)
   |> filter(fn:(r) => r._measurement=="stats_diarias" and r._field=="solar_kwh")
   |> filter(fn:(r) => r._value > 0.5)
   |> count()'''
@@ -339,13 +353,16 @@ def create_app(cfg: AppConfig) -> FastAPI:
                         for t in api.query(q_r, org=cfg.influxdb.org):
                             for rec in t.records:
                                 rf_count = int(rec.get_value())
+                        for t in api.query(q_b, org=cfg.influxdb.org):
+                            for rec in t.records:
+                                bias_count = int(rec.get_value())
                 except Exception:
                     pass
 
-            return night, rf, night_count, rf_count
+            return night, rf, bias, night_count, rf_count, bias_count
 
         try:
-            night, rf, night_count, rf_count = await asyncio.to_thread(_compute)
+            night, rf, bias, night_count, rf_count, bias_count = await asyncio.to_thread(_compute)
         except Exception as e:
             return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
@@ -363,6 +380,12 @@ def create_app(cfg: AppConfig) -> FastAPI:
             "risk_min_days": cfg.charging.risk_factor_min_days,
             "risk_window_days": cfg.charging.risk_factor_window_days,
             "risk_valid_days": rf_count,
+            "solar_bias_factor": bias if bias is not None else cfg.charging.solar_bias_factor,
+            "solar_bias_dynamic": bias is not None,
+            "solar_bias_config": cfg.charging.solar_bias_factor,
+            "solar_bias_min_days": cfg.charging.solar_bias_min_days,
+            "solar_bias_window_days": cfg.charging.solar_bias_window_days,
+            "solar_bias_valid_days": bias_count,
         }
 
     @app.get("/api/today_solar")

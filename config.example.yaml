@@ -102,6 +102,14 @@ charging:
   # Mientras no haya suficientes días, se usa el risk_factor fijo definido arriba.
   risk_factor_min_days: 14          # días mínimos de pares (previsión+real) para activarlo
   risk_factor_window_days: 30       # ventana deslizante para el cálculo (días)
+  # Factor de calibración del forecast Solcast (solar_real / forecast_p50 medio).
+  # Compensa el sesgo sistemático del forecast para tu instalación concreta
+  # (orientación, sombras, suciedad, AC vs DC, etc.). 1.0 = sin corrección.
+  # Se calcula dinámicamente desde InfluxDB; el valor de aquí es fallback.
+  # Clamp aplicado a [0.5, 1.5] como defensa ante muestras pequeñas o anómalas.
+  solar_bias_factor: 1.0
+  solar_bias_min_days: 14
+  solar_bias_window_days: 30
 
 # -----------------------------------------------------------------------------
 # Sistema

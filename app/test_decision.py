@@ -172,6 +172,25 @@ ok("batería 50% + medio → carga")
 
 
 # ---------------------------------------------------------------------------
+# Tests de solar_bias_factor — corrige el sesgo del forecast
+# ---------------------------------------------------------------------------
+
+print("\n=== solar_bias_factor ===")
+
+# Mismo caso (60% + soleado): con bias=1.0 no carga; con bias=0.5 sí.
+inp_neutral = make_inp(60, forecast_day1=FORECAST_SUNNY, solar_bias_factor=1.0)
+r_neutral   = decide_charge(inp_neutral, _ref_date=REF_DOM)
+inp_biased  = make_inp(60, forecast_day1=FORECAST_SUNNY, solar_bias_factor=0.5)
+r_biased    = decide_charge(inp_biased, _ref_date=REF_DOM)
+print(f"  bias=1.0: solar_eff={r_neutral.solar_effective_kwh} kWh, charge={r_neutral.charge_needed}")
+print(f"  bias=0.5: solar_eff={r_biased.solar_effective_kwh} kWh, charge={r_biased.charge_needed}")
+assert r_biased.solar_effective_kwh == round(r_neutral.solar_effective_kwh * 0.5, 2)
+ok("solar_bias_factor escala linealmente solar_effective")
+assert r_biased.charge_needed and not r_neutral.charge_needed
+ok("bias bajo → solar útil menor → carga (caso real cuando Solcast sobreestima)")
+
+
+# ---------------------------------------------------------------------------
 # Tests de decide_charge — mañana es día valle
 # ---------------------------------------------------------------------------
 

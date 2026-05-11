@@ -110,6 +110,13 @@ class ChargingConfig(BaseModel):
     # Risk factor dinámico: calibrado desde desviación histórica Solcast vs real
     risk_factor_min_days: int = Field(default=14, ge=1)
     risk_factor_window_days: int = Field(default=30, ge=7)
+    # Factor de calibración del forecast Solcast: solar_real / forecast_p50 medio.
+    # Compensa el sesgo sistemático del forecast para esta instalación.
+    # 1.0 = sin corrección. Se calcula dinámicamente desde InfluxDB cuando hay
+    # suficientes días; el valor de aquí es fallback.
+    solar_bias_factor: float = Field(default=1.0, ge=0.5, le=1.5)
+    solar_bias_min_days: int = Field(default=14, ge=1)
+    solar_bias_window_days: int = Field(default=30, ge=7)
 
     @field_validator("max_soc_pct")
     @classmethod
@@ -232,6 +239,7 @@ def _apply_env_overrides(data: dict) -> dict:
         ("charging", "max_soc_pct"):                         "MAX_SOC_PCT",
         ("charging", "safety_margin_kwh"):                   "SAFETY_MARGIN_KWH",
         ("charging", "night_consumption_kwh"):               "NIGHT_CONSUMPTION_KWH",
+        ("charging", "solar_bias_factor"):                   "SOLAR_BIAS_FACTOR",
         ("influxdb", "token"):                               "INFLUXDB_TOKEN",
         ("influxdb", "org"):                                 "INFLUXDB_ORG",
         ("influxdb", "bucket"):                              "INFLUXDB_BUCKET",
@@ -265,6 +273,7 @@ def _apply_env_overrides(data: dict) -> dict:
                 "battery_capacity_kwh", "average_daily_consumption_kwh",
                 "risk_factor", "min_soc_pct", "max_soc_pct",
                 "safety_margin_kwh", "night_consumption_kwh",
+                "solar_bias_factor",
             }:
                 data[section][key] = float(value)
             elif key in {"smtp_port", "web_port"}:

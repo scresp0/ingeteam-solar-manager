@@ -92,7 +92,7 @@ La versión se muestra en el log de arranque, en el header de la web (`/`) y en 
 
 ## Parámetros dinámicos (calibración automática desde InfluxDB)
 
-Dos parámetros se calculan automáticamente a partir del histórico almacenado en InfluxDB, usando el valor de `config.yaml` como fallback mientras no haya suficientes días:
+Tres parámetros se calculan automáticamente a partir del histórico almacenado en InfluxDB, usando el valor de `config.yaml` como fallback mientras no haya suficientes días:
 
 ### Consumo nocturno dinámico (`storage.get_avg_night_consumption`)
 - Fuente: campo `night_consumption_kwh` de `stats_diarias` (primeros 480 min del día = 00:00–07:59)
@@ -108,13 +108,23 @@ Dos parámetros se calculan automáticamente a partir del histórico almacenado 
   Ejecuciones entre 01:00-07:59 UTC son descartadas silenciosamente (lookup devuelve None).
 - Mismos parámetros de ventana/mínimo que el consumo nocturno (`risk_factor_*_days`)
 
-Ambos parámetros se registran en el log (`INFO`) y aparecen en el email con badge **dinámico**/**config**.
+### Factor de calibración del forecast (`storage.get_dynamic_solar_bias`)
+- Fórmula por día: `factor = solar_real / forecast_p50`. Media sobre la ventana.
+- Compensa el sesgo sistemático del forecast Solcast para una instalación concreta
+  (orientación, sombras, suciedad, AC vs DC, paneles infraestimados en Solcast).
+- Se aplica como multiplicador a `solar_effective` dentro de `_solar_effective(forecast, rf, bias)`.
+  **NO** se aplica antes de almacenar `forecast_pXX_kwh` en InfluxDB — el dato persistido es
+  siempre el forecast crudo de Solcast, para evitar bucles iterativos al recalcular el bias.
+- Clamp defensivo [0.5, 1.5] sobre la media. Parámetros `solar_bias_*_days` (mismo patrón).
+- En v1.42 se midió para esta instalación: factor ≈ 0.81 (Solcast sobreestima un 19%).
+
+Los tres parámetros se registran en el log (`INFO`) y aparecen en el email con badge **dinámico**/**config**.
 
 ## Lógica de decisión (resumen)
 
 ### decide_charge
 ```
-solar_efectiva   = p10 * risk_factor + p50 * (1 - risk_factor)
+solar_efectiva   = (p10 * risk_factor + p50 * (1 - risk_factor)) * solar_bias_factor
 energia_amanecer = max(min_soc_kwh, energia_actual - night_consumption_kwh)
 consumo_diurno   = max(0, daily_consumption - night_consumption)   # 08:00–24:00
 deficit          = max(0, consumo_diurno + safety_margin - solar_efectiva
@@ -127,7 +137,7 @@ si deficit > 0  → CARGAR hasta target_soc = min_soc + deficit (clamped a max_s
 
 **Por qué se resta `night_consumption` a `daily_consumption`:** `daily_consumption_kwh` es el consumo total de 24 h. La parte nocturna ya está descontada de la batería vía `energia_amanecer`; `needed_for_day` solo debe cubrir el consumo diurno (08:00–24:00) que entrará de [batería disponible + solar + red]. Antes (v1.40 y anteriores) `night_consumption` se contaba doble — en `energia_amanecer` y dentro de `daily_consumption` — sobreestimando el déficit en exactamente `night_consumption_kwh` kWh (corregido en v1.41).
 
-- `risk_factor` y `night_consumption_kwh` son dinámicos (ver sección anterior).
+- `risk_factor`, `night_consumption_kwh` y `solar_bias_factor` son dinámicos (ver sección anterior).
 - `energy_at_dawn_kwh` en `ChargeDecision`: cuando se carga, muestra `target_kwh` (energía real al amanecer tras la carga), no el hipotético sin carga.
 - `to_charge_kwh`: kWh reales que entrará desde la red (`target_kwh - energy_stored`), distinto de `deficit_kwh`.
 - **`reference_date` y ejecuciones fuera de las 23:55:** el algoritmo asigna correctamente día1/día2 en cualquier hora (corrección de madrugada para hora < `night_cutoff_hour`), pero usa el SOC *actual* como punto de partida, no el SOC estimado a medianoche. Si se ejecuta a mediodía, el SOC puede diferir mucho del SOC real a medianoche → cálculos optimistas. El ciclo programado a las 23:55 es el único que trabaja con las condiciones para las que fue diseñado.

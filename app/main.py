@@ -34,7 +34,8 @@ from app.notifier import CycleEmailNotifier
 from app.logger_reader import get_yesterday_stats, LoggerReaderError
 from app.storage import (
     write_cycle, write_daily_stats, write_half_hour_solar, write_half_hour_forecast,
-    get_avg_night_consumption, get_dynamic_risk_factor, StorageError,
+    get_avg_night_consumption, get_dynamic_risk_factor, get_dynamic_solar_bias,
+    StorageError,
 )
 
 
@@ -152,7 +153,29 @@ def run(cfg: AppConfig) -> bool:
             f"(config — menos de {cfg.charging.risk_factor_min_days} días en InfluxDB)"
         )
 
+    # 4b. Factor de calibración del forecast Solcast (real / p50 medio histórico)
+    solar_bias = cfg.charging.solar_bias_factor
+    dynamic_bias = get_dynamic_solar_bias(
+        cfg.influxdb,
+        window_days=cfg.charging.solar_bias_window_days,
+        min_days=cfg.charging.solar_bias_min_days,
+    )
+    if dynamic_bias is not None:
+        logger.info(
+            f"Factor de calibración solar dinámico: {dynamic_bias} "
+            f"(media {cfg.charging.solar_bias_window_days}d · "
+            f"fallback config: {cfg.charging.solar_bias_factor})"
+        )
+        solar_bias = dynamic_bias
+    else:
+        logger.info(
+            f"Factor de calibración solar: {solar_bias} "
+            f"(config — menos de {cfg.charging.solar_bias_min_days} días en InfluxDB)"
+        )
+
     # 5. Construir input compartido por ambas funciones de decisión
+    # El forecast pasa CRUDO a inp; solar_bias_factor se aplica dentro de
+    # _solar_effective para no contaminar lo que se almacena en InfluxDB.
     inp = DecisionInput(
         forecast_day1=forecast_day1,
         forecast_day2=forecast_day2,
@@ -161,6 +184,7 @@ def run(cfg: AppConfig) -> bool:
         daily_consumption_kwh=cfg.installation.average_daily_consumption_kwh,
         night_consumption_kwh=night_consumption_kwh,
         risk_factor=risk_factor,
+        solar_bias_factor=solar_bias,
         min_soc_pct=min_soc,
         max_soc_pct=cfg.charging.max_soc_pct,
         safety_margin_kwh=cfg.charging.safety_margin_kwh,

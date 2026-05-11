@@ -442,6 +442,7 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
               <div class="divider" style="margin:5px 0"></div>
               <div class="inv-row"><span class="k">Cons. nocturno</span><span class="v" id="inv-night">—</span></div>
               <div class="inv-row"><span class="k">Risk factor</span><span class="v" id="inv-rf">—</span></div>
+              <div class="inv-row"><span class="k">Calib. forecast</span><span class="v" id="inv-bias">—</span></div>
             </div>
           </div>
 
@@ -1056,6 +1057,7 @@ async function loadParams() {
 
     const nightEl = document.getElementById('inv-night');
     const rfEl    = document.getElementById('inv-rf');
+    const biasEl  = document.getElementById('inv-bias');
     if (!nightEl || !rfEl) return;
 
     const badge = (dyn, validDays, minDays, title) => {
@@ -1077,6 +1079,17 @@ async function loadParams() {
         d.risk_dynamic
           ? `Media de ${d.risk_valid_days} días (ventana ${d.risk_window_days}d) calibrada desde InfluxDB`
           : `Config: ${d.risk_config} · ${d.risk_valid_days}/${d.risk_min_days} días válidos acumulados`);
+
+    if (biasEl && d.solar_bias_factor !== undefined) {
+      const pct = ((d.solar_bias_factor - 1) * 100).toFixed(1);
+      const sign = pct >= 0 ? '+' : '';
+      biasEl.innerHTML =
+        `${d.solar_bias_factor.toFixed(3)} (${sign}${pct}%)` +
+        badge(d.solar_bias_dynamic, d.solar_bias_valid_days, d.solar_bias_min_days,
+          d.solar_bias_dynamic
+            ? `Media de ${d.solar_bias_valid_days} días (ventana ${d.solar_bias_window_days}d) — real / forecast_p50`
+            : `Config: ${d.solar_bias_config} · ${d.solar_bias_valid_days}/${d.solar_bias_min_days} días válidos acumulados`);
+    }
   } catch(e) {}
 }
 

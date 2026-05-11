@@ -65,11 +65,11 @@ _C = {
 
 def _parse_decision(log: str) -> tuple:
     """
-    Extrae del log: soc, forecast, charge, night_kwh, night_dynamic, rf_value, rf_dynamic.
-    Compatible con el formato one-liner [CARGA]/[DESCARGA].
+    Extrae del log: soc, forecast, charge, night_kwh, night_dynamic, rf_value, rf_dynamic,
+    bias_value, bias_dynamic. Compatible con el formato one-liner [CARGA]/[DESCARGA].
     """
-    soc = charge = forecast = night_kwh = rf_value = None
-    night_dynamic = rf_dynamic = False
+    soc = charge = forecast = night_kwh = rf_value = bias_value = None
+    night_dynamic = rf_dynamic = bias_dynamic = False
     for line in log.splitlines():
         # SOC desde la línea del inversor (primer match)
         if soc is None:
@@ -95,6 +95,11 @@ def _parse_decision(log: str) -> tuple:
         if m:
             rf_value = float(m.group(1))
             rf_dynamic = 'dinámico' in line
+        # Factor de calibración solar dinámico o de config
+        m = re.search(r'Factor de calibración solar(?:\s+dinámico)?: ([\d.]+)', line)
+        if m:
+            bias_value = float(m.group(1))
+            bias_dynamic = 'dinámico' in line
         # Decisión de carga — formato one-liner [CARGA]
         body_m = re.search(r' — (.+)$', line)
         body = body_m.group(1).strip() if body_m else line.strip()
@@ -108,7 +113,8 @@ def _parse_decision(log: str) -> tuple:
                 charge = True
             elif re.search(r'charge_needed\s*=\s*False', line):
                 charge = False
-    return soc, forecast, charge, night_kwh, night_dynamic, rf_value, rf_dynamic
+    return (soc, forecast, charge, night_kwh, night_dynamic,
+            rf_value, rf_dynamic, bias_value, bias_dynamic)
 
 
 _DECISION_STYLES = {
@@ -310,7 +316,8 @@ def _build_html(
     dry_run: bool,
     hostname: str = "",
 ) -> str:
-    soc, forecast, charge, night_kwh, night_dynamic, rf_value, rf_dynamic = _parse_decision(log_content)
+    (soc, forecast, charge, night_kwh, night_dynamic,
+     rf_value, rf_dynamic, bias_value, bias_dynamic) = _parse_decision(log_content)
 
     # Cabecera semántica
     if not success:
@@ -356,6 +363,19 @@ def _build_html(
             f'letter-spacing:.3px;margin-left:6px;">config</span>'
         )
         rows += _kv_row("Risk factor", f"{rf_value:.3f}{rf_badge}")
+    if bias_value is not None:
+        bias_badge = (
+            f'<span style="background:#e8f4fd;color:#2980b9;font-size:10px;'
+            f'font-weight:700;padding:1px 6px;border-radius:3px;'
+            f'letter-spacing:.3px;margin-left:6px;">dinámico</span>'
+            if bias_dynamic else
+            f'<span style="background:#f5f5f5;color:#888;font-size:10px;'
+            f'font-weight:700;padding:1px 6px;border-radius:3px;'
+            f'letter-spacing:.3px;margin-left:6px;">config</span>'
+        )
+        pct = (bias_value - 1.0) * 100
+        sign = "+" if pct >= 0 else ""
+        rows += _kv_row("Calib. forecast", f"{bias_value:.3f} ({sign}{pct:.1f}%){bias_badge}")
     rows += _kv_row("Duración del ciclo", f"{duration_s}s")
     rows += _kv_row("Timestamp", f"{date_str} {time_str}")
 

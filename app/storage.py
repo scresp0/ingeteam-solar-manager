@@ -262,6 +262,94 @@ from(bucket: "{cfg.bucket}")
         return None
 
 
+def get_dynamic_solar_bias(
+    cfg: InfluxDBConfig,
+    window_days: int = 30,
+    min_days: int = 14,
+) -> float | None:
+    """
+    Calcula el factor de calibración medio del forecast Solcast vs producción real.
+
+    Fórmula por día: factor = solar_real / forecast_p50
+    Devuelve la media de los últimos window_days, clamped a [0.5, 1.5] como defensa
+    ante muestras pequeñas o anómalas.
+
+    Devuelve None si:
+    - InfluxDB no está habilitado
+    - Hay menos de min_days pares válidos en la ventana
+    - La consulta falla
+    """
+    if not cfg.enabled:
+        return None
+
+    from datetime import timedelta
+
+    fetch_days = window_days + 2  # margen para desfase UTC+1/+2
+
+    q_ciclo = f"""
+from(bucket: "{cfg.bucket}")
+  |> range(start: -{fetch_days}d)
+  |> filter(fn: (r) => r._measurement == "ciclo_carga" and r._field == "forecast_p50_kwh")
+"""
+
+    q_stats = f"""
+from(bucket: "{cfg.bucket}")
+  |> range(start: -{fetch_days}d)
+  |> filter(fn: (r) => r._measurement == "stats_diarias" and r._field == "solar_kwh")
+  |> filter(fn: (r) => r._value > 0.5)
+"""
+
+    try:
+        from influxdb_client import InfluxDBClient
+        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
+            api = client.query_api()
+            ciclo_tables = api.query(q_ciclo, org=cfg.org)
+            stats_tables = api.query(q_stats, org=cfg.org)
+
+        solar_by_date: dict = {}
+        for table in stats_tables:
+            for rec in table.records:
+                solar_by_date[rec.get_time().date()] = rec.get_value()
+
+        factors = []
+        for table in ciclo_tables:
+            for rec in table.records:
+                p50 = rec.get_value()
+                if p50 is None or p50 <= 0.5:
+                    continue
+                forecast_date = rec.get_time().date() + timedelta(days=1)
+                solar_real = solar_by_date.get(forecast_date)
+                if solar_real is None:
+                    continue
+                factors.append(solar_real / p50)
+
+        if len(factors) < min_days:
+            logger.debug(
+                f"Factor de calibración solar dinámico: solo {len(factors)} días válidos "
+                f"(mínimo {min_days}) — usando fallback"
+            )
+            return None
+
+        avg = sum(factors) / len(factors)
+        clamped = max(0.5, min(1.5, avg))
+        if clamped != avg:
+            logger.warning(
+                f"Factor de calibración solar {avg:.3f} fuera del rango [0.5, 1.5] — "
+                f"clamped a {clamped:.3f}"
+            )
+        logger.debug(
+            f"Factor de calibración solar dinámico: {len(factors)} días, "
+            f"media={avg:.3f}, aplicado={clamped:.3f}"
+        )
+        return round(clamped, 3)
+
+    except ImportError:
+        raise StorageError("influxdb-client no está instalado.")
+    except Exception as e:
+        logger.warning(f"No se pudo calcular factor de calibración solar dinámico: {e}")
+        return None
+
+
 def write_half_hour_solar(cfg: InfluxDBConfig, stats: DailyStats) -> None:
     """
     Guarda la producción solar real (ayer) en resolución de 30 min.

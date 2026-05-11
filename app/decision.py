@@ -54,6 +54,10 @@ class DecisionInput:
     safety_margin_kwh: float
 
     risk_factor: float
+    # Multiplicador aplicado a solar_effective para corregir el sesgo
+    # sistemático del forecast Solcast (real/p50 medio histórico).
+    # 1.0 = sin corrección. Aplicado dentro de _solar_effective.
+    solar_bias_factor: float = 1.0
 
     weekend_days: list = field(default_factory=lambda: [5, 6])
     holidays: list = field(default_factory=list)
@@ -99,8 +103,10 @@ def is_valley_day(d: date, weekend_days: list, holidays: list) -> bool:
     return d.isoformat() in holidays
 
 
-def _solar_effective(forecast: SolarForecast, risk_factor: float) -> float:
-    return forecast.p10 * risk_factor + forecast.p50 * (1.0 - risk_factor)
+def _solar_effective(forecast: SolarForecast, risk_factor: float,
+                     solar_bias: float = 1.0) -> float:
+    raw = forecast.p10 * risk_factor + forecast.p50 * (1.0 - risk_factor)
+    return raw * solar_bias
 
 
 def reference_date(night_cutoff_hour: int = 8) -> date:
@@ -154,7 +160,7 @@ def decide_charge(
             target_soc_pct=0.0,
             target_kwh=0.0,
             to_charge_kwh=0.0,
-            solar_effective_kwh=round(_solar_effective(inp.forecast_day1, inp.risk_factor), 2),
+            solar_effective_kwh=round(_solar_effective(inp.forecast_day1, inp.risk_factor, inp.solar_bias_factor), 2),
             energy_stored_kwh=round(energy_stored, 2),
             energy_at_dawn_kwh=round(max(energy_min, energy_stored - inp.night_consumption_kwh), 2),
             deficit_kwh=0.0,
@@ -163,7 +169,7 @@ def decide_charge(
             dry_run=dry_run,
         )
 
-    solar_effective = _solar_effective(inp.forecast_day1, inp.risk_factor)
+    solar_effective = _solar_effective(inp.forecast_day1, inp.risk_factor, inp.solar_bias_factor)
     energy_at_dawn  = max(energy_min, energy_stored - inp.night_consumption_kwh)
     energy_usable   = max(0.0, energy_at_dawn - energy_min)
     # Consumo nocturno ya restado en energy_at_dawn → needed_for_day cubre solo 08:00-24:00
@@ -235,8 +241,8 @@ def decide_discharge(
     energy_stored   = (inp.soc_actual_pct / 100.0) * inp.battery_capacity_kwh
     energy_min      = (inp.min_soc_pct    / 100.0) * inp.battery_capacity_kwh
 
-    solar_day1  = _solar_effective(inp.forecast_day1, inp.risk_factor)
-    solar_day2  = _solar_effective(inp.forecast_day2, inp.risk_factor)
+    solar_day1  = _solar_effective(inp.forecast_day1, inp.risk_factor, inp.solar_bias_factor)
+    solar_day2  = _solar_effective(inp.forecast_day2, inp.risk_factor, inp.solar_bias_factor)
     needed_day2 = max(0.0, inp.daily_consumption_kwh + inp.safety_margin_kwh - solar_day2)
 
     # Criterio de decisión: escenario sin bloqueo (conservador)
@@ -324,7 +330,7 @@ def discharge_summary(
     lines = [
         "=== Decisión de descarga ===",
         f"  Día 1: {dia1_es} {tomorrow.strftime('%d/%m')} | Día 2: {dia2_es} {day2.strftime('%d/%m')}",
-        f"  Solar efectiva día 2           : {round(_solar_effective(inp.forecast_day2, inp.risk_factor), 2)} kWh",
+        f"  Solar efectiva día 2           : {round(_solar_effective(inp.forecast_day2, inp.risk_factor, inp.solar_bias_factor), 2)} kWh",
         f"  Energía estimada fin día 1     : {result.energy_end_day1_kwh} kWh",
         f"  Déficit día 2                  : {result.deficit_day2_kwh} kWh",
     ]
@@ -385,7 +391,7 @@ def discharge_oneliner(
     if not result.discharge_blocked:
         if "laborable" in result.reason:
             return "[DESCARGA] LIBRE · mañana es laborable"
-        solar_day2 = round(_solar_effective(inp.forecast_day2, inp.risk_factor), 2)
+        solar_day2 = round(_solar_effective(inp.forecast_day2, inp.risk_factor, inp.solar_bias_factor), 2)
         return (
             f"[DESCARGA] LIBRE · "
             f"solar {dias[day2.weekday()]} {solar_day2} kWh · "
