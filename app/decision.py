@@ -166,7 +166,9 @@ def decide_charge(
     solar_effective = _solar_effective(inp.forecast_day1, inp.risk_factor)
     energy_at_dawn  = max(energy_min, energy_stored - inp.night_consumption_kwh)
     energy_usable   = max(0.0, energy_at_dawn - energy_min)
-    needed_for_day  = max(0.0, inp.daily_consumption_kwh + inp.safety_margin_kwh - solar_effective)
+    # Consumo nocturno ya restado en energy_at_dawn → needed_for_day cubre solo 08:00-24:00
+    daytime_consumption = max(0.0, inp.daily_consumption_kwh - inp.night_consumption_kwh)
+    needed_for_day  = max(0.0, daytime_consumption + inp.safety_margin_kwh - solar_effective)
     deficit         = max(0.0, needed_for_day - energy_usable)
 
     if deficit == 0.0:

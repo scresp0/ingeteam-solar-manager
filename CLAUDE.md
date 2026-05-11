@@ -116,13 +116,16 @@ Ambos parámetros se registran en el log (`INFO`) y aparecen en el email con bad
 ```
 solar_efectiva   = p10 * risk_factor + p50 * (1 - risk_factor)
 energia_amanecer = max(min_soc_kwh, energia_actual - night_consumption_kwh)
-deficit          = max(0, daily_consumption + safety_margin - solar_efectiva
+consumo_diurno   = max(0, daily_consumption - night_consumption)   # 08:00–24:00
+deficit          = max(0, consumo_diurno + safety_margin - solar_efectiva
                           - (energia_amanecer - min_soc_kwh))
 
 si mañana es día valle (fin de semana/festivo) → NO cargar nunca
 si deficit == 0 → NO cargar
 si deficit > 0  → CARGAR hasta target_soc = min_soc + deficit (clamped a max_soc)
 ```
+
+**Por qué se resta `night_consumption` a `daily_consumption`:** `daily_consumption_kwh` es el consumo total de 24 h. La parte nocturna ya está descontada de la batería vía `energia_amanecer`; `needed_for_day` solo debe cubrir el consumo diurno (08:00–24:00) que entrará de [batería disponible + solar + red]. Antes (v1.40 y anteriores) `night_consumption` se contaba doble — en `energia_amanecer` y dentro de `daily_consumption` — sobreestimando el déficit en exactamente `night_consumption_kwh` kWh (corregido en v1.41).
 
 - `risk_factor` y `night_consumption_kwh` son dinámicos (ver sección anterior).
 - `energy_at_dawn_kwh` en `ChargeDecision`: cuando se carga, muestra `target_kwh` (energía real al amanecer tras la carga), no el hipotético sin carga.

@@ -164,11 +164,11 @@ print(f"  Batería 90% + soleado: charge={r.charge_needed}")
 assert not r.charge_needed
 ok("batería alta + soleado → no cargar")
 
-inp = make_inp(80, forecast_day1=FORECAST_MEDIUM)
+inp = make_inp(50, forecast_day1=FORECAST_MEDIUM)
 r = decide_charge(inp, _ref_date=REF_DOM)
-print(f"  Batería 80% + medio: charge={r.charge_needed} (déficit esperado ~2 kWh)")
+print(f"  Batería 50% + medio: charge={r.charge_needed}, deficit={r.deficit_kwh} kWh")
 assert r.charge_needed
-ok("batería 80% + medio → carga (déficit real ~2 kWh)")
+ok("batería 50% + medio → carga")
 
 
 # ---------------------------------------------------------------------------
