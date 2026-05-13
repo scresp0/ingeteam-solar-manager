@@ -168,9 +168,12 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .forecast-xlabels { display: flex; gap: 3px; }
 .forecast-xlabels span { flex: 1; min-width: 0; text-align: center; font-size: 9px; color: var(--muted2); font-family: var(--mono); overflow: hidden; }
 .forecast-footer { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); flex-shrink: 0; }
-.f-totals { display: flex; gap: 28px; }
+.f-totals { display: flex; gap: 22px; flex-wrap: wrap; }
 .f-total-val { font-size: 18px; font-weight: 300; font-family: var(--mono); color: var(--accent); }
 .f-total-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 2px; }
+.f-total-cal-val { font-size: 18px; font-weight: 300; font-family: var(--mono); color: var(--text); }
+.f-total-cal-val.empty { color: var(--muted2); }
+.f-total-cal-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 2px; }
 .f-peak-val  { font-size: 13px; font-family: var(--mono); color: var(--text); }
 .f-peak-lbl  { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 2px; text-align: right; }
 .f-produced-lbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 2px; }
@@ -497,11 +500,15 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
           <div class="forecast-footer">
             <div class="f-totals">
               <div>
-                <div class="f-total-lbl" id="f-total-lbl">Total estimado</div>
+                <div class="f-total-lbl" id="f-total-lbl">Est. Solcast</div>
                 <span class="f-total-val" id="f-total">— kWh</span>
               </div>
               <div>
-                <div class="f-produced-lbl" id="f-produced-lbl">Total producido</div>
+                <div class="f-total-cal-lbl" id="f-total-cal-lbl" title="Forecast Solcast × factor de calibración para esta instalación">Est. calibrado</div>
+                <span class="f-total-cal-val empty" id="f-total-cal">— kWh</span>
+              </div>
+              <div>
+                <div class="f-produced-lbl" id="f-produced-lbl">Real</div>
                 <span class="f-produced-val empty" id="f-produced">— kWh</span>
               </div>
             </div>
@@ -882,6 +889,7 @@ function renderForecastBars() {
 async function loadForecast() {
   const barsEl  = document.getElementById('forecast-bars');
   const totalEl = document.getElementById('f-total');
+  const totalCalEl = document.getElementById('f-total-cal');
   const peakEl  = document.getElementById('f-peak');
   const dateEl  = document.getElementById('f-date');
 
@@ -903,6 +911,15 @@ async function loadForecast() {
     const max     = Math.max(...d.p50_kw, 0.01);
     const peakIdx = d.p50_kw.indexOf(Math.max(...d.p50_kw));
     totalEl.textContent = d.total_p50_kwh + ' kWh';
+    if (totalCalEl) {
+      if (d.total_p50_calibrated_kwh != null) {
+        totalCalEl.textContent = d.total_p50_calibrated_kwh + ' kWh';
+        totalCalEl.classList.remove('empty');
+      } else {
+        totalCalEl.textContent = '— kWh';
+        totalCalEl.classList.add('empty');
+      }
+    }
     peakEl.textContent  = max.toFixed(2) + ' kW · ' + d.hours[peakIdx] + 'h';
 
     if (dateEl) {
@@ -966,6 +983,7 @@ function setHistView(view) {
 async function loadHistory(date, view) {
   const barsEl  = document.getElementById('forecast-bars');
   const totalEl = document.getElementById('f-total');
+  const totalCalEl = document.getElementById('f-total-cal');
   const peakEl  = document.getElementById('f-peak');
   const dateEl  = document.getElementById('f-date');
   const titleEl = document.getElementById('forecast-card-title');
@@ -1010,17 +1028,30 @@ async function loadHistory(date, view) {
 
     // Etiquetas: ambas con el sufijo (media/día) en vistas semana/mes
     const totalLbl = document.getElementById('f-total-lbl');
-    if (totalLbl) totalLbl.textContent = `Total estimado${avgSuffix}`;
+    if (totalLbl) totalLbl.textContent = `Est. Solcast${avgSuffix}`;
+    const totalCalLbl = document.getElementById('f-total-cal-lbl');
+    if (totalCalLbl) totalCalLbl.textContent = `Est. calibrado${avgSuffix}`;
 
-    // Total estimado: siempre el forecast p50
+    // Est. Solcast: forecast p50 crudo
     if (totalEl) totalEl.textContent = d.total_p50_kwh ? `${d.total_p50_kwh} kWh` : '— kWh';
 
-    // Total producido: real de InfluxDB o live de hoy; siempre visible (gris si sin datos)
+    // Est. calibrado: forecast × factor de calibración (bias) dinámico
+    if (totalCalEl) {
+      if (d.total_p50_calibrated_kwh != null && d.total_p50_kwh) {
+        totalCalEl.textContent = `${d.total_p50_calibrated_kwh} kWh`;
+        totalCalEl.classList.remove('empty');
+      } else {
+        totalCalEl.textContent = '— kWh';
+        totalCalEl.classList.add('empty');
+      }
+    }
+
+    // Real: producción de InfluxDB o live de hoy; siempre visible (gris si sin datos)
     const prodLbl = document.getElementById('f-produced-lbl');
     const prodVal = document.getElementById('f-produced');
     const liveTotal = isToday ? Object.values(_todayByHour).reduce((s, v) => s + v, 0) : 0;
     const realTotal = d.total_real_kwh > 0 ? d.total_real_kwh : (isToday && liveTotal > 0 ? parseFloat(liveTotal.toFixed(2)) : null);
-    if (prodLbl) prodLbl.textContent = `Total producido${avgSuffix}`;
+    if (prodLbl) prodLbl.textContent = `Real${avgSuffix}`;
     if (prodVal) {
       if (realTotal !== null) {
         prodVal.textContent = realTotal.toFixed(2) + ' kWh';

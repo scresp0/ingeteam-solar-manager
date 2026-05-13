@@ -38,6 +38,21 @@ _HOSTNAME = os.environ.get("HOST_HOSTNAME") or socket.gethostname()
 
 logger = logging.getLogger(__name__)
 
+
+def _current_solar_bias(cfg: AppConfig) -> float:
+    """Factor de calibración solar a aplicar en los totales mostrados:
+    dinámico desde InfluxDB si hay suficientes días, fallback al config."""
+    from app.storage import get_dynamic_solar_bias
+    try:
+        bias = get_dynamic_solar_bias(
+            cfg.influxdb,
+            window_days=cfg.charging.solar_bias_window_days,
+            min_days=cfg.charging.solar_bias_min_days,
+        )
+    except Exception:
+        bias = None
+    return bias if bias is not None else cfg.charging.solar_bias_factor
+
 app = FastAPI(title="solar-manager", docs_url=None, redoc_url=None)
 
 # Buffer de jobs en ejecución: job_id → deque de líneas de log
@@ -183,6 +198,9 @@ def create_app(cfg: AppConfig) -> FastAPI:
             total_p50 = round(sum(v[1] for vals in by_hour.values() for v in vals) * INTERVAL_H, 2)
             total_p90 = round(sum(v[2] for vals in by_hour.values() for v in vals) * INTERVAL_H, 2)
 
+            bias = _current_solar_bias(cfg)
+            total_p50_calibrated = round(total_p50 * bias, 2)
+
             return {
                 "ok": True,
                 "date": tomorrow.isoformat(),
@@ -192,7 +210,9 @@ def create_app(cfg: AppConfig) -> FastAPI:
                 "p90_kw": p90_out,
                 "total_p10_kwh": total_p10,
                 "total_p50_kwh": total_p50,
+                "total_p50_calibrated_kwh": total_p50_calibrated,
                 "total_p90_kwh": total_p90,
+                "solar_bias_factor": round(bias, 4),
                 "cached_at": cached_at,
                 "intervals": used_intervals,
             }
@@ -560,6 +580,14 @@ def create_app(cfg: AppConfig) -> FastAPI:
 
         if error:
             return JSONResponse(status_code=400, content={"ok": False, "error": error})
+
+        # Versión calibrada del total estimado (multiplica el forecast crudo
+        # por el bias dinámico actual). El dato persistido sigue siendo el
+        # forecast Solcast crudo; la calibración se aplica solo al mostrar.
+        bias = _current_solar_bias(cfg)
+        raw_total = result.get("total_p50_kwh") or 0
+        result["total_p50_calibrated_kwh"] = round(raw_total * bias, 2)
+        result["solar_bias_factor"] = round(bias, 4)
         return result
 
     @app.get("/api/logs")

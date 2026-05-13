@@ -527,6 +527,12 @@ class CycleEmailNotifier:
         logging.getLogger().addHandler(self._handler)
         logger.debug("Email notifier activado")
 
+    def discard(self) -> None:
+        """Desconecta el handler sin enviar email. Útil cuando no procede notificar."""
+        if self._handler:
+            logging.getLogger().removeHandler(self._handler)
+            self._handler = None
+
     def send(self, success: bool) -> None:
         """Envía el email con los logs acumulados y desconecta el handler."""
         if not self.cfg.enabled:

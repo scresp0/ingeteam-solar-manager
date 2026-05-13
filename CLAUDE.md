@@ -27,8 +27,8 @@ en función de la previsión solar del día siguiente y el SOC actual.
 ```
 app/
 ├── version.py       # fuente de verdad del número de versión — editar solo aquí
-├── main.py          # orquestación del ciclo nocturno
-├── scheduler.py     # APScheduler — lanza main a las 23:55
+├── main.py          # orquestación del ciclo nocturno (run + run_recheck)
+├── scheduler.py     # APScheduler — lanza run a las 23:55 y run_recheck a las 03:00
 ├── decision.py      # algoritmo decide_charge + decide_discharge
 ├── solcast.py       # cliente Solcast API
 ├── inverter.py      # lector MODBUS TCP
@@ -142,6 +142,15 @@ si deficit > 0  → CARGAR hasta target_soc = min_soc + deficit (clamped a max_s
 - `to_charge_kwh`: kWh reales que entrará desde la red (`target_kwh - energy_stored`), distinto de `deficit_kwh`.
 - **`reference_date` y ejecuciones fuera de las 23:55:** el algoritmo asigna correctamente día1/día2 en cualquier hora (corrección de madrugada para hora < `night_cutoff_hour`), pero usa el SOC *actual* como punto de partida, no el SOC estimado a medianoche. Si se ejecuta a mediodía, el SOC puede diferir mucho del SOC real a medianoche → cálculos optimistas. El ciclo programado a las 23:55 es el único que trabaja con las condiciones para las que fue diseñado.
 
+### Re-evaluación nocturna (`run_recheck`, v1.43)
+Ejecutada por el scheduler a `tariff.schedule_recheck_at` (por defecto `03:00`, `null` para desactivar). Recalcula `decide_charge`/`decide_discharge` con el SOC actualizado tras el consumo entre 23:55 y esa hora: si el consumo real ha sido mayor de lo previsto, la decisión puede pasar de "no cargar" a "cargar" con margen hasta el fin del valle (08:00).
+
+- Reutiliza `_collect_decision_inputs()` con `run()` (mismos pasos 1-5 — Solcast, MODBUS, dinámicos).
+- Lee `read_inverter_schedule` y compara con la decisión nueva. Solo reconfigura el inversor si `charge_active`, `charge_soc_pct` o `discharge_blocked` difieren.
+- **Email**: solo se envía si hubo cambios. Si la decisión coincide con lo configurado se llama a `notifier.discard()` y sale silenciosamente.
+- **NO escribe en InfluxDB**: ni `ciclo_carga` ni `stats_diarias` ni `solar_media_hora`. El ciclo de las 23:55 es el único punto canónico — un segundo `ciclo_carga` en madrugada UTC rompería el JOIN con `stats_diarias` (`forecast_date = ciclo_UTC.date()+1` apuntaría a "pasado mañana").
+- En el algoritmo a las 03:00, la corrección `hour < night_cutoff_hour` asigna correctamente día1 = hoy / día2 = mañana, así que las dos ejecuciones miran al mismo par de días.
+
 ### decide_discharge
 Solo actúa cuando mañana (día 1) es día valle. Usa **dos pasadas**:
 
@@ -208,11 +217,13 @@ Además del SOC ring y estados del inversor, muestra dos filas de parámetros de
 - Etiqueta de la hora actual en azul/negrita en el eje X (oculta en modo histórico).
 - Leyenda visible solo cuando hay datos; labels actualizan con el día seleccionado ("Forecast 3 may (p50)", "Real 3 may"). `↑ hora actual` oculto en días históricos.
 - **Navegación temporal** (botones `‹`/`›` + pestañas Día/Sem/Mes): llama a `GET /api/solar_history`. En vista semana/mes los valores son medias por hora entre días → los totales son "media/día", no suma del período.
-- **Footer** (siempre visible, separado por `border-top`): dos columnas lado a lado:
-  - "Total estimado" (amber 18px mono): siempre el forecast p50.
-  - "Total producido" (verde 18px mono): real de InfluxDB, o live de `/api/today_solar` si es hoy. "— kWh" en gris si sin datos.
-  - En vistas Sem/Mes ambas etiquetas añaden "(media/día)".
-  - `loadTodaySolar()` solo actualiza "Total producido" cuando `!_histMode || _histDate === _todayIso()`, para no sobreescribir vistas históricas.
+- **Footer** (siempre visible, separado por `border-top`): tres columnas lado a lado + Pico a la derecha:
+  - "Est. Solcast" (amber 18px mono): forecast p50 crudo de Solcast.
+  - "Est. calibrado" (blanco 18px mono): `forecast p50 × solar_bias_factor`. El bias se aplica solo al mostrar; el dato persistido en InfluxDB es siempre el forecast crudo (ver `feedback_raw_data_persistence`). El backend devuelve `total_p50_calibrated_kwh` y `solar_bias_factor` en `/api/forecast` y `/api/solar_history`.
+  - "Real" (verde 18px mono): producción real de InfluxDB, o live de `/api/today_solar` si es hoy. "— kWh" en gris si sin datos.
+  - En vistas Sem/Mes las tres etiquetas añaden "(media/día)".
+  - `loadTodaySolar()` solo actualiza "Real" cuando `!_histMode || _histDate === _todayIso()`, para no sobreescribir vistas históricas.
+  - `.f-totals` usa `flex-wrap: wrap` para que las tres columnas se envuelvan limpiamente en móvil.
 - **Layout dinámico**: `.card` es flex-column; `.forecast-body` (clase del card-body del forecast) hace `flex: 1` para rellenar la altura disponible; `.forecast-bars` crece con `flex: 1` en lugar de altura fija. Alturas de barras calculadas desde `barsEl.clientHeight` en cada render.
 
 ### Diseño responsive

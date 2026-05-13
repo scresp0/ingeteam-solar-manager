@@ -10,7 +10,7 @@ Jerarquía de valores (mayor prioridad gana):
 import os
 from datetime import date
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import yaml
 from pydantic import BaseModel, Field, field_validator
@@ -72,6 +72,11 @@ class TariffPeriods(BaseModel):
 
 class TariffConfig(BaseModel):
     schedule_at: str = "23:30"
+    # Segunda ejecución en madrugada (HH:MM) para re-evaluar la decisión
+    # tras el consumo entre schedule_at y esa hora. null = desactivado.
+    # Recalcula y reconfigura el inversor si la decisión cambió; no escribe
+    # ciclo_carga en InfluxDB ni lee stats del día anterior.
+    schedule_recheck_at: Optional[str] = None
     weekend_days: List[int] = [5, 6]   # 0=lunes..6=domingo
     holidays: List[str] = []           # ["YYYY-MM-DD", ...]
     periods: TariffPeriods

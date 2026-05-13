@@ -1,8 +1,9 @@
 """
 scheduler.py — cron interno con APScheduler.
 
-Ejecuta el ciclo completo cada noche a la hora configurada en
-tariff.schedule_at (por defecto 23:30).
+Ejecuta el ciclo completo cada noche a tariff.schedule_at (por defecto 23:55)
+y, opcionalmente, una re-evaluación a tariff.schedule_recheck_at (p.ej. 03:00)
+que recalcula la decisión y reconfigura el inversor si difiere.
 
 También ejecuta un ciclo inmediatamente al arrancar si RUN_ON_START=true,
 útil para pruebas sin esperar a la hora programada.
@@ -12,7 +13,6 @@ import logging
 import os
 import signal
 import sys
-import time
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -48,6 +48,29 @@ def start_scheduler(cfg: AppConfig) -> None:
         f"({timezone})"
     )
 
+    recheck_at = cfg.tariff.schedule_recheck_at
+    if recheck_at:
+        try:
+            rh, rm = recheck_at.split(":")
+            scheduler.add_job(
+                func=_run_recheck_job,
+                trigger=CronTrigger(hour=int(rh), minute=int(rm), timezone=timezone),
+                args=[cfg],
+                id="charge_recheck",
+                name=f"Re-evaluación nocturna ({recheck_at})",
+                misfire_grace_time=300,
+                replace_existing=True,
+            )
+            logger.info(
+                f"Re-evaluación nocturna programada a las {recheck_at} ({timezone}) — "
+                f"reconfigura el inversor solo si la decisión cambia"
+            )
+        except ValueError:
+            logger.error(
+                f"tariff.schedule_recheck_at inválido ({recheck_at!r}); "
+                f"se esperaba formato HH:MM. Re-evaluación desactivada."
+            )
+
     # Ejecutar inmediatamente si se pide (útil para pruebas)
     if os.environ.get("RUN_ON_START", "").lower() in ("true", "1", "yes"):
         logger.info("RUN_ON_START activo — ejecutando ciclo ahora")
@@ -78,3 +101,15 @@ def _run_job(cfg: AppConfig) -> None:
             logger.error("Scheduler: el ciclo terminó con errores")
     except Exception as e:
         logger.exception(f"Scheduler: error inesperado en el ciclo: {e}")
+
+
+def _run_recheck_job(cfg: AppConfig) -> None:
+    """Re-evaluación nocturna — llamado por el scheduler a schedule_recheck_at."""
+    from app.main import run_recheck
+    logger.info("Scheduler: iniciando re-evaluación nocturna")
+    try:
+        success = run_recheck(cfg)
+        if not success:
+            logger.error("Scheduler: la re-evaluación terminó con errores")
+    except Exception as e:
+        logger.exception(f"Scheduler: error inesperado en la re-evaluación: {e}")

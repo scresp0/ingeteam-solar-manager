@@ -1,7 +1,7 @@
 """
 main.py — punto de entrada del contenedor.
 
-Flujo completo:
+Flujo completo (run):
   1. Cargar configuración
   2. Obtener previsión solar de Solcast (día 1 y día 2)
   3. Leer SOC actual del inversor vía MODBUS
@@ -10,6 +10,12 @@ Flujo completo:
   6. Configurar inversor (6.3.1 carga + 6.3.2 descarga)
   7. Leer stats del día anterior y guardar en InfluxDB
   8. Enviar email de notificación
+
+Re-evaluación nocturna (run_recheck), ejecutada a tariff.schedule_recheck_at:
+  Repite pasos 2-6 con el SOC actualizado tras el consumo entre schedule_at y
+  esa hora. Si la decisión cambia respecto al estado actual del inversor,
+  reescribe y notifica por email; si no, sale sin tocar nada ni escribir
+  ciclo_carga (rompería el JOIN con stats_diarias).
 """
 
 import logging
@@ -19,12 +25,12 @@ from pathlib import Path
 from app.version import VERSION
 from app.config import load_config, AppConfig
 from app.solcast import get_two_day_forecast, get_day1_intervals, SolcastError
-from app.inverter import read_inverter_state, InverterError
+from app.inverter import read_inverter_state, InverterError, InverterState
 from app.decision import (
     DecisionInput, decide_charge, decide_discharge,
     charge_summary, discharge_summary,
     charge_oneliner, discharge_oneliner,
-    SolarForecast
+    SolarForecast, ChargeDecision, DischargeDecision,
 )
 from app.automation import (
     set_charge_schedule, set_discharge_schedule, AutomationError,
@@ -54,23 +60,16 @@ def setup_logging(cfg: AppConfig) -> None:
     logging.basicConfig(level=level, format=fmt, handlers=handlers)
 
 
-def run(cfg: AppConfig) -> bool:
+def _collect_decision_inputs(
+    cfg: AppConfig, logger: logging.Logger,
+) -> tuple[DecisionInput, InverterState | None, list[dict]]:
     """
-    Ejecuta el ciclo completo de gestión de carga.
-
-    Returns:
-        True si todo fue bien, False si hubo algún error no fatal.
+    Recoge previsión Solcast, lee MODBUS y parámetros dinámicos.
+    Devuelve el DecisionInput listo para decide_charge/decide_discharge,
+    junto con el estado del inversor (o None si falló) y los intervalos
+    del día 1 de Solcast (para write_half_hour_forecast).
     """
-    logger = logging.getLogger(__name__)
-
-    notifier = CycleEmailNotifier(cfg.system.email)
-    notifier.attach()
-
-    logger.info("=== Iniciando ciclo de gestión de carga ===")
-    if cfg.system.dry_run:
-        logger.info("Modo DRY RUN activo — no se modificará el inversor")
-
-    # 1. Previsión solar — día 1 y día 2
+    # 1. Previsión solar
     intervals_day1: list[dict] = []
     if cfg.system.dry_run:
         forecast_day1 = SolarForecast(p10=10.0, p50=20.0, p90=30.0)
@@ -88,7 +87,7 @@ def run(cfg: AppConfig) -> bool:
             forecast_day2 = SolarForecast(p10=0.0, p50=0.0, p90=0.0)
 
     # 2. Estado actual del inversor vía MODBUS
-    state = None
+    state: InverterState | None = None
     soc_actual = 50.0
     try:
         logger.info("Leyendo estado del inversor vía MODBUS...")
@@ -113,7 +112,7 @@ def run(cfg: AppConfig) -> bool:
         min_soc = state.min_soc_pct
         logger.info(f"SOC mínimo leído del inversor: {min_soc}% (config: {cfg.charging.min_soc_pct}%)")
 
-    # 3. Consumo nocturno: valor dinámico desde InfluxDB o fallback de config
+    # 3. Consumo nocturno dinámico
     night_consumption_kwh = cfg.charging.night_consumption_kwh
     avg_night = get_avg_night_consumption(
         cfg.influxdb,
@@ -133,7 +132,7 @@ def run(cfg: AppConfig) -> bool:
             f"(config — menos de {cfg.charging.night_consumption_min_days} días en InfluxDB)"
         )
 
-    # 4. Risk factor: valor dinámico desde InfluxDB o fallback de config
+    # 4. Risk factor dinámico
     risk_factor = cfg.charging.risk_factor
     dynamic_rf = get_dynamic_risk_factor(
         cfg.influxdb,
@@ -153,7 +152,7 @@ def run(cfg: AppConfig) -> bool:
             f"(config — menos de {cfg.charging.risk_factor_min_days} días en InfluxDB)"
         )
 
-    # 4b. Factor de calibración del forecast Solcast (real / p50 medio histórico)
+    # 4b. Factor de calibración del forecast Solcast
     solar_bias = cfg.charging.solar_bias_factor
     dynamic_bias = get_dynamic_solar_bias(
         cfg.influxdb,
@@ -173,9 +172,7 @@ def run(cfg: AppConfig) -> bool:
             f"(config — menos de {cfg.charging.solar_bias_min_days} días en InfluxDB)"
         )
 
-    # 5. Construir input compartido por ambas funciones de decisión
-    # El forecast pasa CRUDO a inp; solar_bias_factor se aplica dentro de
-    # _solar_effective para no contaminar lo que se almacena en InfluxDB.
+    # 5. Construir input compartido por ambas decisiones
     inp = DecisionInput(
         forecast_day1=forecast_day1,
         forecast_day2=forecast_day2,
@@ -192,19 +189,11 @@ def run(cfg: AppConfig) -> bool:
         holidays=cfg.tariff.holidays,
     )
 
-    # 6. Decisiones independientes
-    cutoff    = cfg.tariff.night_cutoff_hour
+    return inp, state, intervals_day1
 
-    charge    = decide_charge(inp, dry_run=cfg.system.dry_run,
-                          night_cutoff_hour=cutoff)
-    discharge = decide_discharge(inp, night_cutoff_hour=cutoff)
 
-    logger.info(charge_oneliner(inp, charge, night_cutoff_hour=cutoff))
-    logger.debug("\n" + charge_summary(inp, charge, night_cutoff_hour=cutoff))
-    logger.info(discharge_oneliner(inp, discharge, night_cutoff_hour=cutoff))
-    logger.debug("\n" + discharge_summary(inp, discharge, night_cutoff_hour=cutoff))
-
-    # 7. Leer configuración actual del inversor (web) — estado ANTES
+def _read_schedule_before(cfg: AppConfig, logger: logging.Logger) -> ScheduleState | None:
+    """Lee config actual del inversor (6.3.1/6.3.2) y loguea estado ANTES."""
     schedule_before: ScheduleState | None = None
     if not cfg.system.dry_run:
         try:
@@ -222,8 +211,15 @@ def run(cfg: AppConfig) -> bool:
             "[ANTES] Configuración del inversor no disponible — "
             "se aplicará igualmente"
         )
+    return schedule_before
 
-    # Decidir si hay cambios reales que aplicar
+
+def _needs_update(
+    schedule_before: ScheduleState | None,
+    charge: ChargeDecision, discharge: DischargeDecision,
+) -> tuple[bool, bool, int]:
+    """Determina si hay que reconfigurar carga/descarga.
+    Devuelve (charge_needs_update, discharge_needs_update, charge_soc_target)."""
     charge_soc_target = int(round(charge.target_soc_pct)) if charge.charge_needed else 0
     charge_needs_update = (
         schedule_before is None
@@ -234,9 +230,23 @@ def run(cfg: AppConfig) -> bool:
         schedule_before is None
         or schedule_before.discharge_blocked != discharge.discharge_blocked
     )
+    return charge_needs_update, discharge_needs_update, charge_soc_target
 
-    # 8. Configurar inversor — 6.3.1 carga
-    if charge_needs_update or cfg.system.dry_run:
+
+def _apply_inverter_decisions(
+    cfg: AppConfig, logger: logging.Logger,
+    charge: ChargeDecision, discharge: DischargeDecision,
+    charge_needs_update: bool, discharge_needs_update: bool,
+    charge_soc_target: int,
+    *, force_all: bool = False,
+) -> bool:
+    """Aplica carga (6.3.1) y descarga (6.3.2) al inversor. En dry_run o si
+    force_all=True escribe siempre; si no, solo cuando *_needs_update.
+    Loguea estado DESPUÉS. Devuelve False si alguna escritura falla."""
+    write_charge = force_all or cfg.system.dry_run or charge_needs_update
+    write_discharge = force_all or cfg.system.dry_run or discharge_needs_update
+
+    if write_charge:
         try:
             logger.info("Programando carga en el inversor (6.3.1)...")
             set_charge_schedule(
@@ -247,13 +257,11 @@ def run(cfg: AppConfig) -> bool:
             )
         except AutomationError as e:
             logger.error(f"Error al configurar carga (6.3.1): {e}")
-            notifier.send(success=False)
             return False
     else:
         logger.info("6.3.1 sin cambios — configuración ya correcta en el inversor")
 
-    # 9. Configurar inversor — 6.3.2 descarga
-    if discharge_needs_update or cfg.system.dry_run:
+    if write_discharge:
         try:
             logger.info("Programando descarga en el inversor (6.3.2)...")
             set_discharge_schedule(
@@ -263,12 +271,10 @@ def run(cfg: AppConfig) -> bool:
             )
         except AutomationError as e:
             logger.error(f"Error al configurar descarga (6.3.2): {e}")
-            notifier.send(success=False)
             return False
     else:
         logger.info("6.3.2 sin cambios — configuración ya correcta en el inversor")
 
-    # Log estado DESPUÉS
     after_charge_str = (
         f"ACTIVA (SOC {charge_soc_target}%)" if charge.charge_needed else "DESACTIVADA"
     )
@@ -278,8 +284,48 @@ def run(cfg: AppConfig) -> bool:
         f"[DESPUÉS] {dry_prefix}Carga (6.3.1): {after_charge_str} | "
         f"Descarga (6.3.2): {after_discharge_str}"
     )
+    return True
 
-    # 9. Stats del día anterior + InfluxDB
+
+def run(cfg: AppConfig) -> bool:
+    """
+    Ciclo completo nocturno (schedule_at, p.ej. 23:55).
+    Recoge inputs, decide, configura inversor, persiste stats y ciclo en
+    InfluxDB y envía email siempre.
+
+    Returns:
+        True si todo fue bien, False si hubo algún error no fatal.
+    """
+    logger = logging.getLogger(__name__)
+
+    notifier = CycleEmailNotifier(cfg.system.email)
+    notifier.attach()
+
+    logger.info("=== Iniciando ciclo de gestión de carga ===")
+    if cfg.system.dry_run:
+        logger.info("Modo DRY RUN activo — no se modificará el inversor")
+
+    inp, state, intervals_day1 = _collect_decision_inputs(cfg, logger)
+
+    cutoff = cfg.tariff.night_cutoff_hour
+    charge    = decide_charge(inp, dry_run=cfg.system.dry_run, night_cutoff_hour=cutoff)
+    discharge = decide_discharge(inp, night_cutoff_hour=cutoff)
+
+    logger.info(charge_oneliner(inp, charge, night_cutoff_hour=cutoff))
+    logger.debug("\n" + charge_summary(inp, charge, night_cutoff_hour=cutoff))
+    logger.info(discharge_oneliner(inp, discharge, night_cutoff_hour=cutoff))
+    logger.debug("\n" + discharge_summary(inp, discharge, night_cutoff_hour=cutoff))
+
+    schedule_before = _read_schedule_before(cfg, logger)
+    charge_upd, discharge_upd, charge_soc_target = _needs_update(schedule_before, charge, discharge)
+
+    if not _apply_inverter_decisions(
+        cfg, logger, charge, discharge, charge_upd, discharge_upd, charge_soc_target,
+    ):
+        notifier.send(success=False)
+        return False
+
+    # Stats del día anterior + InfluxDB
     try:
         stats = get_yesterday_stats(cfg.inverter)
         write_daily_stats(cfg.influxdb, stats)
@@ -293,7 +339,7 @@ def run(cfg: AppConfig) -> bool:
             inp=inp,
             result=charge,
             state=state,
-            solcast_error=(forecast_day1.p10 == 0.0 and forecast_day1.p50 == 0.0),
+            solcast_error=(inp.forecast_day1.p10 == 0.0 and inp.forecast_day1.p50 == 0.0),
             automation_ok=True,
         )
         write_half_hour_forecast(cfg.influxdb, intervals_day1, cfg.system.timezone)
@@ -301,6 +347,63 @@ def run(cfg: AppConfig) -> bool:
         logger.warning(f"No se pudo guardar ciclo en InfluxDB: {e}")
 
     logger.info("=== Ciclo completado correctamente ===")
+    notifier.send(success=True)
+    return True
+
+
+def run_recheck(cfg: AppConfig) -> bool:
+    """
+    Re-evaluación de la decisión a media madrugada (schedule_recheck_at, p.ej. 03:00).
+
+    Recoge inputs frescos (SOC actualizado tras el consumo entre schedule_at y
+    esta hora), recalcula decide_charge/decide_discharge y, si la decisión
+    difiere del estado actual del inversor, la aplica y notifica por email.
+    Si no difiere, sale silenciosamente.
+
+    NO escribe ciclo_carga ni stats en InfluxDB: el ciclo de las 23:55 ya lo hizo
+    y un segundo ciclo_carga del mismo día tendría timestamp en madrugada UTC,
+    cuyo JOIN con stats_diarias (forecast_date = UTC.date()+1) apuntaría al día
+    equivocado.
+
+    Returns:
+        True si todo fue bien (con o sin cambios aplicados), False si hubo error.
+    """
+    logger = logging.getLogger(__name__)
+
+    notifier = CycleEmailNotifier(cfg.system.email)
+    notifier.attach()
+
+    logger.info("=== Re-evaluación nocturna de la decisión de carga ===")
+    if cfg.system.dry_run:
+        logger.info("Modo DRY RUN activo — no se modificará el inversor")
+
+    inp, _state, _intervals = _collect_decision_inputs(cfg, logger)
+
+    cutoff = cfg.tariff.night_cutoff_hour
+    charge    = decide_charge(inp, dry_run=cfg.system.dry_run, night_cutoff_hour=cutoff)
+    discharge = decide_discharge(inp, night_cutoff_hour=cutoff)
+
+    logger.info(charge_oneliner(inp, charge, night_cutoff_hour=cutoff))
+    logger.debug("\n" + charge_summary(inp, charge, night_cutoff_hour=cutoff))
+    logger.info(discharge_oneliner(inp, discharge, night_cutoff_hour=cutoff))
+    logger.debug("\n" + discharge_summary(inp, discharge, night_cutoff_hour=cutoff))
+
+    schedule_before = _read_schedule_before(cfg, logger)
+    charge_upd, discharge_upd, charge_soc_target = _needs_update(schedule_before, charge, discharge)
+
+    # Sin cambios y no dry_run → salir sin tocar el inversor ni notificar
+    if not (charge_upd or discharge_upd or cfg.system.dry_run):
+        logger.info("Decisión sin cambios respecto al estado actual del inversor — no se reconfigura ni se notifica")
+        notifier.discard()
+        return True
+
+    if not _apply_inverter_decisions(
+        cfg, logger, charge, discharge, charge_upd, discharge_upd, charge_soc_target,
+    ):
+        notifier.send(success=False)
+        return False
+
+    logger.info("=== Re-evaluación completada — decisión actualizada ===")
     notifier.send(success=True)
     return True
 
