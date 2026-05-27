@@ -24,7 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -62,6 +62,11 @@ _job_status: dict[str, str] = {}  # running | ok | error
 
 def create_app(cfg: AppConfig) -> FastAPI:
     """Crea y configura la aplicación FastAPI."""
+
+    def _require_api_key(x_api_key: str = Header(default="")):
+        key = cfg.system.web_api_key
+        if key and x_api_key != key:
+            raise HTTPException(status_code=403, detail="API key inválida o ausente")
 
     @app.get("/", response_class=HTMLResponse)
     async def dashboard():
@@ -221,7 +226,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
             logger.exception("Error en /api/forecast")
             return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
 
-    @app.post("/api/run/{test_name}")
+    @app.post("/api/run/{test_name}", dependencies=[Depends(_require_api_key)])
     async def run_test(test_name: str):
         """Lanza un test en background y devuelve un job_id para seguir el stream."""
         allowed = {
@@ -261,7 +266,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
         threading.Thread(target=_run, daemon=True).start()
         return {"job_id": job_id}
 
-    @app.post("/api/cycle")
+    @app.post("/api/cycle", dependencies=[Depends(_require_api_key)])
     async def run_cycle(dry_run: bool = True):
         """Ejecuta el ciclo completo manualmente."""
         job_id = str(uuid.uuid4())[:8]

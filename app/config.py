@@ -160,6 +160,7 @@ class SystemConfig(BaseModel):
     email: EmailConfig = EmailConfig()
     web_port: int = 8080          # puerto de la interfaz web
     web_enabled: bool = True      # false para deshabilitar la interfaz web
+    web_api_key: str = ""         # clave para endpoints de escritura (vacío = sin auth)
 
     @field_validator("log_level")
     @classmethod
@@ -249,6 +250,7 @@ def _apply_env_overrides(data: dict) -> dict:
         ("influxdb", "org"):                                 "INFLUXDB_ORG",
         ("influxdb", "bucket"):                              "INFLUXDB_BUCKET",
         ("influxdb", "url"):                                 "INFLUXDB_URL",
+        ("system",   "web_api_key"):                         "WEB_API_KEY",
     }
     # Overrides para email (anidados bajo system.email)
     email_overrides = {

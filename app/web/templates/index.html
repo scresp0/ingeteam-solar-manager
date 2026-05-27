@@ -694,6 +694,20 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
 </div><!-- /main -->
 
 <script>
+let _apiKey = localStorage.getItem('solar_api_key') || '';
+
+async function _postWithAuth(url, options = {}) {
+  const headers = { 'X-API-Key': _apiKey, ...(options.headers || {}) };
+  const r = await fetch(url, { ...options, method: 'POST', headers });
+  if (r.status === 403) {
+    const key = prompt('API key requerida. Introdúcela para continuar:');
+    if (key === null) throw new Error('Cancelado');
+    _apiKey = key;
+    localStorage.setItem('solar_api_key', key);
+    return fetch(url, { ...options, method: 'POST', headers: { 'X-API-Key': key } });
+  }
+  return r;
+}
 // ══ Tabs ═══════════════════════════════════════════
 const TABS = ['dashboard','tests','logs','historial','config'];
 function switchTab(name, el) {
@@ -1335,7 +1349,7 @@ async function runTest(name) {
   clearLog();
   setJobStatus('running', `Ejecutando test: ${name}…`);
   try {
-    const r = await fetch(`/api/run/${name}`, { method: 'POST' });
+    const r = await _postWithAuth(`/api/run/${name}`);
     const { job_id } = await r.json();
     streamLogs(job_id);
   } catch(e) { setJobStatus('error', 'Error: ' + e.message); }
@@ -1348,7 +1362,7 @@ async function runCycle(dryRun) {
   setJobStatus('running', dryRun ? 'Ciclo completo (dry run)…' : 'Ciclo completo REAL…');
   setBtnsRunning(true);
   try {
-    const r = await fetch(`/api/cycle?dry_run=${dryRun}`, { method: 'POST' });
+    const r = await _postWithAuth(`/api/cycle?dry_run=${dryRun}`);
     const { job_id } = await r.json();
     streamLogs(job_id, () => {
       setBtnsRunning(false);

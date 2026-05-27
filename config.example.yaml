@@ -131,6 +131,11 @@ system:
   timezone: "Europe/Madrid"
   web_port: 8080
   web_enabled: true
+  # Clave API para proteger los endpoints de escritura (POST /api/cycle, POST /api/run/{test}).
+  # Vacío = sin autenticación (desarrollo / LAN de confianza).
+  # Generar con: openssl rand -hex 16
+  # Mejor definirla en .env como WEB_API_KEY en lugar de aquí.
+  web_api_key: ""
   email:
     enabled: true          # true para activar notificaciones
     smtp_host: ""           # ej. smtp.gmail.com
