@@ -75,6 +75,8 @@ La versión se muestra en el log de arranque, en el header de la web (`/`) y en 
 - `ciclo_carga`: sin tags; timestamp = hora de ejecución UTC (~22-23h UTC)
 - `stats_diarias`: tag `device_id`; timestamp = medianoche UTC del día de datos
 - JOIN ciclo↔stats: `forecast_date = ciclo_UTC.date() + timedelta(days=1)` — no requiere columna extra
+- **Backfill automático de producción histórica** (`main.backfill_solar_history`): rellena los días sin `real_kwh` en `solar_media_hora` desde el datalogger. Se ejecuta al arrancar (hilo daemon) y con job APScheduler a las 00:30. `get_last_real_solar_date()` detecta el hueco. Acotado a `MAX_BACKFILL_DAYS=35`. No toca `ciclo_carga` ni el día en curso.
+- **Almacenamiento en bind mount**: en producción InfluxDB usa `./influxdb/data` y `./influxdb/config` (bind mounts, gitignoreados). El contenedor corre como uid 1000 — no hacer `chown` a otro usuario o arrancará con error de permisos. Para migrar entre máquinas: `tar czf influxdb-prod.tgz influxdb/` + `scp` + `tar xzf`.
 
 ### SMTP (notifier.py)
 - Usar **hostname** (no IP) para que TLS funcione
@@ -149,6 +151,7 @@ Ejecutada por el scheduler a `tariff.schedule_recheck_at` (por defecto `03:00`, 
 - Lee `read_inverter_schedule` y compara con la decisión nueva. Solo reconfigura el inversor si `charge_active`, `charge_soc_pct` o `discharge_blocked` difieren.
 - **Email**: solo se envía si hubo cambios. Si la decisión coincide con lo configurado se llama a `notifier.discard()` y sale silenciosamente.
 - **NO escribe en InfluxDB**: ni `ciclo_carga` ni `stats_diarias` ni `solar_media_hora`. El ciclo de las 23:55 es el único punto canónico — un segundo `ciclo_carga` en madrugada UTC rompería el JOIN con `stats_diarias` (`forecast_date = ciclo_UTC.date()+1` apuntaría a "pasado mañana").
+- **Backfill de producción** (`_run_backfill_job`, 00:30): job APScheduler independiente del ciclo nocturno. Rellena `solar_media_hora` + `stats_diarias` de los días sin real. No es re-evaluación de la decisión — solo rellena huecos históricos.
 - En el algoritmo a las 03:00, la corrección `hour < night_cutoff_hour` asigna correctamente día1 = hoy / día2 = mañana, así que las dos ejecuciones miran al mismo par de días.
 
 ### decide_discharge
@@ -214,15 +217,19 @@ Además del SOC ring y estados del inversor, muestra dos filas de parámetros de
   - **Izquierda (amber)**: forecast p50 del día mostrado; contorno = rango p90.
   - **Derecha (verde)**: producción real de ese día. Sin datos → placeholder de 2px invisible.
 - Escala vertical = max(forecast, actual) para comparación justa.
-- Etiqueta de la hora actual en azul/negrita en el eje X (oculta en modo histórico).
-- Leyenda visible solo cuando hay datos; labels actualizan con el día seleccionado ("Forecast 3 may (p50)", "Real 3 may"). `↑ hora actual` oculto en días históricos.
+- Etiqueta de la hora actual en azul/negrita en el eje X (oculta en modo histórico y en vista futura).
+- Leyenda visible solo cuando hay datos; labels actualizan con el día seleccionado ("Forecast 3 may (p50)", "Real 3 may"). `↑ hora actual` oculto en días históricos y en la vista de mañana.
+- **Tres estados del gráfico** (modelados con `_isFutureView()` / `_isTodayView()` en `index.html`):
+  - **Hoy** (`_histMode=true`, `_histDate=hoy`): barras ámbar + verdes (producción real live desde `_todayByHour`), hora actual marcada.
+  - **Días pasados** (`_histMode=true`, `_histDate<hoy`): barras ámbar + verdes (real desde InfluxDB via `_histRealByHour`), sin hora actual.
+  - **Mañana** (`_histMode=false`): solo barras ámbar (forecast Solcast de mañana). Sin barras verdes, sin hora actual, pie "Real" en "— kWh". Carga vía `loadForecast()` → `/api/forecast`. **No superpone datos de hoy.**
 - **Navegación temporal** (botones `‹`/`›` + pestañas Día/Sem/Mes): llama a `GET /api/solar_history`. En vista semana/mes los valores son medias por hora entre días → los totales son "media/día", no suma del período.
 - **Footer** (siempre visible, separado por `border-top`): tres columnas lado a lado + Pico a la derecha:
   - "Est. Solcast" (amber 18px mono): forecast p50 crudo de Solcast.
   - "Est. calibrado" (blanco 18px mono): `forecast p50 × solar_bias_factor`. El bias se aplica solo al mostrar; el dato persistido en InfluxDB es siempre el forecast crudo (ver `feedback_raw_data_persistence`). El backend devuelve `total_p50_calibrated_kwh` y `solar_bias_factor` en `/api/forecast` y `/api/solar_history`.
-  - "Real" (verde 18px mono): producción real de InfluxDB, o live de `/api/today_solar` si es hoy. "— kWh" en gris si sin datos.
+  - "Real" (verde 18px mono): producción real de InfluxDB, o live de `/api/today_solar` si es hoy. "— kWh" en gris si sin datos o vista de mañana.
   - En vistas Sem/Mes las tres etiquetas añaden "(media/día)".
-  - `loadTodaySolar()` solo actualiza "Real" cuando `!_histMode || _histDate === _todayIso()`, para no sobreescribir vistas históricas.
+  - `loadTodaySolar()` solo actualiza "Real" y re-renderiza cuando `_isTodayView()`, para no sobreescribir vistas históricas ni la vista de mañana.
   - `.f-totals` usa `flex-wrap: wrap` para que las tres columnas se envuelvan limpiamente en móvil.
 - **Layout dinámico**: `.card` es flex-column; `.forecast-body` (clase del card-body del forecast) hace `flex: 1` para rellenar la altura disponible; `.forecast-bars` crece con `flex: 1` en lugar de altura fija. Alturas de barras calculadas desde `barsEl.clientHeight` en cada render.
 
@@ -246,4 +253,4 @@ Flujo habitual: trabajar en rama feature → merge `--no-ff` a `main` → `git p
 ## Convenciones
 - `dry_run: true` en config → toda la lógica se ejecuta pero no se toca el inversor
 - Los previews HTML del email NO se commitean — solo `notifier.py`
-- Archivos sensibles gitignoreados: `config.yaml`, `.env`, `app/logs/`
+- Archivos sensibles gitignoreados: `config.yaml`, `.env`, `app/logs/`, `influxdb/`
