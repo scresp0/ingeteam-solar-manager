@@ -17,7 +17,7 @@ Guarda tres tipos de puntos por ciclo nocturno:
 """
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from app.config import InfluxDBConfig
 from app.decision import DecisionInput, ChargeDecision
@@ -435,6 +435,42 @@ def get_solar_history_range(cfg: InfluxDBConfig, start_str: str, end_str: str) -
     if not cfg.enabled:
         return {}
     return _solar_history(cfg, start_str, end_str)
+
+
+def get_last_real_solar_date(cfg: InfluxDBConfig) -> date | None:
+    """
+    Día más reciente con producción real (real_kwh) en solar_media_hora.
+
+    Lo usa el backfill para saber desde qué día rellenar el hueco hasta ayer.
+    Los timestamps son "hora local etiquetada como UTC", así que `.date()` da
+    directamente el día local. Devuelve None si InfluxDB está deshabilitado, no
+    hay datos en la ventana de búsqueda o la consulta falla.
+    """
+    if not cfg.enabled:
+        return None
+
+    query = f"""
+from(bucket: "{cfg.bucket}")
+  |> range(start: -120d)
+  |> filter(fn: (r) => r._measurement == "solar_media_hora" and r._field == "real_kwh")
+  |> sort(columns: ["_time"], desc: true)
+  |> limit(n: 1)
+"""
+    try:
+        from influxdb_client import InfluxDBClient
+        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
+            tables = client.query_api().query(query, org=cfg.org)
+            for table in tables:
+                for rec in table.records:
+                    ts = rec.get_time()
+                    if ts is not None:
+                        return ts.date()
+        return None
+    except ImportError:
+        raise StorageError("influxdb-client no está instalado.")
+    except Exception as e:
+        logger.warning(f"No se pudo consultar el último día con real en solar_media_hora: {e}")
+        return None
 
 
 def _solar_history(cfg: InfluxDBConfig, start_str: str, end_str: str) -> dict:
