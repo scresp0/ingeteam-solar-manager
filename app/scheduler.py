@@ -71,6 +71,20 @@ def start_scheduler(cfg: AppConfig) -> None:
                 f"se esperaba formato HH:MM. Re-evaluación desactivada."
             )
 
+    # Backfill diario de producción histórica: a las 00:30 rellena el día que
+    # acaba de terminar, de modo que "ayer" esté disponible en el gráfico durante
+    # todo el día sin esperar al ciclo de las 23:45.
+    scheduler.add_job(
+        func=_run_backfill_job,
+        trigger=CronTrigger(hour=0, minute=30, timezone=timezone),
+        args=[cfg],
+        id="solar_backfill",
+        name="Backfill de producción histórica (00:30)",
+        misfire_grace_time=3600,
+        replace_existing=True,
+    )
+    logger.info(f"Backfill de producción histórica programado a las 00:30 ({timezone})")
+
     # Ejecutar inmediatamente si se pide (útil para pruebas)
     if os.environ.get("RUN_ON_START", "").lower() in ("true", "1", "yes"):
         logger.info("RUN_ON_START activo — ejecutando ciclo ahora")
@@ -113,3 +127,13 @@ def _run_recheck_job(cfg: AppConfig) -> None:
             logger.error("Scheduler: la re-evaluación terminó con errores")
     except Exception as e:
         logger.exception(f"Scheduler: error inesperado en la re-evaluación: {e}")
+
+
+def _run_backfill_job(cfg: AppConfig) -> None:
+    """Backfill de huecos de producción histórica — llamado por el scheduler a las 00:30."""
+    from app.main import backfill_solar_history
+    logger.info("Scheduler: iniciando backfill de producción histórica")
+    try:
+        backfill_solar_history(cfg)
+    except Exception as e:
+        logger.exception(f"Scheduler: error inesperado en el backfill: {e}")

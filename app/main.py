@@ -37,12 +37,16 @@ from app.automation import (
     read_inverter_schedule, ScheduleState,
 )
 from app.notifier import CycleEmailNotifier
-from app.logger_reader import get_yesterday_stats, LoggerReaderError
+from app.logger_reader import get_yesterday_stats, get_daily_stats, LoggerReaderError
 from app.storage import (
     write_cycle, write_daily_stats, write_half_hour_solar, write_half_hour_forecast,
     get_avg_night_consumption, get_dynamic_risk_factor, get_dynamic_solar_bias,
-    StorageError,
+    get_last_real_solar_date, StorageError,
 )
+
+# Máximo de días que el backfill rellena de una vez: cubre la vista "mes" del
+# gráfico y evita martillear el datalogger en un arranque con InfluxDB casi vacío.
+MAX_BACKFILL_DAYS = 35
 
 
 def setup_logging(cfg: AppConfig) -> None:
@@ -408,6 +412,53 @@ def run_recheck(cfg: AppConfig) -> bool:
     return True
 
 
+def backfill_solar_history(cfg: AppConfig) -> None:
+    """
+    Rellena en InfluxDB los días de producción real que falten entre el último
+    almacenado y ayer (incluido).
+
+    El ciclo nocturno solo escribe "ayer" relativo a su hora de ejecución (23:45),
+    de modo que el día anterior al actual queda sin datos reales hasta esa noche.
+    Este backfill (al arrancar y en el job diario de las 00:30) cierra ese hueco
+    leyendo el datalogger para cada día pendiente y escribiendo stats_diarias +
+    solar_media_hora. No toca el día en curso (datos incompletos) ni ciclo_carga.
+    """
+    from datetime import date, timedelta
+
+    if not cfg.influxdb.enabled:
+        return
+
+    logger = logging.getLogger(__name__)
+    yesterday = date.today() - timedelta(days=1)
+    floor_day = yesterday - timedelta(days=MAX_BACKFILL_DAYS - 1)
+
+    last_stored = get_last_real_solar_date(cfg.influxdb)
+    start_day = (last_stored + timedelta(days=1)) if last_stored else floor_day
+    if start_day < floor_day:   # hueco enorme → no retroceder más allá del límite
+        start_day = floor_day
+
+    if start_day > yesterday:
+        logger.debug(f"Backfill solar: sin huecos (último real = {last_stored})")
+        return
+
+    missing = [start_day + timedelta(days=i) for i in range((yesterday - start_day).days + 1)]
+    logger.info(f"Backfill solar: rellenando {len(missing)} día(s) [{missing[0]} → {missing[-1]}]")
+
+    filled = 0
+    for day in missing:
+        try:
+            stats = get_daily_stats(cfg.inverter, day)
+            write_daily_stats(cfg.influxdb, stats)
+            write_half_hour_solar(cfg.influxdb, stats)
+            filled += 1
+        except (LoggerReaderError, StorageError) as e:
+            logger.warning(f"Backfill solar: no se pudo rellenar {day}: {e}")
+        except Exception as e:
+            logger.warning(f"Backfill solar: error inesperado en {day}: {e}")
+
+    logger.info(f"Backfill solar: {filled}/{len(missing)} día(s) rellenados")
+
+
 def main() -> None:
     """Punto de entrada — carga config, arranca el scheduler y la interfaz web."""
     try:
@@ -433,6 +484,13 @@ def main() -> None:
         t = threading.Thread(target=_run_web, daemon=True)
         t.start()
         logger.info(f"Interfaz web disponible en http://0.0.0.0:{cfg.system.web_port}")
+
+    # Rellenar huecos de producción histórica al arrancar (en segundo plano para
+    # no bloquear el scheduler). El job diario de las 00:30 mantiene "ayer" al día.
+    import threading as _threading
+    _threading.Thread(
+        target=backfill_solar_history, args=(cfg,), daemon=True, name="backfill-startup",
+    ).start()
 
     from app.scheduler import start_scheduler
     start_scheduler(cfg)

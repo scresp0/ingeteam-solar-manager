@@ -27,3 +27,4 @@ venv/
 .DS_Store
 *.tar.gz
 *.bak
+influxdb/
