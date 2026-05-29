@@ -834,11 +834,22 @@ let _histRealByHour = {};      // h→kW de InfluxDB (días pasados)
 
 function _todayIso() { return new Date().toISOString().slice(0, 10); }
 
+// Estados del gráfico de forecast:
+//  · futuro  → la vista no-histórica muestra el forecast de MAÑANA: día que aún
+//              no ha ocurrido, sin producción real ni "hora actual".
+//  · hoy     → modo histórico anclado en el día de hoy: producción real live + hora actual.
+//  · pasado  → modo histórico de un día anterior: real desde InfluxDB, sin hora actual.
+function _isFutureView() { return !_histMode; }
+function _isTodayView()  { return _histMode && _histDate === _todayIso(); }
+
 function renderForecastBars() {
   if (!_forecastData) return;
   const d = _forecastData;
   const { hours: fcHours, p50_kw: p50, p10_kw: p10, p90_kw: p90 } = d;
-  const realByHour = (_histMode && _histDate !== _todayIso()) ? _histRealByHour : _todayByHour;
+  // Producción real superpuesta: mañana (futuro) → ninguna; hoy → live; día pasado → InfluxDB
+  const realByHour = _isFutureView() ? {}
+                   : _isTodayView()  ? _todayByHour
+                                     : _histRealByHour;
 
   // Unión de horas forecast e reales — filtra horas nocturnas de producción cero
   const allHoursSet = new Set([...(fcHours || []), ...Object.keys(realByHour).map(Number)]);
@@ -864,7 +875,7 @@ function renderForecastBars() {
   const maxForecast = validP50.length ? Math.max(...validP50) : 0;
   const maxActual   = Object.values(realByHour).length ? Math.max(...Object.values(realByHour)) : 0;
   const max         = Math.max(maxForecast, maxActual, 0.01);
-  const currentHour = _histMode ? -1 : new Date().getHours();
+  const currentHour = _isTodayView() ? new Date().getHours() : -1;
   const hasActual   = Object.keys(realByHour).length > 0;
   const hasFc       = validP50.length > 0;
 
@@ -921,6 +932,16 @@ async function loadForecast() {
 
     _forecastData = d;
     renderForecastBars();
+
+    // Vista de mañana: forecast futuro → sin barra real, sin hora actual, "Real" en —
+    const legendFc  = document.getElementById('legend-forecast-lbl');
+    const legendRl  = document.getElementById('legend-real-lbl');
+    const legendCur = document.getElementById('legend-current-hour');
+    if (legendFc)  legendFc.textContent = 'Forecast mañana (p50)';
+    if (legendRl && legendRl.parentElement) legendRl.parentElement.style.display = 'none';
+    if (legendCur) legendCur.style.display = 'none';
+    const prodValEl = document.getElementById('f-produced');
+    if (prodValEl) { prodValEl.textContent = '— kWh'; prodValEl.classList.add('empty'); }
 
     const max     = Math.max(...d.p50_kw, 0.01);
     const peakIdx = d.p50_kw.indexOf(Math.max(...d.p50_kw));
@@ -1034,8 +1055,10 @@ async function loadHistory(date, view) {
     const legendRl  = document.getElementById('legend-real-lbl');
     const legendCur = document.getElementById('legend-current-hour');
     const isToday   = date === _todayIso();
-    if (legendFc)  legendFc.textContent  = view === 'day' ? (isToday ? 'Forecast mañana (p50)' : `Forecast ${d.label ?? date} (p50)`) : 'Forecast (p50)';
+    if (legendFc)  legendFc.textContent  = view === 'day' ? (isToday ? 'Forecast hoy (p50)' : `Forecast ${d.label ?? date} (p50)`) : 'Forecast (p50)';
     if (legendRl)  legendRl.textContent  = view === 'day' ? (isToday ? 'Real hoy' : `Real ${d.label ?? date}`) : 'Real';
+    // Restaura el item "Real" de la leyenda (la vista de mañana lo oculta)
+    if (legendRl && legendRl.parentElement) legendRl.parentElement.style.display = '';
     if (legendCur) legendCur.style.display = isToday ? '' : 'none';
 
     const avgSuffix = view !== 'day' ? ' (media/día)' : '';
@@ -1147,7 +1170,7 @@ async function loadTodaySolar() {
     const w = d.current_solar_w;
     setMetric('m-solar', w + ' W', w > 50 ? 'green' : '', d.total_solar_kwh + ' kWh hoy');
 
-    if (!_histMode || _histDate === _todayIso()) {
+    if (_isTodayView()) {
       const prodVal = document.getElementById('f-produced');
       if (prodVal && d.total_solar_kwh !== undefined) {
         prodVal.textContent = d.total_solar_kwh.toFixed(2) + ' kWh';
@@ -1175,7 +1198,7 @@ async function loadTodaySolar() {
     _todayByHour = {};
     d.hours.forEach((h, i) => { _todayByHour[h] = d.solar_kw[i]; });
 
-    if (!_histMode || _histDate === _todayIso()) renderForecastBars();
+    if (_isTodayView()) renderForecastBars();
   } catch(e) {}
 }
 
