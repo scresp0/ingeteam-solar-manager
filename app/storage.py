@@ -422,19 +422,47 @@ def write_half_hour_forecast(
     logger.info(f"Forecast media hora guardado en InfluxDB ({len(points)} slots)")
 
 
+def _query_night_consumption(cfg: InfluxDBConfig, start_str: str, stop_str: str) -> float | None:
+    """
+    Media de night_consumption_kwh de stats_diarias en el rango [start, stop).
+
+    Para vista de día devuelve el valor del único día; para semana/mes, la media.
+    Devuelve None si no hay registros válidos (> 0) o la consulta falla.
+    """
+    query = f"""
+from(bucket: "{cfg.bucket}")
+  |> range(start: {start_str}T00:00:00Z, stop: {stop_str}T00:00:00Z)
+  |> filter(fn: (r) => r._measurement == "stats_diarias" and r._field == "night_consumption_kwh")
+  |> filter(fn: (r) => r._value > 0)
+"""
+    try:
+        from influxdb_client import InfluxDBClient
+        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
+            tables = client.query_api().query(query, org=cfg.org)
+            vals = [rec.get_value() for t in tables for rec in t.records if rec.get_value() is not None]
+        return round(sum(vals) / len(vals), 3) if vals else None
+    except Exception as e:
+        logger.debug(f"No se pudo consultar night_consumption_kwh [{start_str}→{stop_str}]: {e}")
+        return None
+
+
 def get_solar_history_day(cfg: InfluxDBConfig, date_str: str) -> dict:
     """Historial de producción solar y forecast para un día (YYYY-MM-DD)."""
     if not cfg.enabled:
         return {}
     stop = (datetime.strptime(date_str, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
-    return _solar_history(cfg, date_str, stop)
+    result = _solar_history(cfg, date_str, stop)
+    result["night_consumption_kwh"] = _query_night_consumption(cfg, date_str, stop)
+    return result
 
 
 def get_solar_history_range(cfg: InfluxDBConfig, start_str: str, end_str: str) -> dict:
     """Media horaria de producción solar y forecast en un rango de fechas (end exclusivo)."""
     if not cfg.enabled:
         return {}
-    return _solar_history(cfg, start_str, end_str)
+    result = _solar_history(cfg, start_str, end_str)
+    result["night_consumption_kwh"] = _query_night_consumption(cfg, start_str, end_str)
+    return result
 
 
 def get_last_real_solar_date(cfg: InfluxDBConfig) -> date | None:
