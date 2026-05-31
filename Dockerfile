@@ -19,6 +19,16 @@ RUN apt-get update && apt-get install -y \
     curl tzdata \
     && rm -rf /var/lib/apt/lists/*
 
+# CLI de InfluxDB (influx) — usada por /api/db/export para hacer backups
+# consistentes online. Detecta la arquitectura (amd64 en el N150, arm64 en el Mac).
+RUN ARCH="$(dpkg --print-architecture)" \
+    && INFLUX_CLI_VERSION=2.7.5 \
+    && curl -fsSL "https://dl.influxdata.com/influxdb/releases/influxdb2-client-${INFLUX_CLI_VERSION}-linux-${ARCH}.tar.gz" -o /tmp/influx-cli.tar.gz \
+    && tar xzf /tmp/influx-cli.tar.gz -C /tmp \
+    && find /tmp -name influx -type f -exec mv {} /usr/local/bin/influx \; \
+    && rm -rf /tmp/influx-cli.tar.gz \
+    && influx version
+
 # Zona horaria
 ENV TZ=Europe/Madrid
 

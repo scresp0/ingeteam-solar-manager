@@ -832,6 +832,60 @@ def create_app(cfg: AppConfig) -> FastAPI:
             "note": "Cambios escritos. Reinicia el contenedor para que surtan efecto.",
         }
 
+    @app.get("/api/db/export", dependencies=[Depends(_require_api_key)])
+    async def db_export():
+        """Exporta un backup consistente de InfluxDB como .tar.gz.
+
+        Usa `influx backup` (online, sin parar el contenedor) sobre el bucket
+        configurado y empaqueta el resultado en un único .tar.gz descargable.
+        El token se pasa por variable de entorno (no en argv) para no exponerlo.
+        """
+        import shutil
+        import tarfile
+        import tempfile
+        from fastapi.responses import FileResponse
+        from starlette.background import BackgroundTask
+
+        if not cfg.influxdb.enabled:
+            raise HTTPException(status_code=503, detail="InfluxDB no habilitado")
+
+        def _build() -> tuple[str, str]:
+            tmp = tempfile.mkdtemp(prefix="influx-backup-")
+            backup_dir = os.path.join(tmp, "backup")
+            cmd = [
+                "influx", "backup", backup_dir,
+                "--host", cfg.influxdb.url,
+                "--org", cfg.influxdb.org,
+                "--bucket", cfg.influxdb.bucket,
+            ]
+            env = {**os.environ, "INFLUX_TOKEN": cfg.influxdb.token}
+            proc = subprocess.run(
+                cmd, env=env, capture_output=True, text=True, timeout=600,
+            )
+            if proc.returncode != 0:
+                shutil.rmtree(tmp, ignore_errors=True)
+                raise RuntimeError(proc.stderr.strip() or "influx backup falló")
+            archive = os.path.join(tmp, "archive.tar.gz")
+            with tarfile.open(archive, "w:gz") as tar:
+                tar.add(backup_dir, arcname="backup")
+            return tmp, archive
+
+        try:
+            tmp, archive = await asyncio.to_thread(_build)
+        except Exception as e:
+            logger.error(f"Export de InfluxDB falló: {e}")
+            raise HTTPException(status_code=500, detail=f"Export falló: {e}")
+
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        fname = f"influxdb-{cfg.influxdb.bucket}-{ts}.tar.gz"
+        logger.info(f"Export de InfluxDB generado: {fname}")
+        return FileResponse(
+            archive,
+            media_type="application/gzip",
+            filename=fname,
+            background=BackgroundTask(lambda: shutil.rmtree(tmp, ignore_errors=True)),
+        )
+
     @app.get("/api/logs")
     async def get_logs(lines: int = 100):
         """Devuelve las últimas N líneas del fichero de log."""

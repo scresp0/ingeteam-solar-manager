@@ -85,6 +85,7 @@ La versión se muestra en el log de arranque, en el header de la web (`/`) y en 
 
 ### Docker
 - `shm_size: '256mb'` en el servicio `solar-manager` — necesario para Chromium
+- La imagen incluye la CLI `influx` (descargada en el Dockerfile según arquitectura: amd64/arm64) para el endpoint `GET /api/db/export`. El backup es **online** (no para el contenedor `influxdb`, no necesita el socket de Docker ni montar el data dir): el contenedor `solar-manager` habla con `influxdb:8086` por HTTP igual que el resto del código.
 - Servicio `influxdb` con healthcheck; `solar-manager` depende de él
 - **Arranque recomendado: `make up`** (no `docker compose up -d` directamente)
   - El `Makefile` inyecta `HOST_HOSTNAME=$(hostname)` antes de llamar a Docker
@@ -193,6 +194,7 @@ El motivo ("reason") siempre muestra el déficit *sin bloqueo* para explicar por
 | `GET /api/config` | Devuelve el contenido editable de `config.yaml` + lista `env_overrides` con (sección, key, env_var) para los campos sobreescritos por `.env`. No expone secretos. |
 | `POST /api/cycle` | Lanza ciclo completo manual (dry_run o real) |
 | `POST /api/config` | Aplica `{values: {<seccion>: {<key>: <valor>}}}` a `config.yaml` preservando comentarios (ruamel.yaml round-trip). Valida el YAML completo contra el modelo Pydantic `AppConfig` antes de escribir. Requiere `web_api_key`. |
+| `GET /api/db/export` | Backup consistente de InfluxDB (`influx backup` online sobre el bucket configurado) empaquetado en `.tar.gz` descargable. Requiere `web_api_key`. El token se pasa por env var `INFLUX_TOKEN`, no en argv. |
 | `POST /api/run/{test}` | Lanza test unitario en background |
 | `GET /api/stream/{job_id}` | SSE stream de logs de un job |
 
@@ -243,11 +245,14 @@ Además del SOC ring y estados del inversor, muestra dos filas de parámetros de
 - **Secretos**: api_keys, passwords, tokens y `INFLUXDB_TOKEN` NO están en la lista blanca `_EDITABLE_FIELDS` de `server.py` — solo viven en `.env`. Los campos de host (IP inversor, host SMTP) tampoco se exponen porque vienen 100% de `.env`.
 - **Persistencia en disco**: requiere `./config.yaml:/app/config.yaml` SIN `:ro` en `docker-compose.yml` (v1.47 lo cambió). Si tras editar el contenedor no puede escribir, el endpoint devuelve 500 con el error de `OSError`.
 - **Aplicar cambios**: requiere reinicio del contenedor (`make restart`). El YAML editado queda persistido en el host porque es bind mount.
+- **Exportar BD (v1.48)**: botón "Exportar BD" → `exportDb()` hace `GET /api/db/export` con cabecera `X-API-Key`, recibe el `.tar.gz` como blob y dispara la descarga en el navegador (nombre `influxdb-<bucket>-<timestamp>.tar.gz`). Solo export; el import/restore se descartó por ser destructivo (reemplaza el bucket) — se hace a mano si hace falta.
 
 ### Diseño responsive
+**Contenido centrado en pantallas anchas (v1.48):** las barras `.header` y `.nav` ocupan todo el ancho (chrome full-bleed: background + border de lado a lado), pero su contenido va en wrappers `.header-inner` / `.nav-inner` con `max-width: var(--maxw)` (1400px) + `margin: 0 auto`. `.main` usa el mismo `--maxw` + `margin: 0 auto`. Así el contenido de las tres bandas (logo/botones, pestañas, paneles) queda alineado y centrado en la ventana cuando sobra anchura, sin que el logo quede pegado a la izquierda. El padding lateral (y el scroll horizontal del nav en móvil) viven en los `-inner`, no en las barras.
+
 Dos breakpoints en `index.html`:
 - **≤ 800px** (tablet / landscape phone): `grid-7` → 4 cols; `grid-3` → 2 cols; padding reducido.
-- **≤ 600px** (portrait phone): `grid-7` → 2 cols; `grid-2` → 1 col (cards apiladas); `grid-3` y `cfg-grid` → 1 col; header compacto (oculta hostname, estado central y reloj); nav con scroll horizontal silencioso; run panel apilado; log 240px; tabla historial con scroll horizontal.
+- **≤ 600px** (portrait phone): `grid-7` → 2 cols; `grid-2` → 1 col (cards apiladas); `grid-3` y `cfg-grid` → 1 col; header compacto (oculta hostname, estado central y reloj); nav con scroll horizontal silencioso (`.nav-inner`); run panel apilado; log 240px; tabla historial con scroll horizontal.
 
 ### Gotcha datalogger para visualización
 `/api/today_solar` lee datos parciales del día actual — correcto para visualización. Solo se evita el día actual para stats diarias en InfluxDB (datos incompletos).

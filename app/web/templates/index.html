@@ -34,6 +34,7 @@
   --mono:    'JetBrains Mono', 'Fira Code', monospace;
   --radius:  8px;
   --radius2: 10px;
+  --maxw:    1400px;   /* ancho máximo del contenido centrado bajo el header */
 }
 
 html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; line-height: 1.5; }
@@ -47,7 +48,11 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .header {
   position: sticky; top: 0; z-index: 200;
   background: var(--bg2); border-bottom: 1px solid var(--border);
-  height: 50px; padding: 0 20px;
+  height: 50px;
+}
+.header-inner {
+  height: 100%; padding: 0 20px;
+  width: 100%; max-width: var(--maxw); margin: 0 auto;
   display: flex; align-items: center; justify-content: space-between;
 }
 .logo { display: flex; align-items: center; gap: 9px; font-size: 15px; font-weight: 500; letter-spacing: -.3px; }
@@ -87,7 +92,8 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .btn.sm { padding: 4px 10px; font-size: 12px; }
 
 /* ── Nav tabs ────────────────────────────────────── */
-.nav { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 20px; display: flex; gap: 2px; }
+.nav { background: var(--bg2); border-bottom: 1px solid var(--border); }
+.nav-inner { padding: 0 20px; display: flex; gap: 2px; width: 100%; max-width: var(--maxw); margin: 0 auto; }
 .nav-tab {
   padding: 10px 14px; font-size: 13px; color: var(--muted); cursor: pointer;
   border-bottom: 2px solid transparent; transition: color .15s; white-space: nowrap;
@@ -96,7 +102,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .nav-tab.active { color: var(--text); border-bottom-color: var(--accent); }
 
 /* ── Layout ──────────────────────────────────────── */
-.main { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; max-width: 1400px; }
+.main { padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; width: 100%; max-width: var(--maxw); margin: 0 auto; }
 .tab-panel { display: none; flex-direction: column; gap: 14px; }
 .tab-panel.active { display: flex; }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
@@ -329,15 +335,15 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
 /* Portrait phone (≤ 600px) */
 @media (max-width: 600px) {
   /* Header: compactar — ocultar elementos secundarios */
-  .header         { padding: 0 12px; }
+  .header-inner   { padding: 0 12px; }
   .logo-version   { display: none; }
   .header-center  { display: none; }
   #clock          { display: none; }
   .btn            { padding: 5px 9px; font-size: 12px; gap: 5px; }
 
   /* Nav: scroll horizontal si no caben las pestañas */
-  .nav            { overflow-x: auto; -webkit-overflow-scrolling: touch; padding: 0 8px; scrollbar-width: none; }
-  .nav::-webkit-scrollbar { display: none; }
+  .nav-inner      { overflow-x: auto; -webkit-overflow-scrolling: touch; padding: 0 8px; scrollbar-width: none; }
+  .nav-inner::-webkit-scrollbar { display: none; }
   .nav-tab        { padding: 10px 10px; font-size: 12px; }
 
   /* Layout principal */
@@ -373,6 +379,7 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
 
 <!-- ══ HEADER ══════════════════════════════════════════ -->
 <div class="header">
+  <div class="header-inner">
   <div class="logo">
     <div class="logo-mark">
       <svg viewBox="0 0 15 15" fill="none">
@@ -398,15 +405,18 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
       Ejecutar ahora
     </button>
   </div>
+  </div><!-- /header-inner -->
 </div>
 
 <!-- ══ NAV ═════════════════════════════════════════════ -->
 <nav class="nav">
-  <div class="nav-tab active" onclick="switchTab('dashboard',this)">Dashboard</div>
-  <div class="nav-tab" onclick="switchTab('tests',this)">Tests</div>
-  <div class="nav-tab" onclick="switchTab('logs',this)">Logs</div>
-  <div class="nav-tab" onclick="switchTab('historial',this)">Historial</div>
-  <div class="nav-tab" onclick="switchTab('config',this)">Configuración</div>
+  <div class="nav-inner">
+    <div class="nav-tab active" onclick="switchTab('dashboard',this)">Dashboard</div>
+    <div class="nav-tab" onclick="switchTab('tests',this)">Tests</div>
+    <div class="nav-tab" onclick="switchTab('logs',this)">Logs</div>
+    <div class="nav-tab" onclick="switchTab('historial',this)">Historial</div>
+    <div class="nav-tab" onclick="switchTab('config',this)">Configuración</div>
+  </div>
 </nav>
 
 <!-- ══ MAIN ════════════════════════════════════════════ -->
@@ -666,6 +676,7 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
         <div id="cfg-actions" style="display:none;align-items:center;gap:12px;margin-top:8px;flex-wrap:wrap">
           <button class="btn btn-accent" onclick="saveConfig()">Guardar cambios</button>
           <button class="btn" onclick="loadConfigForm()">Recargar desde disco</button>
+          <button class="btn" id="cfg-export-btn" onclick="exportDb()">Exportar BD</button>
           <span class="save-feedback" id="cfg-ok">Guardado correctamente</span>
           <span id="cfg-err" style="font-size:12px;color:var(--red);display:none"></span>
         </div>
@@ -690,6 +701,44 @@ async function _postWithAuth(url, options = {}) {
   }
   return r;
 }
+
+// Descarga el backup .tar.gz de la BD. GET con cabecera X-API-Key → blob.
+async function exportDb() {
+  const btn = document.getElementById('cfg-export-btn');
+  const err = document.getElementById('cfg-err');
+  if (err) err.style.display = 'none';
+  const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Exportando…'; }
+  try {
+    let r = await fetch('/api/db/export', { headers: { 'X-API-Key': _apiKey } });
+    if (r.status === 403) {
+      const key = prompt('API key requerida. Introdúcela para continuar:');
+      if (key === null) return;
+      _apiKey = key;
+      localStorage.setItem('solar_api_key', key);
+      r = await fetch('/api/db/export', { headers: { 'X-API-Key': key } });
+    }
+    if (!r.ok) {
+      let detail = `HTTP ${r.status}`;
+      try { const j = await r.json(); detail = j.detail || detail; } catch (e) {}
+      throw new Error(detail);
+    }
+    const cd = r.headers.get('Content-Disposition') || '';
+    const m = cd.match(/filename="?([^"]+)"?/);
+    const fname = m ? m[1] : 'influxdb-backup.tar.gz';
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = fname;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    if (err) { err.textContent = 'Export falló: ' + e.message; err.style.display = ''; }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = orig; }
+  }
+}
+
 // ══ Tabs ═══════════════════════════════════════════
 const TABS = ['dashboard','tests','logs','historial','config'];
 function switchTab(name, el) {
