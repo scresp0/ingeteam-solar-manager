@@ -29,5 +29,6 @@ venv/
 *.swo
 .DS_Store
 *.tar.gz
+*.tgz
 *.bak
 influxdb/

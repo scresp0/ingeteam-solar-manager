@@ -97,6 +97,8 @@ La versión se muestra en el log de arranque, en el header de la web (`/`) y en 
 
 Tres parámetros se calculan automáticamente a partir del histórico almacenado en InfluxDB, usando el valor de `config.yaml` como fallback mientras no haya suficientes días:
 
+> **Invariante `window_days >= min_days` (v1.49):** cada parámetro consulta solo los últimos `*_window_days` días, así que si la ventana es menor que `*_min_days` el contador de días válidos **nunca** alcanza el mínimo y el valor dinámico queda clavado en el fallback de forma silenciosa (footgun real: `night_consumption_window_days: 10` con `min_days: 15` → siempre 9/15). Un `model_validator` en `ChargingConfig` (`windows_must_cover_min_days`) rechaza el arranque y el `POST /api/config` si algún par incumple la regla.
+
 ### Consumo nocturno dinámico (`storage.get_avg_night_consumption`)
 - Fuente: campo `night_consumption_kwh` de `stats_diarias` (primeros 480 min del día = 00:00–07:59)
 - Ventana deslizante configurable (`night_consumption_window_days`, default 30d)

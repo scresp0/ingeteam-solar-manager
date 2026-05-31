@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +129,28 @@ class ChargingConfig(BaseModel):
         if "min_soc_pct" in info.data and v <= info.data["min_soc_pct"]:
             raise ValueError("max_soc_pct debe ser mayor que min_soc_pct")
         return v
+
+    @model_validator(mode="after")
+    def windows_must_cover_min_days(self):
+        """Cada ventana deslizante debe ser >= su mínimo de días.
+
+        Si `window_days < min_days`, la consulta a InfluxDB solo mira una ventana
+        más corta que el umbral, así que el contador de días válidos nunca puede
+        alcanzar el mínimo → el parámetro dinámico jamás se activa y queda clavado
+        en el fallback de config de forma silenciosa.
+        """
+        for win, mn, name in (
+            (self.night_consumption_window_days, self.night_consumption_min_days, "night_consumption"),
+            (self.risk_factor_window_days,       self.risk_factor_min_days,       "risk_factor"),
+            (self.solar_bias_window_days,        self.solar_bias_min_days,        "solar_bias"),
+        ):
+            if win < mn:
+                raise ValueError(
+                    f"{name}_window_days ({win}) debe ser >= {name}_min_days ({mn}): "
+                    f"con una ventana menor que el mínimo el valor dinámico nunca se "
+                    f"activaría (imposible encontrar {mn} días en una ventana de {win})."
+                )
+        return self
 
 
 class EmailConfig(BaseModel):
