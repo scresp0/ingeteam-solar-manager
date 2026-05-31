@@ -256,6 +256,15 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .field select option { background: var(--bg2); }
 .save-feedback { font-size: 12px; color: var(--green); opacity: 0; transition: opacity .25s; }
 .save-feedback.show { opacity: 1; }
+.cfg-section-note { font-size: 11px; color: var(--muted); margin-bottom: 10px; line-height: 1.5; }
+.env-badge {
+  display: inline-block;
+  font-family: var(--mono); font-size: 9px; font-weight: 600;
+  padding: 1px 6px; border-radius: 3px;
+  background: rgba(240,165,0,.15); color: var(--accent);
+  text-transform: uppercase; letter-spacing: .4px;
+  margin-left: 6px; cursor: help; vertical-align: middle;
+}
 
 /* ── Run panel ───────────────────────────────────── */
 .run-panel {
@@ -649,50 +658,16 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
     <div class="card">
       <div class="card-head">
         <span class="card-title">Parámetros de configuración</span>
-        <span style="font-size:11px;color:var(--muted2)">Requiere reinicio para aplicar cambios en inversor/scheduler</span>
+        <span style="font-size:11px;color:var(--muted2)">Edita <code>config.yaml</code>. Reinicia el contenedor para que los cambios surtan efecto.</span>
       </div>
       <div class="card-body">
-
-        <div class="cfg-section">
-          <div class="cfg-section-title">Algoritmo de decisión</div>
-          <div class="cfg-grid">
-            <div class="field"><label>SOC mínimo (%)</label><input type="number" id="c-minsoc" value="35" min="0" max="100"></div>
-            <div class="field"><label>Consumo nocturno (kWh)</label><input type="number" id="c-nightkwh" value="3.5" min="0" step="0.1"></div>
-            <div class="field"><label>Factor de riesgo (0–1)</label><input type="number" id="c-risk" value="0.7" min="0" max="1" step="0.05"></div>
-            <div class="field"><label>Margen de seguridad (kWh)</label><input type="number" id="c-margin" value="1.0" min="0" step="0.1"></div>
-          </div>
-        </div>
-
-        <div class="cfg-section">
-          <div class="cfg-section-title">Inversor</div>
-          <div class="cfg-grid">
-            <div class="field"><label>IP / Host MODBUS</label><input type="text" id="c-invhost" value="10.172.24.42"></div>
-            <div class="field"><label>Puerto MODBUS</label><input type="number" id="c-modport" value="502"></div>
-          </div>
-        </div>
-
-        <div class="cfg-section">
-          <div class="cfg-section-title">Planificador</div>
-          <div class="cfg-grid">
-            <div class="field"><label>Hora ejecución nocturna</label><input type="time" id="c-schedtime" value="23:55"></div>
-            <div class="field"><label>Puerto interfaz web</label><input type="number" id="c-webport" value="8080"></div>
-            <div class="field"><label>Dry run</label>
-              <select id="c-dryrun">
-                <option value="false">Desactivado (producción)</option>
-                <option value="true">Activado (simulación)</option>
-              </select>
-            </div>
-            <div class="field"><label>Nivel de log</label>
-              <select id="c-loglevel">
-                <option>INFO</option><option>DEBUG</option><option>WARNING</option><option>ERROR</option>
-              </select>
-            </div>
-          </div>
-        </div>
-
-        <div style="display:flex;align-items:center;gap:12px;margin-top:4px">
+        <div id="cfg-loading" style="color:var(--muted);font-size:12px">Cargando configuración…</div>
+        <div id="cfg-form-container" style="display:none"></div>
+        <div id="cfg-actions" style="display:none;align-items:center;gap:12px;margin-top:8px;flex-wrap:wrap">
           <button class="btn btn-accent" onclick="saveConfig()">Guardar cambios</button>
+          <button class="btn" onclick="loadConfigForm()">Recargar desde disco</button>
           <span class="save-feedback" id="cfg-ok">Guardado correctamente</span>
+          <span id="cfg-err" style="font-size:12px;color:var(--red);display:none"></span>
         </div>
       </div>
     </div>
@@ -1474,11 +1449,236 @@ function setJobStatus(state, msg) {
     : `<span style="color:${col[state]||'var(--muted)'}">${escHtml(msg)}</span>`;
 }
 
-// ══ Config save (UI only — backend endpoint no existe aún) ═══
-function saveConfig() {
-  const ok = document.getElementById('cfg-ok');
-  ok.classList.add('show');
-  setTimeout(() => ok.classList.remove('show'), 2800);
+// ══ Config form (GET/POST /api/config) ═════════════
+// Schema: cada sección describe los campos editables del config.yaml.
+// El tipo "bool" se renderiza como select Activado/Desactivado.
+// "str_nullable" permite vacío → null (útil para schedule_recheck_at).
+const CONFIG_SCHEMA = [
+  {
+    section: 'charging', title: 'Algoritmo de carga',
+    note: 'Parámetros principales del decisor de carga nocturna.',
+    fields: [
+      { key: 'risk_factor',          label: 'Factor de riesgo (0–1)',          type: 'number', min: 0,   max: 1,   step: 0.05 },
+      { key: 'min_soc_pct',          label: 'SOC mínimo (%)',                  type: 'number', min: 0,   max: 100, step: 1 },
+      { key: 'max_soc_pct',          label: 'SOC máximo (%)',                  type: 'number', min: 0,   max: 100, step: 1 },
+      { key: 'safety_margin_kwh',    label: 'Margen de seguridad (kWh)',       type: 'number', min: 0,             step: 0.1 },
+      { key: 'night_consumption_kwh',label: 'Consumo nocturno fallback (kWh)', type: 'number', min: 0,             step: 0.1 },
+      { key: 'solar_bias_factor',    label: 'Factor calibración solar (fallback)', type: 'number', min: 0.5, max: 1.5, step: 0.01 },
+    ],
+  },
+  {
+    section: 'charging', title: 'Calibración dinámica',
+    note: 'Días mínimos y ventana deslizante para sustituir los valores fallback de arriba por los calculados desde InfluxDB.',
+    fields: [
+      { key: 'night_consumption_min_days',    label: 'Cons. nocturno · días mínimos',  type: 'number', min: 1, step: 1 },
+      { key: 'night_consumption_window_days', label: 'Cons. nocturno · ventana (días)',type: 'number', min: 7, step: 1 },
+      { key: 'risk_factor_min_days',          label: 'Risk factor · días mínimos',      type: 'number', min: 1, step: 1 },
+      { key: 'risk_factor_window_days',       label: 'Risk factor · ventana (días)',    type: 'number', min: 7, step: 1 },
+      { key: 'solar_bias_min_days',           label: 'Solar bias · días mínimos',       type: 'number', min: 1, step: 1 },
+      { key: 'solar_bias_window_days',        label: 'Solar bias · ventana (días)',     type: 'number', min: 7, step: 1 },
+    ],
+  },
+  {
+    section: 'installation', title: 'Instalación',
+    fields: [
+      { key: 'battery_capacity_kwh',          label: 'Capacidad batería (kWh)',       type: 'number', min: 0, step: 0.01 },
+      { key: 'average_daily_consumption_kwh', label: 'Consumo medio diario (kWh)',    type: 'number', min: 0, step: 0.1 },
+      { key: 'peak_power_kwp',                label: 'Potencia pico paneles (kWp)',   type: 'number', min: 0, step: 0.1 },
+    ],
+  },
+  {
+    section: 'tariff', title: 'Planificador',
+    fields: [
+      { key: 'schedule_at',         label: 'Hora ciclo nocturno (HH:MM)',     type: 'text',     placeholder: '23:55' },
+      { key: 'schedule_recheck_at', label: 'Hora re-evaluación (HH:MM, vacío = desactivado)', type: 'text', placeholder: '03:00', nullable: true },
+      { key: 'night_cutoff_hour',   label: 'Hora límite madrugada (0–12)',    type: 'number',   min: 0, max: 12, step: 1 },
+    ],
+  },
+  {
+    section: 'system', title: 'Sistema',
+    fields: [
+      { key: 'log_level',   label: 'Nivel de log',                 type: 'select', options: ['DEBUG','INFO','WARNING','ERROR'] },
+      { key: 'log_file',    label: 'Ruta del fichero de log',      type: 'text' },
+      { key: 'dry_run',     label: 'Dry run (no toca el inversor)',type: 'bool' },
+      { key: 'timezone',    label: 'Zona horaria',                 type: 'text',   placeholder: 'Europe/Madrid' },
+      { key: 'web_port',    label: 'Puerto interfaz web',          type: 'number', min: 1, max: 65535, step: 1 },
+      { key: 'web_enabled', label: 'Interfaz web habilitada',      type: 'bool' },
+    ],
+  },
+  {
+    section: 'email', title: 'Email (notificaciones)',
+    note: 'Las credenciales SMTP (host, usuario, password) viven solo en .env por seguridad.',
+    fields: [
+      { key: 'enabled',    label: 'Envío de email activado',  type: 'bool' },
+      { key: 'smtp_port',  label: 'Puerto SMTP',              type: 'number', min: 1, max: 65535, step: 1 },
+      { key: 'use_tls',    label: 'STARTTLS (puerto 587)',    type: 'bool' },
+      { key: 'use_ssl',    label: 'SSL directo (puerto 465)', type: 'bool' },
+      { key: 'verify_ssl', label: 'Verificar certificado SSL',type: 'bool' },
+      { key: 'mail_from',  label: 'Remitente (From)',         type: 'text',   placeholder: 'solar-manager@example.com' },
+      { key: 'mail_to',    label: 'Destinatario (To)',        type: 'text',   placeholder: 'tu@email.com' },
+    ],
+  },
+  {
+    section: 'solcast', title: 'Solcast',
+    note: 'La api_key y resource_id viven solo en .env por seguridad.',
+    fields: [
+      { key: 'base_url',        label: 'Base URL',           type: 'text' },
+      { key: 'forecast_hours',  label: 'Horas de forecast',  type: 'number', min: 1, max: 168, step: 1 },
+      { key: 'cache_ttl_hours', label: 'Caché TTL (horas)',  type: 'number', min: 1, step: 1 },
+    ],
+  },
+  {
+    section: 'inverter', title: 'Inversor',
+    note: 'IP, usuario y password del inversor viven solo en .env por seguridad.',
+    fields: [
+      { key: 'modbus_port',             label: 'Puerto MODBUS',          type: 'number', min: 1, max: 65535, step: 1 },
+      { key: 'modbus_slave',            label: 'Slave ID MODBUS',        type: 'number', min: 0, max: 255,   step: 1 },
+      { key: 'browser_timeout_seconds', label: 'Timeout Playwright (s)', type: 'number', min: 1, step: 1 },
+    ],
+  },
+  {
+    section: 'influxdb', title: 'InfluxDB',
+    note: 'El token vive solo en .env por seguridad.',
+    fields: [
+      { key: 'enabled', label: 'InfluxDB habilitado', type: 'bool' },
+      { key: 'url',     label: 'URL',                 type: 'text', placeholder: 'http://influxdb:8086' },
+      { key: 'org',     label: 'Organización',        type: 'text' },
+      { key: 'bucket',  label: 'Bucket',              type: 'text' },
+    ],
+  },
+];
+
+let _envOverrides = new Set();   // claves "section.key" sobreescritas por .env
+
+async function loadConfigForm() {
+  const loading = document.getElementById('cfg-loading');
+  const form    = document.getElementById('cfg-form-container');
+  const actions = document.getElementById('cfg-actions');
+  loading.style.display = 'block';
+  loading.innerHTML = 'Cargando configuración…';
+  form.style.display    = 'none';
+  actions.style.display = 'none';
+  try {
+    const r = await fetch('/api/config');
+    const d = await r.json();
+    if (!d.ok) throw new Error(d.error || 'Error al cargar /api/config');
+    _envOverrides = new Set((d.env_overrides || []).map(o => `${o.section}.${o.key}`));
+    _renderConfigForm(d.values || {});
+    loading.style.display = 'none';
+    form.style.display    = 'block';
+    actions.style.display = 'flex';
+  } catch (e) {
+    loading.innerHTML = `<span style="color:var(--red)">Error: ${escHtml(e.message)}</span>`;
+  }
+}
+
+function _renderConfigForm(values) {
+  const html = CONFIG_SCHEMA.map(secDef => {
+    const fields = secDef.fields.map(f => _renderField(secDef.section, f, values)).join('');
+    const note = secDef.note ? `<div class="cfg-section-note">${escHtml(secDef.note)}</div>` : '';
+    return `
+      <div class="cfg-section">
+        <div class="cfg-section-title">${escHtml(secDef.title)}</div>
+        ${note}
+        <div class="cfg-grid">${fields}</div>
+      </div>`;
+  }).join('');
+  document.getElementById('cfg-form-container').innerHTML = html;
+}
+
+function _renderField(section, f, values) {
+  const cur     = (values[section] || {})[f.key];
+  const fieldId = `cfg-${section}-${f.key}`;
+  const ov      = _envOverrides.has(`${section}.${f.key}`);
+  const badge   = ov
+    ? `<span class="env-badge" title="Esta variable está definida en .env y sobreescribe el valor de config.yaml al arrancar. Guardar aquí modifica el YAML, pero seguirá ganando el valor de .env hasta que la quites del entorno.">.env override</span>`
+    : '';
+
+  let input;
+  if (f.type === 'bool') {
+    const yes = (cur === true || cur === 'true' || cur === 1);
+    input = `<select id="${fieldId}" data-type="bool">
+      <option value="true"${ yes ? ' selected' : ''}>Activado</option>
+      <option value="false"${!yes ? ' selected' : ''}>Desactivado</option>
+    </select>`;
+  } else if (f.type === 'select') {
+    const opts = (f.options || []).map(o =>
+      `<option${cur === o ? ' selected' : ''}>${escHtml(o)}</option>`).join('');
+    input = `<select id="${fieldId}" data-type="str">${opts}</select>`;
+  } else if (f.type === 'number') {
+    const parts = [`id="${fieldId}"`, 'type="number"', 'data-type="number"'];
+    if (cur !== null && cur !== undefined) parts.push(`value="${cur}"`);
+    if (f.min  !== undefined) parts.push(`min="${f.min}"`);
+    if (f.max  !== undefined) parts.push(`max="${f.max}"`);
+    if (f.step !== undefined) parts.push(`step="${f.step}"`);
+    if (f.placeholder)        parts.push(`placeholder="${escHtml(f.placeholder)}"`);
+    input = `<input ${parts.join(' ')}>`;
+  } else {
+    const val = (cur === null || cur === undefined) ? '' : String(cur);
+    const dt  = f.nullable ? 'str_nullable' : 'str';
+    const ph  = f.placeholder ? ` placeholder="${escHtml(f.placeholder)}"` : '';
+    input = `<input id="${fieldId}" type="text" data-type="${dt}" value="${escHtml(val)}"${ph}>`;
+  }
+  return `<div class="field">
+    <label for="${fieldId}">${escHtml(f.label)}${badge}</label>
+    ${input}
+  </div>`;
+}
+
+async function saveConfig() {
+  const ok  = document.getElementById('cfg-ok');
+  const err = document.getElementById('cfg-err');
+  ok.classList.remove('show');
+  err.style.display = 'none';
+  err.textContent   = '';
+  ok.textContent    = 'Guardado correctamente';
+
+  // Recopilar valores del DOM agrupados por sección.
+  const values = {};
+  for (const secDef of CONFIG_SCHEMA) {
+    values[secDef.section] = values[secDef.section] || {};
+    for (const f of secDef.fields) {
+      const el = document.getElementById(`cfg-${secDef.section}-${f.key}`);
+      if (!el) continue;
+      const t = el.dataset.type;
+      let v = el.value;
+      if (t === 'bool') {
+        v = (v === 'true');
+      } else if (t === 'number') {
+        const n = parseFloat(v);
+        if (Number.isNaN(n)) {
+          err.textContent = `Valor numérico inválido: ${secDef.title} → ${f.label}`;
+          err.style.display = 'inline';
+          return;
+        }
+        v = n;
+      } else if (t === 'str_nullable') {
+        v = v.trim() === '' ? null : v;
+      } else {
+        v = String(v);
+      }
+      values[secDef.section][f.key] = v;
+    }
+  }
+
+  try {
+    const r = await _postWithAuth('/api/config', {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ values }),
+    });
+    const d = await r.json();
+    if (!d.ok) {
+      err.textContent = (d.errors || [d.error || 'Error desconocido']).join(' · ');
+      err.style.display = 'inline';
+      return;
+    }
+    ok.textContent = `Guardado · ${d.applied} campos · reinicia para aplicar`;
+    ok.classList.add('show');
+    setTimeout(() => ok.classList.remove('show'), 5000);
+  } catch (e) {
+    err.textContent = e.message;
+    err.style.display = 'inline';
+  }
 }
 
 // ══ Helpers ════════════════════════════════════════
@@ -1494,6 +1694,7 @@ loadParams();
 setInterval(loadParams, 600000);
 loadTodaySolar();
 setInterval(loadTodaySolar, 60000);
+loadConfigForm();
 </script>
 </body>
 </html>

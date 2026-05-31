@@ -39,6 +39,99 @@ _HOSTNAME = os.environ.get("HOST_HOSTNAME") or socket.gethostname()
 logger = logging.getLogger(__name__)
 
 
+# ── Edición de config.yaml desde la pestaña Configuración ─────────────────
+# Lista blanca de campos editables desde la UI. Para cada campo:
+#   (tipo destino, nombre de variable de entorno que lo sobreescribe o None)
+# Los secretos (api_key, password, smtp_password, INFLUXDB_TOKEN, etc.) NO
+# están aquí — siguen únicamente en .env. Las listas/estructuras complejas
+# (holidays, tariff.periods) tampoco; se editan a mano en el YAML.
+_EDITABLE_FIELDS: dict[str, dict[str, tuple[str, str | None]]] = {
+    "solcast": {
+        "base_url":         ("str",   None),
+        "forecast_hours":   ("int",   None),
+        "cache_ttl_hours":  ("int",   None),
+    },
+    "inverter": {
+        "modbus_port":             ("int", None),
+        "modbus_slave":            ("int", None),
+        "browser_timeout_seconds": ("int", None),
+    },
+    "installation": {
+        "battery_capacity_kwh":          ("float", "BATTERY_CAPACITY_KWH"),
+        "average_daily_consumption_kwh": ("float", "DAILY_CONSUMPTION_KWH"),
+        "peak_power_kwp":                ("float", None),
+    },
+    "tariff": {
+        "schedule_at":         ("str",          None),
+        "schedule_recheck_at": ("str_nullable", None),
+        "night_cutoff_hour":   ("int",          None),
+    },
+    "charging": {
+        "risk_factor":                   ("float", "RISK_FACTOR"),
+        "min_soc_pct":                   ("float", "MIN_SOC_PCT"),
+        "max_soc_pct":                   ("float", "MAX_SOC_PCT"),
+        "safety_margin_kwh":             ("float", "SAFETY_MARGIN_KWH"),
+        "night_consumption_kwh":         ("float", "NIGHT_CONSUMPTION_KWH"),
+        "night_consumption_min_days":    ("int",   None),
+        "night_consumption_window_days": ("int",   None),
+        "risk_factor_min_days":          ("int",   None),
+        "risk_factor_window_days":       ("int",   None),
+        "solar_bias_factor":             ("float", "SOLAR_BIAS_FACTOR"),
+        "solar_bias_min_days":           ("int",   None),
+        "solar_bias_window_days":        ("int",   None),
+    },
+    "system": {
+        "log_level":   ("str",  "LOG_LEVEL"),
+        "log_file":    ("str",  None),
+        "dry_run":     ("bool", "DRY_RUN"),
+        "timezone":    ("str",  None),
+        "web_port":    ("int",  None),
+        "web_enabled": ("bool", None),
+    },
+    # email vive bajo system.email.* en el YAML pero se expone como
+    # sección hermana en la API para simplificar el form de la web.
+    "email": {
+        "enabled":     ("bool", None),
+        "smtp_port":   ("int",  "SMTP_PORT"),
+        "use_tls":     ("bool", None),
+        "use_ssl":     ("bool", None),
+        "verify_ssl":  ("bool", None),
+        "mail_from":   ("str",  "MAIL_FROM"),
+        "mail_to":     ("str",  "MAIL_TO"),
+    },
+    "influxdb": {
+        "enabled": ("bool", None),
+        "url":     ("str",  "INFLUXDB_URL"),
+        "org":     ("str",  "INFLUXDB_ORG"),
+        "bucket":  ("str",  "INFLUXDB_BUCKET"),
+    },
+}
+
+
+def _cast_value(raw, typ: str):
+    """Convierte un valor recibido por JSON al tipo destino del YAML."""
+    if typ == "str_nullable":
+        if raw is None or raw == "":
+            return None
+        return str(raw)
+    if raw is None or raw == "":
+        raise ValueError("valor vacío")
+    if typ == "int":
+        return int(raw)
+    if typ == "float":
+        return float(raw)
+    if typ == "bool":
+        if isinstance(raw, bool):
+            return raw
+        s = str(raw).strip().lower()
+        if s in ("true", "1", "yes", "on"):
+            return True
+        if s in ("false", "0", "no", "off"):
+            return False
+        raise ValueError(f"no booleano: {raw!r}")
+    return str(raw)
+
+
 def _current_solar_bias(cfg: AppConfig) -> float:
     """Factor de calibración solar a aplicar en los totales mostrados:
     dinámico desde InfluxDB si hay suficientes días, fallback al config."""
@@ -594,6 +687,150 @@ def create_app(cfg: AppConfig) -> FastAPI:
         result["total_p50_calibrated_kwh"] = round(raw_total * bias, 2)
         result["solar_bias_factor"] = round(bias, 4)
         return result
+
+    @app.get("/api/config")
+    async def get_config():
+        """Devuelve el contenido editable de config.yaml + flags de overrides por .env.
+
+        Respuesta:
+          {
+            "ok": true,
+            "values": { "<seccion>": { "<key>": <valor>, ... }, ... },
+            "env_overrides": [ {"section": "...", "key": "...", "env_var": "..."}, ... ],
+            "path": "/app/config.yaml"
+          }
+        """
+        try:
+            from app.config import _resolve_config_path
+            from ruamel.yaml import YAML
+
+            path = _resolve_config_path(None)
+            yaml = YAML(typ="safe")
+            with open(path, "r", encoding="utf-8") as f:
+                data = yaml.load(f) or {}
+
+            values: dict[str, dict] = {}
+            env_overrides: list[dict] = []
+            for section, fields in _EDITABLE_FIELDS.items():
+                if section == "email":
+                    src = (data.get("system") or {}).get("email") or {}
+                else:
+                    src = data.get(section) or {}
+                values[section] = {}
+                for key, (_typ, env_var) in fields.items():
+                    values[section][key] = src.get(key)
+                    if env_var and os.environ.get(env_var) is not None:
+                        env_overrides.append({
+                            "section": section,
+                            "key": key,
+                            "env_var": env_var,
+                        })
+
+            return {
+                "ok": True,
+                "values": values,
+                "env_overrides": env_overrides,
+                "path": str(path),
+            }
+        except Exception as e:
+            logger.exception("Error en GET /api/config")
+            return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+    @app.post("/api/config", dependencies=[Depends(_require_api_key)])
+    async def post_config(payload: dict):
+        """Aplica los `values` recibidos a config.yaml preservando comentarios.
+
+        Cuerpo:
+          { "values": { "<seccion>": { "<key>": <valor>, ... }, ... } }
+
+        Valida el resultado con el modelo Pydantic AppConfig antes de escribir.
+        Los cambios surten efecto tras reiniciar el contenedor.
+        """
+        from app.config import _resolve_config_path, AppConfig
+        from ruamel.yaml import YAML
+        import json as _json
+
+        updates = (payload or {}).get("values") or {}
+        if not isinstance(updates, dict) or not updates:
+            return JSONResponse(status_code=400, content={
+                "ok": False, "errors": ["payload.values vacío o inválido"]})
+
+        path = _resolve_config_path(None)
+
+        # Round-trip preserva comentarios, orden y comillas.
+        yaml_rt = YAML()
+        yaml_rt.preserve_quotes = True
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml_rt.load(f)
+        if data is None:
+            return JSONResponse(status_code=500, content={
+                "ok": False, "errors": [f"config.yaml vacío en {path}"]})
+
+        # Aplicar updates respetando la lista blanca y convirtiendo tipos.
+        errors: list[str] = []
+        applied = 0
+        for section, fields in updates.items():
+            if section not in _EDITABLE_FIELDS:
+                errors.append(f"Sección desconocida: {section}")
+                continue
+            if not isinstance(fields, dict):
+                errors.append(f"Sección {section}: se esperaba objeto")
+                continue
+            if section == "email":
+                if "system" not in data or data["system"] is None:
+                    data["system"] = {}
+                if "email" not in data["system"] or data["system"]["email"] is None:
+                    data["system"]["email"] = {}
+                target = data["system"]["email"]
+            else:
+                if section not in data or data[section] is None:
+                    data[section] = {}
+                target = data[section]
+            for key, raw_val in fields.items():
+                if key not in _EDITABLE_FIELDS[section]:
+                    errors.append(f"Campo no editable: {section}.{key}")
+                    continue
+                typ, _env = _EDITABLE_FIELDS[section][key]
+                try:
+                    cast_val = _cast_value(raw_val, typ)
+                except Exception as e:
+                    errors.append(f"{section}.{key}: {e}")
+                    continue
+                target[key] = cast_val
+                applied += 1
+
+        if errors:
+            return JSONResponse(status_code=400, content={"ok": False, "errors": errors})
+
+        # Validar el resultado completo contra el modelo Pydantic. Serializamos
+        # a JSON y de vuelta para normalizar dates de holidays y CommentedMap.
+        try:
+            plain = _json.loads(_json.dumps(data, default=str))
+            if "tariff" in plain and "holidays" in plain["tariff"]:
+                plain["tariff"]["holidays"] = [
+                    str(d) for d in (plain["tariff"]["holidays"] or [])
+                ]
+            AppConfig(**plain)
+        except Exception as e:
+            return JSONResponse(status_code=400, content={
+                "ok": False, "errors": [f"Validación de la configuración resultante: {e}"]})
+
+        # Escribir preservando comentarios.
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                yaml_rt.dump(data, f)
+        except Exception as e:
+            logger.exception("Error escribiendo config.yaml")
+            return JSONResponse(status_code=500, content={
+                "ok": False, "errors": [f"No se pudo escribir {path}: {e}"]})
+
+        logger.info(f"config.yaml actualizado vía web: {applied} campos modificados")
+        return {
+            "ok": True,
+            "applied": applied,
+            "path": str(path),
+            "note": "Cambios escritos. Reinicia el contenedor para que surtan efecto.",
+        }
 
     @app.get("/api/logs")
     async def get_logs(lines: int = 100):

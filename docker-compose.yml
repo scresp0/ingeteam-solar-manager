@@ -9,7 +9,8 @@ services:
     restart: unless-stopped
 
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
+      # rw (no :ro) — la pestaña Configuración de la web edita este fichero
+      - ./config.yaml:/app/config.yaml
       - solar-manager-logs:/app/logs
 
     env_file:

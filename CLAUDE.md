@@ -190,7 +190,9 @@ El motivo ("reason") siempre muestra el déficit *sin bloqueo* para explicar por
 | `GET /api/params` | Parámetros dinámicos activos: `night_consumption_kwh`, `risk_factor`, origen (dinámico/config) y `*_valid_days` (días válidos en InfluxDB dentro de la ventana). Refresco 10min. |
 | `GET /api/solar_history` | Historial forecast vs real desde InfluxDB. Params: `date=YYYY-MM-DD`, `view=day\|week\|month`. Vista semana/mes devuelve medias por hora entre días (`total_p50_kwh` y `total_real_kwh` son "media/día"). Fallback a caché Solcast para el forecast si InfluxDB no tiene datos. |
 | `GET /api/logs` | Últimas N líneas del fichero de log |
+| `GET /api/config` | Devuelve el contenido editable de `config.yaml` + lista `env_overrides` con (sección, key, env_var) para los campos sobreescritos por `.env`. No expone secretos. |
 | `POST /api/cycle` | Lanza ciclo completo manual (dry_run o real) |
+| `POST /api/config` | Aplica `{values: {<seccion>: {<key>: <valor>}}}` a `config.yaml` preservando comentarios (ruamel.yaml round-trip). Valida el YAML completo contra el modelo Pydantic `AppConfig` antes de escribir. Requiere `web_api_key`. |
 | `POST /api/run/{test}` | Lanza test unitario en background |
 | `GET /api/stream/{job_id}` | SSE stream de logs de un job |
 
@@ -232,6 +234,15 @@ Además del SOC ring y estados del inversor, muestra dos filas de parámetros de
   - `loadTodaySolar()` solo actualiza "Real" y re-renderiza cuando `_isTodayView()`, para no sobreescribir vistas históricas ni la vista de mañana.
   - `.f-totals` usa `flex-wrap: wrap` para que las tres columnas se envuelvan limpiamente en móvil.
 - **Layout dinámico**: `.card` es flex-column; `.forecast-body` (clase del card-body del forecast) hace `flex: 1` para rellenar la altura disponible; `.forecast-bars` crece con `flex: 1` en lugar de altura fija. Alturas de barras calculadas desde `barsEl.clientHeight` en cada render.
+
+### Pestaña Configuración (v1.47)
+- **Form generado dinámicamente** desde `CONFIG_SCHEMA` en `index.html` (no hardcoded). Cada sección define `section`, `title`, opcional `note` y lista de `fields` con `key`, `label`, `type` (`number` / `text` / `bool` / `select` / `str_nullable`) y atributos de validación HTML.
+- **Carga**: `loadConfigForm()` se llama en init y al pulsar "Recargar desde disco". Hace `GET /api/config`, mergea valores en el DOM y pinta badges `.env-badge` "override" en los campos cuya variable de entorno está activa.
+- **Guardado**: `saveConfig()` recolecta valores agrupados por sección, llama a `POST /api/config` con `X-API-Key`. El backend usa `ruamel.yaml` round-trip → preserva comentarios, orden de claves y formato del YAML. Solo modifica las claves recibidas; el resto del archivo queda intacto.
+- **Validación**: tras aplicar updates, el backend serializa a JSON, normaliza `tariff.holidays` a strings y construye un `AppConfig(**plain)`. Si falla, devuelve 400 sin escribir.
+- **Secretos**: api_keys, passwords, tokens y `INFLUXDB_TOKEN` NO están en la lista blanca `_EDITABLE_FIELDS` de `server.py` — solo viven en `.env`. Los campos de host (IP inversor, host SMTP) tampoco se exponen porque vienen 100% de `.env`.
+- **Persistencia en disco**: requiere `./config.yaml:/app/config.yaml` SIN `:ro` en `docker-compose.yml` (v1.47 lo cambió). Si tras editar el contenedor no puede escribir, el endpoint devuelve 500 con el error de `OSError`.
+- **Aplicar cambios**: requiere reinicio del contenedor (`make restart`). El YAML editado queda persistido en el host porque es bind mount.
 
 ### Diseño responsive
 Dos breakpoints en `index.html`:
