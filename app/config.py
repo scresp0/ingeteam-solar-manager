@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -109,18 +109,33 @@ class ChargingConfig(BaseModel):
     safety_margin_kwh: float = Field(default=1.0, ge=0.0)
     # Fallback usado mientras no haya suficientes días históricos en InfluxDB
     night_consumption_kwh: float = Field(default=3.5, ge=0.0)
-    # Consumo nocturno dinámico: mínimo de días y ventana deslizante
-    night_consumption_min_days: int = Field(default=14, ge=1)
+    # Consumo nocturno dinámico. window_days = periodo que se promedia;
+    # min_days_in_window = días con dato que debe haber DENTRO de esa ventana
+    # para fiarse (por eso window_days >= min_days_in_window). El alias acepta
+    # el nombre antiguo `night_consumption_min_days` de configs previas.
+    night_consumption_min_days_in_window: int = Field(
+        default=14, ge=1,
+        validation_alias=AliasChoices(
+            "night_consumption_min_days_in_window", "night_consumption_min_days"),
+    )
     night_consumption_window_days: int = Field(default=30, ge=7)
     # Risk factor dinámico: calibrado desde desviación histórica Solcast vs real
-    risk_factor_min_days: int = Field(default=14, ge=1)
+    risk_factor_min_days_in_window: int = Field(
+        default=14, ge=1,
+        validation_alias=AliasChoices(
+            "risk_factor_min_days_in_window", "risk_factor_min_days"),
+    )
     risk_factor_window_days: int = Field(default=30, ge=7)
     # Factor de calibración del forecast Solcast: solar_real / forecast_p50 medio.
     # Compensa el sesgo sistemático del forecast para esta instalación.
     # 1.0 = sin corrección. Se calcula dinámicamente desde InfluxDB cuando hay
     # suficientes días; el valor de aquí es fallback.
     solar_bias_factor: float = Field(default=1.0, ge=0.5, le=1.5)
-    solar_bias_min_days: int = Field(default=14, ge=1)
+    solar_bias_min_days_in_window: int = Field(
+        default=14, ge=1,
+        validation_alias=AliasChoices(
+            "solar_bias_min_days_in_window", "solar_bias_min_days"),
+    )
     solar_bias_window_days: int = Field(default=30, ge=7)
 
     @field_validator("max_soc_pct")
@@ -140,15 +155,15 @@ class ChargingConfig(BaseModel):
         en el fallback de config de forma silenciosa.
         """
         for win, mn, name in (
-            (self.night_consumption_window_days, self.night_consumption_min_days, "night_consumption"),
-            (self.risk_factor_window_days,       self.risk_factor_min_days,       "risk_factor"),
-            (self.solar_bias_window_days,        self.solar_bias_min_days,        "solar_bias"),
+            (self.night_consumption_window_days, self.night_consumption_min_days_in_window, "night_consumption"),
+            (self.risk_factor_window_days,       self.risk_factor_min_days_in_window,       "risk_factor"),
+            (self.solar_bias_window_days,        self.solar_bias_min_days_in_window,        "solar_bias"),
         ):
             if win < mn:
                 raise ValueError(
-                    f"{name}_window_days ({win}) debe ser >= {name}_min_days ({mn}): "
+                    f"{name}_window_days ({win}) debe ser >= {name}_min_days_in_window ({mn}): "
                     f"con una ventana menor que el mínimo el valor dinámico nunca se "
-                    f"activaría (imposible encontrar {mn} días en una ventana de {win})."
+                    f"activaría (imposible encontrar {mn} días con dato en una ventana de {win})."
                 )
         return self
 
@@ -225,6 +240,41 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         return AppConfig(**data)
     except Exception as e:
         raise ValueError(f"Error de configuración: {e}") from e
+
+
+# Claves de config renombradas. {(sección, nombre_obsoleto): nombre_canónico}.
+# El modelo sigue aceptando el nombre obsoleto vía AliasChoices; esta tabla
+# permite detectarlo para avisar (log + UI) de que conviene migrar al nuevo.
+DEPRECATED_CONFIG_KEYS: dict[tuple[str, str], str] = {
+    ("charging", "night_consumption_min_days"): "night_consumption_min_days_in_window",
+    ("charging", "risk_factor_min_days"):       "risk_factor_min_days_in_window",
+    ("charging", "solar_bias_min_days"):        "solar_bias_min_days_in_window",
+}
+
+
+def find_deprecated_config_keys(config_path: str | Path | None = None) -> list[dict]:
+    """Detecta claves con nombre obsoleto presentes en el YAML.
+
+    Devuelve [{section, legacy_key, canonical_key, value}] por cada clave
+    obsoleta encontrada. El valor se sigue aplicando (vía alias Pydantic);
+    esto solo sirve para avisar de que conviene renombrarla.
+    """
+    try:
+        path = _resolve_config_path(config_path)
+        data = _load_yaml(path) or {}
+    except Exception:
+        return []
+    found: list[dict] = []
+    for (section, legacy), canonical in DEPRECATED_CONFIG_KEYS.items():
+        src = data.get(section) or {}
+        if isinstance(src, dict) and legacy in src:
+            found.append({
+                "section": section,
+                "legacy_key": legacy,
+                "canonical_key": canonical,
+                "value": src.get(legacy),
+            })
+    return found
 
 
 def _resolve_config_path(config_path: str | Path | None) -> Path:

@@ -121,7 +121,7 @@ def _collect_decision_inputs(
     avg_night = get_avg_night_consumption(
         cfg.influxdb,
         window_days=cfg.charging.night_consumption_window_days,
-        min_days=cfg.charging.night_consumption_min_days,
+        min_days=cfg.charging.night_consumption_min_days_in_window,
     )
     if avg_night is not None:
         logger.info(
@@ -133,7 +133,7 @@ def _collect_decision_inputs(
     else:
         logger.info(
             f"Consumo nocturno: {night_consumption_kwh} kWh "
-            f"(config — menos de {cfg.charging.night_consumption_min_days} días en InfluxDB)"
+            f"(config — menos de {cfg.charging.night_consumption_min_days_in_window} días en InfluxDB)"
         )
 
     # 4. Risk factor dinámico
@@ -141,7 +141,7 @@ def _collect_decision_inputs(
     dynamic_rf = get_dynamic_risk_factor(
         cfg.influxdb,
         window_days=cfg.charging.risk_factor_window_days,
-        min_days=cfg.charging.risk_factor_min_days,
+        min_days=cfg.charging.risk_factor_min_days_in_window,
     )
     if dynamic_rf is not None:
         logger.info(
@@ -153,7 +153,7 @@ def _collect_decision_inputs(
     else:
         logger.info(
             f"Risk factor: {risk_factor} "
-            f"(config — menos de {cfg.charging.risk_factor_min_days} días en InfluxDB)"
+            f"(config — menos de {cfg.charging.risk_factor_min_days_in_window} días en InfluxDB)"
         )
 
     # 4b. Factor de calibración del forecast Solcast
@@ -161,7 +161,7 @@ def _collect_decision_inputs(
     dynamic_bias = get_dynamic_solar_bias(
         cfg.influxdb,
         window_days=cfg.charging.solar_bias_window_days,
-        min_days=cfg.charging.solar_bias_min_days,
+        min_days=cfg.charging.solar_bias_min_days_in_window,
     )
     if dynamic_bias is not None:
         logger.info(
@@ -173,7 +173,7 @@ def _collect_decision_inputs(
     else:
         logger.info(
             f"Factor de calibración solar: {solar_bias} "
-            f"(config — menos de {cfg.charging.solar_bias_min_days} días en InfluxDB)"
+            f"(config — menos de {cfg.charging.solar_bias_min_days_in_window} días en InfluxDB)"
         )
 
     # 5. Construir input compartido por ambas decisiones
@@ -472,6 +472,15 @@ def main() -> None:
     import os, socket
     hostname = os.environ.get("HOST_HOSTNAME") or socket.gethostname()
     logger.info(f"solar-manager v{VERSION} arrancando en {hostname} (dry_run={cfg.system.dry_run})")
+
+    # Avisar de claves de config con nombre obsoleto (siguen funcionando vía alias)
+    from app.config import find_deprecated_config_keys
+    for dep in find_deprecated_config_keys():
+        logger.warning(
+            f"config.yaml usa la clave obsoleta '{dep['section']}.{dep['legacy_key']}' "
+            f"(={dep['value']}); renómbrala a '{dep['canonical_key']}'. Se sigue "
+            f"aceptando vía alias, pero conviene migrarla."
+        )
 
     if cfg.system.web_enabled:
         import threading

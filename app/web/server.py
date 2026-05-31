@@ -71,14 +71,14 @@ _EDITABLE_FIELDS: dict[str, dict[str, tuple[str, str | None]]] = {
         "min_soc_pct":                   ("float", "MIN_SOC_PCT"),
         "max_soc_pct":                   ("float", "MAX_SOC_PCT"),
         "safety_margin_kwh":             ("float", "SAFETY_MARGIN_KWH"),
-        "night_consumption_kwh":         ("float", "NIGHT_CONSUMPTION_KWH"),
-        "night_consumption_min_days":    ("int",   None),
-        "night_consumption_window_days": ("int",   None),
-        "risk_factor_min_days":          ("int",   None),
-        "risk_factor_window_days":       ("int",   None),
-        "solar_bias_factor":             ("float", "SOLAR_BIAS_FACTOR"),
-        "solar_bias_min_days":           ("int",   None),
-        "solar_bias_window_days":        ("int",   None),
+        "night_consumption_kwh":               ("float", "NIGHT_CONSUMPTION_KWH"),
+        "night_consumption_min_days_in_window": ("int",   None),
+        "night_consumption_window_days":       ("int",   None),
+        "risk_factor_min_days_in_window":      ("int",   None),
+        "risk_factor_window_days":             ("int",   None),
+        "solar_bias_factor":                   ("float", "SOLAR_BIAS_FACTOR"),
+        "solar_bias_min_days_in_window":       ("int",   None),
+        "solar_bias_window_days":              ("int",   None),
     },
     "system": {
         "log_level":   ("str",  "LOG_LEVEL"),
@@ -140,7 +140,7 @@ def _current_solar_bias(cfg: AppConfig) -> float:
         bias = get_dynamic_solar_bias(
             cfg.influxdb,
             window_days=cfg.charging.solar_bias_window_days,
-            min_days=cfg.charging.solar_bias_min_days,
+            min_days=cfg.charging.solar_bias_min_days_in_window,
         )
     except Exception:
         bias = None
@@ -425,17 +425,17 @@ def create_app(cfg: AppConfig) -> FastAPI:
             night = get_avg_night_consumption(
                 cfg.influxdb,
                 window_days=cfg.charging.night_consumption_window_days,
-                min_days=cfg.charging.night_consumption_min_days,
+                min_days=cfg.charging.night_consumption_min_days_in_window,
             )
             rf = get_dynamic_risk_factor(
                 cfg.influxdb,
                 window_days=cfg.charging.risk_factor_window_days,
-                min_days=cfg.charging.risk_factor_min_days,
+                min_days=cfg.charging.risk_factor_min_days_in_window,
             )
             bias = get_dynamic_solar_bias(
                 cfg.influxdb,
                 window_days=cfg.charging.solar_bias_window_days,
-                min_days=cfg.charging.solar_bias_min_days,
+                min_days=cfg.charging.solar_bias_min_days_in_window,
             )
 
             night_count = 0
@@ -489,19 +489,19 @@ def create_app(cfg: AppConfig) -> FastAPI:
             "night_consumption_kwh": night if night is not None else cfg.charging.night_consumption_kwh,
             "night_dynamic": night is not None,
             "night_config_kwh": cfg.charging.night_consumption_kwh,
-            "night_min_days": cfg.charging.night_consumption_min_days,
+            "night_min_days": cfg.charging.night_consumption_min_days_in_window,
             "night_window_days": cfg.charging.night_consumption_window_days,
             "night_valid_days": night_count,
             "risk_factor": rf if rf is not None else cfg.charging.risk_factor,
             "risk_dynamic": rf is not None,
             "risk_config": cfg.charging.risk_factor,
-            "risk_min_days": cfg.charging.risk_factor_min_days,
+            "risk_min_days": cfg.charging.risk_factor_min_days_in_window,
             "risk_window_days": cfg.charging.risk_factor_window_days,
             "risk_valid_days": rf_count,
             "solar_bias_factor": bias if bias is not None else cfg.charging.solar_bias_factor,
             "solar_bias_dynamic": bias is not None,
             "solar_bias_config": cfg.charging.solar_bias_factor,
-            "solar_bias_min_days": cfg.charging.solar_bias_min_days,
+            "solar_bias_min_days": cfg.charging.solar_bias_min_days_in_window,
             "solar_bias_window_days": cfg.charging.solar_bias_window_days,
             "solar_bias_valid_days": bias_count,
         }
@@ -704,6 +704,11 @@ def create_app(cfg: AppConfig) -> FastAPI:
             from app.config import _resolve_config_path
             from ruamel.yaml import YAML
 
+            from app.config import DEPRECATED_CONFIG_KEYS
+            # (sección, nombre_canónico) -> nombre_obsoleto, para leer el valor
+            # si el YAML aún tiene la clave con el nombre viejo.
+            canon_to_legacy = {(s, c): lg for (s, lg), c in DEPRECATED_CONFIG_KEYS.items()}
+
             path = _resolve_config_path(None)
             yaml = YAML(typ="safe")
             with open(path, "r", encoding="utf-8") as f:
@@ -711,6 +716,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
 
             values: dict[str, dict] = {}
             env_overrides: list[dict] = []
+            legacy_keys: list[dict] = []
             for section, fields in _EDITABLE_FIELDS.items():
                 if section == "email":
                     src = (data.get("system") or {}).get("email") or {}
@@ -718,7 +724,14 @@ def create_app(cfg: AppConfig) -> FastAPI:
                     src = data.get(section) or {}
                 values[section] = {}
                 for key, (_typ, env_var) in fields.items():
-                    values[section][key] = src.get(key)
+                    val = src.get(key)
+                    legacy = canon_to_legacy.get((section, key))
+                    if val is None and legacy and src.get(legacy) is not None:
+                        val = src.get(legacy)
+                        legacy_keys.append({
+                            "section": section, "key": key, "legacy_key": legacy,
+                        })
+                    values[section][key] = val
                     if env_var and os.environ.get(env_var) is not None:
                         env_overrides.append({
                             "section": section,
@@ -730,6 +743,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
                 "ok": True,
                 "values": values,
                 "env_overrides": env_overrides,
+                "legacy_keys": legacy_keys,
                 "path": str(path),
             }
         except Exception as e:
@@ -746,9 +760,11 @@ def create_app(cfg: AppConfig) -> FastAPI:
         Valida el resultado con el modelo Pydantic AppConfig antes de escribir.
         Los cambios surten efecto tras reiniciar el contenedor.
         """
-        from app.config import _resolve_config_path, AppConfig
+        from app.config import _resolve_config_path, AppConfig, DEPRECATED_CONFIG_KEYS
         from ruamel.yaml import YAML
         import json as _json
+
+        canon_to_legacy = {(s, c): lg for (s, lg), c in DEPRECATED_CONFIG_KEYS.items()}
 
         updates = (payload or {}).get("values") or {}
         if not isinstance(updates, dict) or not updates:
@@ -797,6 +813,11 @@ def create_app(cfg: AppConfig) -> FastAPI:
                     errors.append(f"{section}.{key}: {e}")
                     continue
                 target[key] = cast_val
+                # Migración: si el YAML aún tenía la clave con el nombre obsoleto,
+                # eliminarla al escribir la canónica (evita dejar las dos).
+                legacy = canon_to_legacy.get((section, key))
+                if legacy and legacy in target:
+                    del target[legacy]
                 applied += 1
 
         if errors:

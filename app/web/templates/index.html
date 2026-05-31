@@ -271,6 +271,15 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
   text-transform: uppercase; letter-spacing: .4px;
   margin-left: 6px; cursor: help; vertical-align: middle;
 }
+/* Clave con nombre obsoleto (aceptada vía alias): valor en rojo + "O" */
+.legacy-badge {
+  display: inline-block;
+  font-family: var(--mono); font-size: 9px; font-weight: 700;
+  padding: 1px 6px; border-radius: 3px;
+  background: rgba(248,81,73,.15); color: var(--red);
+  margin-left: 6px; cursor: help; vertical-align: middle;
+}
+input.legacy-value, select.legacy-value { color: var(--red); border-color: rgba(248,81,73,.45); }
 
 /* ── Run panel ───────────────────────────────────── */
 .run-panel {
@@ -1517,14 +1526,14 @@ const CONFIG_SCHEMA = [
   },
   {
     section: 'charging', title: 'Calibración dinámica',
-    note: 'Días mínimos y ventana deslizante para sustituir los valores fallback de arriba por los calculados desde InfluxDB.',
+    note: 'window_days = periodo que se promedia. min_days_in_window = días con dato que debe haber DENTRO de esa ventana para usar el valor dinámico (en vez del fallback de arriba). Debe cumplirse window_days ≥ min_days_in_window.',
     fields: [
-      { key: 'night_consumption_min_days',    label: 'Cons. nocturno · días mínimos',  type: 'number', min: 1, step: 1 },
-      { key: 'night_consumption_window_days', label: 'Cons. nocturno · ventana (días)',type: 'number', min: 7, step: 1 },
-      { key: 'risk_factor_min_days',          label: 'Risk factor · días mínimos',      type: 'number', min: 1, step: 1 },
-      { key: 'risk_factor_window_days',       label: 'Risk factor · ventana (días)',    type: 'number', min: 7, step: 1 },
-      { key: 'solar_bias_min_days',           label: 'Solar bias · días mínimos',       type: 'number', min: 1, step: 1 },
-      { key: 'solar_bias_window_days',        label: 'Solar bias · ventana (días)',     type: 'number', min: 7, step: 1 },
+      { key: 'night_consumption_window_days',       label: 'Cons. nocturno · ventana (días)',          type: 'number', min: 7, step: 1 },
+      { key: 'night_consumption_min_days_in_window', label: 'Cons. nocturno · días válidos mín. en ventana', type: 'number', min: 1, step: 1 },
+      { key: 'risk_factor_window_days',             label: 'Risk factor · ventana (días)',             type: 'number', min: 7, step: 1 },
+      { key: 'risk_factor_min_days_in_window',       label: 'Risk factor · días válidos mín. en ventana', type: 'number', min: 1, step: 1 },
+      { key: 'solar_bias_window_days',              label: 'Solar bias · ventana (días)',              type: 'number', min: 7, step: 1 },
+      { key: 'solar_bias_min_days_in_window',        label: 'Solar bias · días válidos mín. en ventana', type: 'number', min: 1, step: 1 },
     ],
   },
   {
@@ -1598,6 +1607,7 @@ const CONFIG_SCHEMA = [
 ];
 
 let _envOverrides = new Set();   // claves "section.key" sobreescritas por .env
+let _legacyKeys   = new Map();   // "section.key" -> nombre obsoleto en el YAML
 
 async function loadConfigForm() {
   const loading = document.getElementById('cfg-loading');
@@ -1612,6 +1622,7 @@ async function loadConfigForm() {
     const d = await r.json();
     if (!d.ok) throw new Error(d.error || 'Error al cargar /api/config');
     _envOverrides = new Set((d.env_overrides || []).map(o => `${o.section}.${o.key}`));
+    _legacyKeys   = new Map((d.legacy_keys || []).map(o => [`${o.section}.${o.key}`, o.legacy_key]));
     _renderConfigForm(d.values || {});
     loading.style.display = 'none';
     form.style.display    = 'block';
@@ -1639,21 +1650,27 @@ function _renderField(section, f, values) {
   const cur     = (values[section] || {})[f.key];
   const fieldId = `cfg-${section}-${f.key}`;
   const ov      = _envOverrides.has(`${section}.${f.key}`);
-  const badge   = ov
+  const legacy  = _legacyKeys.get(`${section}.${f.key}`);
+  const envBadge = ov
     ? `<span class="env-badge" title="Esta variable está definida en .env y sobreescribe el valor de config.yaml al arrancar. Guardar aquí modifica el YAML, pero seguirá ganando el valor de .env hasta que la quites del entorno.">.env override</span>`
     : '';
+  const legacyBadge = legacy
+    ? `<span class="legacy-badge" title="El YAML usa el nombre obsoleto '${escHtml(legacy)}'. Sigue funcionando vía alias, pero conviene renombrarlo a '${escHtml(f.key)}'. Al guardar se migra solo.">O</span>`
+    : '';
+  const badge = envBadge + legacyBadge;
+  const lc    = legacy ? ' class="legacy-value"' : '';
 
   let input;
   if (f.type === 'bool') {
     const yes = (cur === true || cur === 'true' || cur === 1);
-    input = `<select id="${fieldId}" data-type="bool">
+    input = `<select id="${fieldId}" data-type="bool"${lc}>
       <option value="true"${ yes ? ' selected' : ''}>Activado</option>
       <option value="false"${!yes ? ' selected' : ''}>Desactivado</option>
     </select>`;
   } else if (f.type === 'select') {
     const opts = (f.options || []).map(o =>
       `<option${cur === o ? ' selected' : ''}>${escHtml(o)}</option>`).join('');
-    input = `<select id="${fieldId}" data-type="str">${opts}</select>`;
+    input = `<select id="${fieldId}" data-type="str"${lc}>${opts}</select>`;
   } else if (f.type === 'number') {
     const parts = [`id="${fieldId}"`, 'type="number"', 'data-type="number"'];
     if (cur !== null && cur !== undefined) parts.push(`value="${cur}"`);
@@ -1661,12 +1678,13 @@ function _renderField(section, f, values) {
     if (f.max  !== undefined) parts.push(`max="${f.max}"`);
     if (f.step !== undefined) parts.push(`step="${f.step}"`);
     if (f.placeholder)        parts.push(`placeholder="${escHtml(f.placeholder)}"`);
+    if (legacy)               parts.push('class="legacy-value"');
     input = `<input ${parts.join(' ')}>`;
   } else {
     const val = (cur === null || cur === undefined) ? '' : String(cur);
     const dt  = f.nullable ? 'str_nullable' : 'str';
     const ph  = f.placeholder ? ` placeholder="${escHtml(f.placeholder)}"` : '';
-    input = `<input id="${fieldId}" type="text" data-type="${dt}" value="${escHtml(val)}"${ph}>`;
+    input = `<input id="${fieldId}" type="text" data-type="${dt}" value="${escHtml(val)}"${ph}${lc}>`;
   }
   return `<div class="field">
     <label for="${fieldId}">${escHtml(f.label)}${badge}</label>
