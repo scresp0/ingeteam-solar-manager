@@ -20,15 +20,31 @@ inverter:
   browser_timeout_seconds: 30
 
 installation:
-  battery_capacity_kwh: 22.0
+  battery_capacity_kwh: 22.55
   average_daily_consumption_kwh: 16.0
   peak_power_kwp: 5.5
 
 tariff:
   # Hora de ejecución del ciclo nocturno (HH:MM)
-  # Debe ser antes del inicio del horario valle para que la carga
-  # quede programada antes de que empiece
-  schedule_at: "23:45"
+  schedule_at: "23:55"
+
+  # Segunda ejecución en madrugada (HH:MM) para re-evaluar la decisión
+  # de carga teniendo en cuenta el consumo nocturno real entre
+  # schedule_at y esta hora. Si el SOC ha bajado más de lo previsto,
+  # la decisión puede cambiar (de "no cargar" a "cargar") con tiempo
+  # de sobra antes del fin del valle (08:00).
+  # Esta ejecución solo recalcula la decisión y reconfigura el inversor
+  # si difiere; no escribe ciclo_carga en InfluxDB ni lee stats.
+  # null o no definido = desactivado.
+  schedule_recheck_at: "03:00"
+
+  # Hora límite de "madrugada" (0-12).
+  # Si el programa se ejecuta ANTES de esta hora, actúa como si fuera
+  # la noche del día anterior (cubre retrasos del scheduler o reinicios
+  # accidentales en los primeros minutos del nuevo día).
+  # Debe ser <= hora de fin del periodo valle (normalmente 8).
+  night_cutoff_hour: 8
+
   weekend_days: [5, 6]
   holidays:
     - "2026-01-01"
@@ -54,11 +70,35 @@ tariff:
         - { start: "10:00", end: "14:00" }
         - { start: "18:00", end: "22:00" }
 
+
+# -----------------------------------------------------------------------------
+# Lógica de carga de baterías
+# -----------------------------------------------------------------------------
 charging:
   risk_factor: 0.7
   min_soc_pct: 35
   max_soc_pct: 100
   safety_margin_kwh: 1.0
+  # Consumo estimado en horario valle (00:00-08:00).
+  # Actúa como fallback mientras no haya suficientes días históricos en InfluxDB.
+  # Una vez acumulados night_consumption_min_days días, el sistema usa la media
+  # de los últimos night_consumption_window_days días calculada automáticamente.
+  night_consumption_kwh: 4
+  night_consumption_min_days: 15    # días mínimos para activar el valor dinámico
+  night_consumption_window_days: 10 # ventana deslizante para la media (días)
+  # Risk factor dinámico: calibrado desde histórico Solcast vs producción real.
+  # Mientras no haya suficientes días, se usa el risk_factor fijo definido arriba.
+  risk_factor_min_days: 14          # días mínimos de pares (previsión+real) para activarlo
+  risk_factor_window_days: 30       # ventana deslizante para el cálculo (días)
+  # Factor de calibración del forecast Solcast (solar_real / forecast_p50 medio).
+  # Compensa el sesgo sistemático del forecast para tu instalación concreta
+  # (orientación, sombras, suciedad, AC vs DC, etc.). 1.0 = sin corrección.
+  # Se calcula dinámicamente desde InfluxDB; el valor de aquí es fallback.
+  # Clamp aplicado a [0.5, 1.5] como defensa ante muestras pequeñas o anómalas.
+  solar_bias_factor: 1.0
+  solar_bias_min_days: 14
+  solar_bias_window_days: 30
+
 
 system:
   log_level: "INFO"

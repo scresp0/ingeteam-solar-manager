@@ -1,5 +1,8 @@
 # Configuración real (contiene secretos)
 .env
+config.yaml
+config.yaml.20260530
+config.yaml.20260531
 
 # Logs
 logs/
