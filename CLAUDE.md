@@ -191,6 +191,22 @@ hace la acción), no lo contrario. ⚠️ Hasta v1.50 el código asumía justo l
 
 `notifier.py` parsea estas líneas para renderizar la tabla "Configuración aplicada" (ANTES/DESPUÉS) en el email HTML.
 
+## Control dinámico de corriente de carga (v1.52)
+
+Ajusta la "Corriente Máxima de Carga" de la batería al **mínimo necesario** para reducir el calor del inversor y las baterías (verano), garantizando llegar al tope de carga a tiempo. Para una misma energía, **calor ∝ corriente**, así que cargar despacio (cuando sobra tiempo) minimiza el calentamiento.
+
+- **Job periódico** (`scheduler._run_charge_current_job` → `main.run_charge_current_controller`), cada `charge_current.interval_min` (default 15 min), 24h.
+- **Lectura por MODBUS** (`inverter.read_inverter_state`): SOC (30021), temp batería (30028), tensión (30018) y **el tope actual** (holding **40087**, address 86, amperios directos 1–66). Registro identificado por test diferencial (cambiar valor en web → reescanear). **MODBUS es solo lectura para este registro.**
+- **Escritura por Playwright** (`automation.set_charge_current`, sección **1.2 Parámetros Batería con BMS**, campo "Corriente Máxima de Carga (A)"), **solo cuando el objetivo difiere** del tope leído. **Verificación read-back por MODBUS** releyendo 40087 (más fiable que releer la web).
+- **Modos** (`main._compute_target_charge_current`):
+  - **VALLE** (00:00–08:00 y `charge_needed` del `inverter_schedule_state.json`): mín. corriente para cargar de red hasta `target_soc` en lo que queda de valle. Sin puerta de temperatura.
+  - **SOLAR** (08:00–`T_fin`): mín. corriente para llenar con solar hasta `max_soc_pct` antes de `T_fin`. **Si batería fría** (`temp < cold_threshold_c`, invierno) → `max_a` (66) para captar picos solares intermitentes. Si ya llena → `night_default_a`.
+  - **IDLE** (resto, o valle sin carga): `night_default_a` (66) para no estrangular nada.
+  - Fórmula: `I = E_pendiente_kWh·1000 / (V_batería · horas) · margin`, acotada `[floor_a, max_a]`. **OJO: la corriente es del lado batería DC (~50V), NO de la red AC (230V).** Auto-corrección: al recalcular cada 15 min sobre el SOC real y las horas restantes, si va lento (nubes / carga lenta) sube los amperios.
+  - `T_fin` = hora en que la producción real histórica acumula `productive_window_pct`% del total diario (`storage.get_production_window_end_hour` sobre `solar_media_hora`), fallback `productive_window_end_hour`.
+- **Concurrencia**: todas las funciones Playwright (`set_charge_schedule/set_discharge_schedule/set_charge_current/read_inverter_schedule`) van serializadas por `automation._WEB_LOCK` (decorador `@_serialize_web`) — el inversor admite una sola sesión web a la vez, así el controlador (15 min) y el ciclo nocturno no colisionan.
+- Parámetros en `config.yaml` sección `charge_current` (ver `config.example.yaml`).
+
 ## Interfaz web (`app/web/`)
 
 ### Endpoints FastAPI (`server.py`)

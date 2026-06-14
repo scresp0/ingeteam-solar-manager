@@ -85,6 +85,24 @@ def start_scheduler(cfg: AppConfig) -> None:
     )
     logger.info(f"Backfill de producción histórica programado a las 00:30 ({timezone})")
 
+    # Control de corriente máxima de carga: ajusta los amperios al mínimo necesario
+    # (menos calor) garantizando llegar al tope a tiempo (valle de red / ventana solar).
+    if cfg.charge_current.enabled:
+        from apscheduler.triggers.interval import IntervalTrigger
+        interval = cfg.charge_current.interval_min
+        scheduler.add_job(
+            func=_run_charge_current_job,
+            trigger=IntervalTrigger(minutes=interval, timezone=timezone),
+            args=[cfg],
+            id="charge_current",
+            name=f"Control corriente de carga (cada {interval} min)",
+            misfire_grace_time=120,
+            max_instances=1,
+            coalesce=True,
+            replace_existing=True,
+        )
+        logger.info(f"Control de corriente de carga programado cada {interval} min ({timezone})")
+
     # Ejecutar inmediatamente si se pide (útil para pruebas)
     if os.environ.get("RUN_ON_START", "").lower() in ("true", "1", "yes"):
         logger.info("RUN_ON_START activo — ejecutando ciclo ahora")
@@ -137,3 +155,12 @@ def _run_backfill_job(cfg: AppConfig) -> None:
         backfill_solar_history(cfg)
     except Exception as e:
         logger.exception(f"Scheduler: error inesperado en el backfill: {e}")
+
+
+def _run_charge_current_job(cfg: AppConfig) -> None:
+    """Control de corriente máxima de carga — llamado periódicamente por el scheduler."""
+    from app.main import run_charge_current_controller
+    try:
+        run_charge_current_controller(cfg)
+    except Exception as e:
+        logger.exception(f"Scheduler: error inesperado en el control de corriente de carga: {e}")

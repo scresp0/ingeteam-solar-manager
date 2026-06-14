@@ -168,6 +168,35 @@ class ChargingConfig(BaseModel):
         return self
 
 
+class ChargeCurrentConfig(BaseModel):
+    """Control dinámico de la corriente máxima de carga de batería (holding 40087).
+
+    Baja los amperios al mínimo necesario para reducir el calor del inversor y las
+    baterías, garantizando que la batería llegue al tope a tiempo: en el valle
+    nocturno (carga de red) o dentro de la ventana solar productiva del día. El
+    calor es ∝ corriente para una misma energía, así que cargar despacio (cuando
+    sobra tiempo) minimiza el calentamiento. Si la batería está fría (invierno)
+    se carga a tope para captar los picos solares intermitentes.
+    """
+    enabled: bool = True
+    interval_min: int = Field(default=15, ge=1)                      # frecuencia del controlador
+    cold_threshold_c: float = Field(default=26.0)                    # temp batería < umbral → max_a (captar picos)
+    productive_window_pct: int = Field(default=90, ge=10, le=100)    # % del total diario real que define T_fin
+    productive_window_end_hour: float = Field(default=17.0, ge=0.0, le=24.0)  # fallback si no hay histórico
+    floor_a: int = Field(default=15, ge=1, le=66)                    # corriente mínima (para que la carga termine)
+    max_a: int = Field(default=66, ge=1, le=66)                      # tope máximo (66 = máximo del inversor)
+    night_default_a: int = Field(default=66, ge=1, le=66)           # corriente en reposo / fuera de carga
+    margin: float = Field(default=1.2, ge=1.0, le=3.0)              # margen sobre el mínimo teórico
+
+    @model_validator(mode="after")
+    def floor_not_above_max(self):
+        if self.floor_a > self.max_a:
+            raise ValueError(
+                f"charge_current.floor_a ({self.floor_a}) no puede superar max_a ({self.max_a})"
+            )
+        return self
+
+
 class EmailConfig(BaseModel):
     enabled: bool = True
     smtp_host: str = ""
@@ -214,6 +243,7 @@ class AppConfig(BaseModel):
     installation: InstallationConfig
     tariff: TariffConfig
     charging: ChargingConfig
+    charge_current: ChargeCurrentConfig = ChargeCurrentConfig()
     system: SystemConfig
     influxdb: InfluxDBConfig = InfluxDBConfig()
 

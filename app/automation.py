@@ -31,16 +31,21 @@ Opciones del desplegable de tipo:
   2 = Entre semana (L-V)
   3 = Fin de semana (S-D)
 
-Diseño de bloqueo de descarga (6.3.2):
-  discharge_blocked=False → Prog 1 = Desactivado, Prog 2 = Desactivado
-  discharge_blocked=True  → Prog 1 = Entre semana (L-V), 00:01–07:59
-                            Prog 2 = Fin de semana (S-D), 00:01–23:59
-  L-V: solo bloquea el valle nocturno; a partir de las 08:00 la batería puede descargar.
-  S-D: bloquea todo el día porque el fin de semana la tarifa es valle las 24h.
+Diseño de bloqueo de descarga (6.3.2) — la franja Hora On→Off es cuando la
+descarga está PERMITIDA, no bloqueada (ver constantes DISC_*):
+  discharge_blocked=False → Prog 1 = Desactivado, Prog 2 = Desactivado (libre)
+  discharge_blocked=True  → Prog 1 = Entre semana (L-V), 08:00–23:59 (bloquea valle)
+                            Prog 2 = Fin de semana (S-D), 00:00–00:01 (bloquea 24h)
+
+Corriente máxima de carga (sección 1.2 Parámetros Batería con BMS):
+  campo "Corriente Máxima de Carga (A)" — input directo de amperios (1–66).
+  Solo escritura por aquí; la lectura/verificación se hace por MODBUS (holding 40087).
 """
 
+import functools
 import json
 import logging
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -50,6 +55,20 @@ from playwright.sync_api import sync_playwright, Page, TimeoutError as Playwrigh
 from app.config import InverterConfig
 
 logger = logging.getLogger(__name__)
+
+# El inversor admite UNA sola sesión web a la vez (igual que su MODBUS). Este lock
+# serializa todas las operaciones Playwright para que el controlador de corriente
+# (cada 15 min) y el ciclo nocturno no abran sesiones simultáneas y colisionen.
+_WEB_LOCK = threading.Lock()
+
+
+def _serialize_web(fn):
+    """Serializa el acceso a la web del inversor (una sesión Playwright a la vez)."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _WEB_LOCK:
+            return fn(*args, **kwargs)
+    return wrapper
 
 # ---------------------------------------------------------------------------
 # Estado persistente de la programación aplicada al inversor
@@ -133,6 +152,7 @@ class AutomationError(Exception):
     """Error durante la automatización de la interfaz web."""
 
 
+@_serialize_web
 def set_charge_schedule(
     cfg: InverterConfig,
     charge_needed: bool,
@@ -403,6 +423,7 @@ DISC_WEEKEND_ON_H,  DISC_WEEKEND_ON_M  = 0, 0
 DISC_WEEKEND_OFF_H, DISC_WEEKEND_OFF_M = 0, 1
 
 
+@_serialize_web
 def set_discharge_schedule(
     cfg: InverterConfig,
     discharge_blocked: bool,
@@ -626,9 +647,106 @@ def _read_discharge_state(page: Page) -> tuple[bool, bool]:
 
 
 # ---------------------------------------------------------------------------
+# Corriente máxima de carga (sección 1.2 Parámetros Batería con BMS)
+# ---------------------------------------------------------------------------
+
+LABEL_CHARGE_CURRENT_MAX = "Corriente Máxima de Carga"
+
+
+def _navigate_to_battery_params(page: Page) -> None:
+    """Navega a Configuración → Ajustes avanzados → 1.2 Parámetros Batería con BMS."""
+    logger.debug("Navegando a Configuración (1.2 Parámetros Batería con BMS)")
+    page.wait_for_selector("text=Configuración", timeout=15000)
+    page.locator("text=Configuración").first.click()
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(3000)
+
+    page.evaluate("""
+        () => {
+            const btns = Array.from(document.querySelectorAll('.inv-sett-top-cont button'));
+            const btn = btns.find(b => b.innerText.includes('Ajustes') || b.innerText.includes('Advanced'));
+            if (btn) btn.click();
+            else throw new Error('Botón Ajustes avanzados no encontrado');
+        }
+    """)
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(3000)
+
+    page.locator("text=Parámetros Batería con BMS").first.click()
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(1000)
+
+    page.locator("button.btn-success").click()   # Leer
+    page.wait_for_load_state("networkidle")
+    page.wait_for_timeout(2000)
+    logger.debug("En pantalla 1.2 Parámetros Batería con BMS")
+
+
+@_serialize_web
+def set_charge_current(cfg: InverterConfig, amps: int, dry_run: bool = False) -> None:
+    """
+    Escribe la corriente máxima de carga de batería (sección 1.2) en amperios (1–66).
+
+    Solo escribe; la verificación read-back la hace el caller por MODBUS (holding
+    40087), que es más fiable que releer la web.
+
+    Args:
+        cfg:     configuración del inversor
+        amps:    corriente máxima de carga (se acota a [1, 66])
+        dry_run: si True, navega y rellena pero NO pulsa Escribir
+    """
+    amps = max(1, min(66, int(round(amps))))
+    logger.info(f"{'[DRY RUN] ' if dry_run else ''}Configurando corriente máxima de carga: {amps} A")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-zygote",
+                "--single-process",
+            ],
+        )
+        context = browser.new_context(
+            ignore_https_errors=True,
+            locale="es-ES",
+            timezone_id="Europe/Madrid",
+        )
+        page = context.new_page()
+        page.set_default_timeout(cfg.browser_timeout_seconds * 1000)
+
+        try:
+            _login(page, cfg)
+            _navigate_to_battery_params(page)
+            _read_current_values(page)
+            _set_input_by_exact_label(page, LABEL_CHARGE_CURRENT_MAX, str(amps))
+
+            if dry_run:
+                logger.info("[DRY RUN] Corriente de carga rellenada — NO se pulsa Escribir")
+            else:
+                _click_write(page)
+                logger.info(f"Corriente máxima de carga escrita: {amps} A")
+
+        except PlaywrightTimeout as e:
+            raise AutomationError(f"Timeout en la interfaz web (1.2): {e}") from e
+        except AutomationError:
+            raise
+        except Exception as e:
+            raise AutomationError(f"Error inesperado configurando corriente de carga: {e}") from e
+        finally:
+            context.close()
+            browser.close()
+
+
+# ---------------------------------------------------------------------------
 # Lectura del estado real del inversor (sin escribir nada)
 # ---------------------------------------------------------------------------
 
+@_serialize_web
 def read_inverter_schedule(cfg: InverterConfig) -> Optional[ScheduleState]:
     """
     Lee el estado actual de 6.3.1 (carga) y 6.3.2 (descarga) del inversor vía web.
