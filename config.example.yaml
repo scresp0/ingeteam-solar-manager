@@ -126,18 +126,22 @@ charging:
 # Corriente máxima de carga (control dinámico para reducir calor)
 # -----------------------------------------------------------------------------
 # Ajusta la "Corriente Máxima de Carga" de la batería (1-66 A) al mínimo necesario
-# para llegar al tope a tiempo: en el valle nocturno (carga de red, 00:00-08:00) o
-# en la ventana solar diurna. Menos amperios = menos calor (calor ∝ corriente para
-# una misma energía). Lectura por MODBUS (holding 40087), escritura por web (1.2).
+# para reducir el calor (calor ∝ corriente para una misma energía):
+#  · SOLAR (08:00–fin de producción): si temp > hot_threshold_c Y la producción solar
+#    restante (forecast calibrado con risk factor + bias dinámicos) cubre lo que falta
+#    para llenar → corriente mínima; si no (templada o solar insuficiente) → max_a.
+#  · VALLE (carga de red 00:00–08:00): corriente mínima para llegar al SOC objetivo en
+#    lo que queda de valle.
+#  · Sin carga (idle / batería llena) → no toca la corriente.
+# Lectura por MODBUS (holding 40087), escritura por web (1.2).
 charge_current:
   enabled: true
   interval_min: 15              # cada cuánto recalcula y, si procede, reescribe
-  cold_threshold_c: 26.0        # temp batería por debajo → carga a max_a (captar picos solares)
-  productive_window_pct: 90     # % del total diario real que define el fin de ventana solar (T_fin)
-  productive_window_end_hour: 17.0  # fallback de T_fin si no hay histórico en InfluxDB
+  hot_threshold_c: 30.0         # temp batería > umbral → carga suave; si no → max_a (llenar seguro)
+  productive_window_pct: 90     # % del total diario real (fallback de fin de ventana si no hay forecast)
+  productive_window_end_hour: 17.0  # fallback de fin de producción si no hay forecast ni histórico
   floor_a: 15                   # corriente mínima (para que la carga termine a tiempo)
   max_a: 66                     # tope máximo (66 = máximo del inversor)
-  night_default_a: 66           # corriente en reposo / fuera de carga
   margin: 1.2                   # margen sobre el mínimo teórico
 
 # -----------------------------------------------------------------------------

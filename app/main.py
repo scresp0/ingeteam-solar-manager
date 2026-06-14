@@ -24,7 +24,7 @@ from pathlib import Path
 
 from app.version import VERSION
 from app.config import load_config, AppConfig
-from app.solcast import get_two_day_forecast, get_day1_intervals, SolcastError
+from app.solcast import get_two_day_forecast, get_day1_intervals, get_today_intervals, SolcastError
 from app.inverter import read_inverter_state, InverterError, InverterState
 from app.decision import (
     DecisionInput, decide_charge, decide_discharge,
@@ -470,11 +470,10 @@ _VALLE_END_HOUR   = 8.0
 
 
 def _productive_window_end(cfg: AppConfig) -> float:
-    """Hora local (float) hasta la que se espera producción solar relevante (T_fin).
+    """Fallback de la hora local de fin de producción solar (cuando no hay forecast).
 
-    Se calcula del perfil real histórico (solar_media_hora): la hora en que la
-    producción media acumula `productive_window_pct`% del total diario. Captura el
-    sesgo de la instalación (más por la mañana). Fallback al valor de config.
+    Del perfil real histórico (solar_media_hora): la hora en que la producción media
+    acumula `productive_window_pct`% del total diario. Fallback al valor de config.
     """
     try:
         h = get_production_window_end_hour(
@@ -487,16 +486,78 @@ def _productive_window_end(cfg: AppConfig) -> float:
     return h if h is not None else cfg.charge_current.productive_window_end_hour
 
 
+def _remaining_solar_forecast(cfg: AppConfig, now) -> tuple[float | None, float]:
+    """Producción solar que queda HOY (calibrada con risk factor + bias dinámicos) y
+    la hora local de fin de producción.
+
+    Devuelve (kWh_restantes, hora_fin):
+    - forecast OK con producción pendiente → (suma_calibrada, hora_última_franja)
+    - forecast OK sin producción pendiente → (0.0, 0.0)  → fuerza IDLE
+    - forecast no disponible               → (None, fallback_histórico)  → SOLAR usará máx
+
+    Calibración por franja (igual que decide_charge): (p10·rf + p50·(1−rf))·bias.
+    El rf inclina hacia p10 (pesimista) = margen de seguridad ante menos producción.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    logger = logging.getLogger(__name__)
+
+    try:
+        intervals = get_today_intervals(cfg.solcast, cfg.system.timezone)
+    except SolcastError as e:
+        logger.warning(f"Controlador corriente: forecast de hoy no disponible — {e}")
+        return None, _productive_window_end(cfg)
+
+    try:
+        rf = get_dynamic_risk_factor(
+            cfg.influxdb, cfg.charging.risk_factor_window_days,
+            cfg.charging.risk_factor_min_days_in_window)
+    except StorageError:
+        rf = None
+    rf = cfg.charging.risk_factor if rf is None else rf
+    try:
+        bias = get_dynamic_solar_bias(
+            cfg.influxdb, cfg.charging.solar_bias_window_days,
+            cfg.charging.solar_bias_min_days_in_window)
+    except StorageError:
+        bias = None
+    bias = cfg.charging.solar_bias_factor if bias is None else bias
+
+    tz = ZoneInfo(cfg.system.timezone)
+    remaining = 0.0
+    end_hour = None
+    for it in intervals:
+        try:
+            end_str = it["period_end"].rstrip("Z").split(".")[0] + "+00:00"
+            end_local = datetime.fromisoformat(end_str).astimezone(tz)
+        except (KeyError, ValueError):
+            continue
+        if end_local <= now:
+            continue
+        eff = (it.get("pv_estimate10", 0.0) * rf
+               + it.get("pv_estimate", 0.0) * (1.0 - rf)) * bias * 0.5   # kWh de la franja
+        if eff > 0.02:
+            remaining += eff
+            end_hour = end_local.hour + end_local.minute / 60.0
+
+    if end_hour is None:
+        return 0.0, 0.0   # forecast OK pero ya no queda producción → IDLE
+    return round(remaining, 2), end_hour
+
+
 def _compute_target_charge_current(
     cfg: AppConfig, state: InverterState, hour: float,
-    schedule_state, t_fin: float,
+    schedule_state, current: int,
+    remaining_solar_kwh: float | None, solar_end_hour: float,
 ) -> tuple[int, str]:
-    """Devuelve (amperios_objetivo, modo) según valle/solar/idle.
+    """Devuelve (amperios_objetivo, modo).
 
-    Mínima corriente que carga la energía pendiente en el tiempo disponible:
-        I = E_pendiente_kWh · 1000 / (V_batería · horas) · margen
-    acotada a [floor_a, max_a]. De noche (valle) sin puerta de temperatura; de día
-    (solar) si la batería está fría → max_a para captar picos intermitentes.
+    - VALLE (00:00–08:00 con carga de red): corriente mínima para llegar al target
+      en lo que queda de valle (sin temperatura — de noche no hay calor).
+    - SOLAR (08:00–fin de producción): si temp > hot_threshold Y la producción solar
+      restante calibrada cubre la energía pendiente → corriente mínima para llenar con
+      esa solar; si no (templada o solar insuficiente) → máx (66) para llenar seguro.
+    - Sin carga (idle / valle sin carga / batería llena) → deja la corriente como está.
     """
     cc = cfg.charge_current
     soc = state.soc_pct
@@ -515,20 +576,25 @@ def _compute_target_charge_current(
             target_soc = schedule_state.target_soc_pct or max_soc
             energy = max(0.0, (target_soc - soc) / 100.0 * cap)
             if energy <= 0:
-                return cc.night_default_a, "VALLE(objetivo alcanzado)"
+                return current, "VALLE (objetivo alcanzado — sin cambios)"
             return amps_for(energy, _VALLE_END_HOUR - hour), "VALLE"
-        return cc.night_default_a, "IDLE(valle sin carga)"
+        return current, "IDLE (valle sin carga — sin cambios)"
 
-    # SOLAR: ventana diurna productiva 08:00–T_fin
-    if _VALLE_END_HOUR <= hour < t_fin:
-        if soc >= max_soc:
-            return cc.night_default_a, "SOLAR(batería llena)"
-        if state.battery_temp_c < cc.cold_threshold_c:
-            return cc.max_a, "SOLAR(fría→max)"
+    # SOLAR: ventana diurna productiva 08:00 – fin de producción del forecast
+    if _VALLE_END_HOUR <= hour < solar_end_hour:
         energy = (max_soc - soc) / 100.0 * cap
-        return amps_for(energy, t_fin - hour), "SOLAR"
+        if energy <= 0:
+            return current, "SOLAR (batería llena — sin cambios)"
+        if state.battery_temp_c <= cc.hot_threshold_c:
+            return cc.max_a, f"SOLAR (temp {state.battery_temp_c}≤{cc.hot_threshold_c}ºC → máx)"
+        if remaining_solar_kwh is None:
+            return cc.max_a, "SOLAR (forecast no disponible → máx)"
+        if remaining_solar_kwh < energy:
+            return cc.max_a, (f"SOLAR (solar restante {remaining_solar_kwh:.1f} < "
+                              f"{energy:.1f} kWh → máx)")
+        return amps_for(energy, solar_end_hour - hour), "SOLAR (calor + solar suficiente → mín)"
 
-    return cc.night_default_a, "IDLE"
+    return current, "IDLE (sin carga — sin cambios)"
 
 
 def run_charge_current_controller(cfg: AppConfig, simulate: bool = False) -> None:
@@ -563,15 +629,18 @@ def run_charge_current_controller(cfg: AppConfig, simulate: bool = False) -> Non
     from zoneinfo import ZoneInfo
     now = datetime.now(ZoneInfo(cfg.system.timezone))
     hour = now.hour + now.minute / 60.0
-
-    t_fin = _productive_window_end(cfg)
-    schedule_state = _load_schedule_state()
-    target, mode = _compute_target_charge_current(cfg, state, hour, schedule_state, t_fin)
     current = int(round(state.charge_current_max_a))
 
+    remaining_solar, solar_end = _remaining_solar_forecast(cfg, now)
+    schedule_state = _load_schedule_state()
+    target, mode = _compute_target_charge_current(
+        cfg, state, hour, schedule_state, current, remaining_solar, solar_end)
+
+    solar_txt = "?" if remaining_solar is None else f"{remaining_solar:.1f}"
     msg = (
         f"[CORRIENTE] modo={mode} · SOC {state.soc_pct}% · temp {state.battery_temp_c}ºC · "
-        f"V {state.battery_voltage_v} · T_fin {t_fin:.1f}h · actual {current}A · objetivo {target}A"
+        f"V {state.battery_voltage_v} · solar_rest {solar_txt}kWh · fin_solar {solar_end:.1f}h · "
+        f"actual {current}A · objetivo {target}A"
     )
 
     # Simulación: solo informa, no toca el inversor.

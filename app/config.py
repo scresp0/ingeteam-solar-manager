@@ -180,12 +180,11 @@ class ChargeCurrentConfig(BaseModel):
     """
     enabled: bool = True
     interval_min: int = Field(default=15, ge=1)                      # frecuencia del controlador
-    cold_threshold_c: float = Field(default=26.0)                    # temp batería < umbral → max_a (captar picos)
-    productive_window_pct: int = Field(default=90, ge=10, le=100)    # % del total diario real que define T_fin
-    productive_window_end_hour: float = Field(default=17.0, ge=0.0, le=24.0)  # fallback si no hay histórico
+    hot_threshold_c: float = Field(default=30.0)                     # temp batería > umbral → carga suave; si no → max_a
+    productive_window_pct: int = Field(default=90, ge=10, le=100)    # % del total diario real (fallback de fin de ventana)
+    productive_window_end_hour: float = Field(default=17.0, ge=0.0, le=24.0)  # fallback si no hay forecast ni histórico
     floor_a: int = Field(default=15, ge=1, le=66)                    # corriente mínima (para que la carga termine)
     max_a: int = Field(default=66, ge=1, le=66)                      # tope máximo (66 = máximo del inversor)
-    night_default_a: int = Field(default=66, ge=1, le=66)           # corriente en reposo / fuera de carga
     margin: float = Field(default=1.2, ge=1.0, le=3.0)              # margen sobre el mínimo teórico
 
     @model_validator(mode="after")
