@@ -34,14 +34,14 @@ from app.decision import (
 )
 from app.automation import (
     set_charge_schedule, set_discharge_schedule, AutomationError,
-    read_inverter_schedule, ScheduleState,
+    read_inverter_schedule, ScheduleState, set_charge_current, _load_schedule_state,
 )
 from app.notifier import CycleEmailNotifier
 from app.logger_reader import get_yesterday_stats, get_daily_stats, LoggerReaderError
 from app.storage import (
     write_cycle, write_daily_stats, write_half_hour_solar, write_half_hour_forecast,
     get_avg_night_consumption, get_dynamic_risk_factor, get_dynamic_solar_bias,
-    get_last_real_solar_date, StorageError,
+    get_last_real_solar_date, get_production_window_end_hour, StorageError,
 )
 
 # Máximo de días que el backfill rellena de una vez: cubre la vista "mes" del
@@ -458,6 +458,143 @@ def backfill_solar_history(cfg: AppConfig) -> None:
             logger.warning(f"Backfill solar: error inesperado en {day}: {e}")
 
     logger.info(f"Backfill solar: {filled}/{len(missing)} día(s) rellenados")
+
+
+# ---------------------------------------------------------------------------
+# Controlador de corriente máxima de carga (job diurno+nocturno periódico)
+# ---------------------------------------------------------------------------
+
+# Ventana del valle nocturno (carga de red), coincide con la programación 6.3.1.
+_VALLE_START_HOUR = 0.0
+_VALLE_END_HOUR   = 8.0
+
+
+def _productive_window_end(cfg: AppConfig) -> float:
+    """Hora local (float) hasta la que se espera producción solar relevante (T_fin).
+
+    Se calcula del perfil real histórico (solar_media_hora): la hora en que la
+    producción media acumula `productive_window_pct`% del total diario. Captura el
+    sesgo de la instalación (más por la mañana). Fallback al valor de config.
+    """
+    try:
+        h = get_production_window_end_hour(
+            cfg.influxdb,
+            pct=cfg.charge_current.productive_window_pct,
+            window_days=cfg.charging.solar_bias_window_days,
+        )
+    except StorageError:
+        h = None
+    return h if h is not None else cfg.charge_current.productive_window_end_hour
+
+
+def _compute_target_charge_current(
+    cfg: AppConfig, state: InverterState, hour: float,
+    schedule_state, t_fin: float,
+) -> tuple[int, str]:
+    """Devuelve (amperios_objetivo, modo) según valle/solar/idle.
+
+    Mínima corriente que carga la energía pendiente en el tiempo disponible:
+        I = E_pendiente_kWh · 1000 / (V_batería · horas) · margen
+    acotada a [floor_a, max_a]. De noche (valle) sin puerta de temperatura; de día
+    (solar) si la batería está fría → max_a para captar picos intermitentes.
+    """
+    cc = cfg.charge_current
+    soc = state.soc_pct
+    v = state.battery_voltage_v if state.battery_voltage_v and state.battery_voltage_v > 30 else 50.0
+    cap = cfg.installation.battery_capacity_kwh
+    max_soc = cfg.charging.max_soc_pct
+
+    def amps_for(energy_kwh: float, hours: float) -> int:
+        hours = max(0.25, hours)
+        i = (energy_kwh * 1000.0) / (v * hours) * cc.margin
+        return max(cc.floor_a, min(cc.max_a, int(round(i))))
+
+    # VALLE: carga de red 00:00–08:00
+    if _VALLE_START_HOUR <= hour < _VALLE_END_HOUR:
+        if schedule_state is not None and schedule_state.charge_needed:
+            target_soc = schedule_state.target_soc_pct or max_soc
+            energy = max(0.0, (target_soc - soc) / 100.0 * cap)
+            if energy <= 0:
+                return cc.night_default_a, "VALLE(objetivo alcanzado)"
+            return amps_for(energy, _VALLE_END_HOUR - hour), "VALLE"
+        return cc.night_default_a, "IDLE(valle sin carga)"
+
+    # SOLAR: ventana diurna productiva 08:00–T_fin
+    if _VALLE_END_HOUR <= hour < t_fin:
+        if soc >= max_soc:
+            return cc.night_default_a, "SOLAR(batería llena)"
+        if state.battery_temp_c < cc.cold_threshold_c:
+            return cc.max_a, "SOLAR(fría→max)"
+        energy = (max_soc - soc) / 100.0 * cap
+        return amps_for(energy, t_fin - hour), "SOLAR"
+
+    return cc.night_default_a, "IDLE"
+
+
+def run_charge_current_controller(cfg: AppConfig) -> None:
+    """Ajusta la corriente máxima de carga (holding 40087) al mínimo necesario.
+
+    Lee SOC/temp/V/tope por MODBUS, calcula el objetivo (valle/solar/idle) y, solo
+    si difiere del tope actual, lo escribe por Playwright (1.2) y verifica el
+    resultado releyendo 40087 por MODBUS.
+    """
+    logger = logging.getLogger(__name__)
+    if not cfg.charge_current.enabled:
+        return
+
+    try:
+        state = read_inverter_state(cfg.inverter)
+    except InverterError as e:
+        logger.warning(f"Controlador corriente de carga: no se pudo leer MODBUS — {e}")
+        return
+
+    # 40087 debe leer 1..66; un 0 significa que no se pudo leer → no escribir a ciegas
+    if state.charge_current_max_a < 1:
+        logger.warning(
+            "Controlador corriente de carga: tope actual (40087) ilegible — se omite este tick"
+        )
+        return
+
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    now = datetime.now(ZoneInfo(cfg.system.timezone))
+    hour = now.hour + now.minute / 60.0
+
+    t_fin = _productive_window_end(cfg)
+    schedule_state = _load_schedule_state()
+    target, mode = _compute_target_charge_current(cfg, state, hour, schedule_state, t_fin)
+    current = int(round(state.charge_current_max_a))
+
+    logger.info(
+        f"[CORRIENTE] modo={mode} · SOC {state.soc_pct}% · temp {state.battery_temp_c}ºC · "
+        f"V {state.battery_voltage_v} · T_fin {t_fin:.1f}h · actual {current}A · objetivo {target}A"
+    )
+
+    if current == target:
+        logger.debug("Corriente de carga ya correcta — no se reconfigura")
+        return
+
+    try:
+        set_charge_current(cfg.inverter, target, dry_run=cfg.system.dry_run)
+    except AutomationError as e:
+        logger.error(f"No se pudo escribir la corriente de carga: {e}")
+        return
+
+    if cfg.system.dry_run:
+        return
+
+    # Verificación read-back por MODBUS (más fiable que releer la web)
+    try:
+        verify = read_inverter_state(cfg.inverter)
+        if int(round(verify.charge_current_max_a)) == target:
+            logger.info(f"[CORRIENTE] verificada: {target}A aplicada")
+        else:
+            logger.error(
+                f"[CORRIENTE] verificación FALLIDA: objetivo {target}A, "
+                f"inversor quedó {verify.charge_current_max_a}A"
+            )
+    except InverterError as e:
+        logger.warning(f"No se pudo verificar la corriente de carga por MODBUS: {e}")
 
 
 def main() -> None:

@@ -131,6 +131,75 @@ def write_daily_stats(cfg: InfluxDBConfig, stats: DailyStats) -> None:
     )
 
 
+def get_production_window_end_hour(
+    cfg: InfluxDBConfig,
+    pct: int = 90,
+    window_days: int = 30,
+    min_days: int = 3,
+) -> float | None:
+    """
+    Hora local (float, p.ej. 16.5) en la que la producción solar real media acumula
+    `pct`% del total diario, a partir de `solar_media_hora` (campo real_kwh) de los
+    últimos `window_days` días. Captura el perfil de la instalación (más producción
+    por la mañana → T_fin más temprano).
+
+    Devuelve None si InfluxDB está desactivado, hay menos de `min_days` días con
+    datos, o la consulta falla. El factor de promediado se cancela en el ratio, así
+    que basta sumar por franja horaria sobre todos los días.
+    """
+    if not cfg.enabled:
+        return None
+
+    query = f"""
+from(bucket: "{cfg.bucket}")
+  |> range(start: -{window_days}d)
+  |> filter(fn: (r) => r._measurement == "solar_media_hora" and r._field == "real_kwh")
+"""
+    try:
+        from collections import defaultdict
+        from influxdb_client import InfluxDBClient
+        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
+            tables = client.query_api().query(query, org=cfg.org)
+
+        slot_sum: dict[int, float] = defaultdict(float)
+        dates: set = set()
+        for table in tables:
+            for rec in table.records:
+                t = rec.get_time()   # "hora local etiquetada UTC" → t.hour es hora local
+                slot = t.hour * 2 + (1 if t.minute >= 30 else 0)
+                slot_sum[slot] += rec.get_value() or 0.0
+                dates.add(t.date())
+
+        if len(dates) < min_days:
+            logger.debug(
+                f"Ventana productiva: solo {len(dates)} días (<{min_days}) — usando fallback"
+            )
+            return None
+
+        total = sum(slot_sum.values())
+        if total <= 0:
+            return None
+
+        threshold = pct / 100.0 * total
+        cum = 0.0
+        for slot in sorted(slot_sum):
+            cum += slot_sum[slot]
+            if cum >= threshold:
+                end_hour = (slot * 30 + 30) / 60.0   # fin de la franja que cruza el umbral
+                logger.debug(
+                    f"Ventana productiva: T_fin={end_hour:.2f}h "
+                    f"({pct}% del total, {len(dates)} días)"
+                )
+                return round(min(end_hour, 24.0), 2)
+        return 24.0
+
+    except ImportError:
+        raise StorageError("influxdb-client no está instalado.")
+    except Exception as e:
+        logger.warning(f"No se pudo calcular la ventana productiva en InfluxDB: {e}")
+        return None
+
+
 def get_avg_night_consumption(
     cfg: InfluxDBConfig,
     window_days: int = 30,

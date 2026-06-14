@@ -123,6 +123,24 @@ charging:
   solar_bias_min_days_in_window: 14
 
 # -----------------------------------------------------------------------------
+# Corriente máxima de carga (control dinámico para reducir calor)
+# -----------------------------------------------------------------------------
+# Ajusta la "Corriente Máxima de Carga" de la batería (1-66 A) al mínimo necesario
+# para llegar al tope a tiempo: en el valle nocturno (carga de red, 00:00-08:00) o
+# en la ventana solar diurna. Menos amperios = menos calor (calor ∝ corriente para
+# una misma energía). Lectura por MODBUS (holding 40087), escritura por web (1.2).
+charge_current:
+  enabled: true
+  interval_min: 15              # cada cuánto recalcula y, si procede, reescribe
+  cold_threshold_c: 26.0        # temp batería por debajo → carga a max_a (captar picos solares)
+  productive_window_pct: 90     # % del total diario real que define el fin de ventana solar (T_fin)
+  productive_window_end_hour: 17.0  # fallback de T_fin si no hay histórico en InfluxDB
+  floor_a: 15                   # corriente mínima (para que la carga termine a tiempo)
+  max_a: 66                     # tope máximo (66 = máximo del inversor)
+  night_default_a: 66           # corriente en reposo / fuera de carga
+  margin: 1.2                   # margen sobre el mínimo teórico
+
+# -----------------------------------------------------------------------------
 # Sistema
 # -----------------------------------------------------------------------------
 system:

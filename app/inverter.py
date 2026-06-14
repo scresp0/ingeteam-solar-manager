@@ -72,6 +72,7 @@ class InverterState:
     inverter_status: str       # Descripción del estado del inversor
     battery_status: str        # Descripción del estado de la batería
     min_soc_pct: float = 0.0   # SOC mínimo configurado en el inversor (holding reg 40126)
+    charge_current_max_a: float = 0.0  # Corriente máxima de carga configurada (holding reg 40087) [A]
 
 
 # ---------------------------------------------------------------------------
@@ -148,6 +149,18 @@ def read_inverter_state(cfg: InverterConfig) -> InverterState:
         except Exception as e:
             logger.warning(f"No se pudo leer SOC mínimo del inversor: {e}")
 
+        # Corriente máxima de carga configurada (holding 40087 → address 86) [A]
+        # Solo lectura por MODBUS (la escritura es por web/Playwright).
+        charge_current_max = 0.0
+        try:
+            cc = client.read_holding_registers(address=86, count=1, slave=slave)
+            if not cc.isError():
+                charge_current_max = float(cc.registers[0])
+            else:
+                logger.debug(f"Error leyendo holding register 40087: {cc}")
+        except Exception as e:
+            logger.debug(f"No se pudo leer corriente máxima de carga (40087): {e}")
+
         state = InverterState(
             soc_pct=float(soc),
             soh_pct=float(soh),
@@ -157,6 +170,7 @@ def read_inverter_state(cfg: InverterConfig) -> InverterState:
             inverter_status=INVERTER_STATUS.get(inverter_status_code, f"Unknown ({inverter_status_code})"),
             battery_status=BATTERY_STATUS.get(battery_status_code, f"Unknown ({battery_status_code})"),
             min_soc_pct=min_soc,
+            charge_current_max_a=charge_current_max,
         )
 
         logger.info(
