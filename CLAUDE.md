@@ -227,7 +227,7 @@ Ajusta la "Corriente Máxima de Carga" de la batería al **mínimo necesario** p
 | `GET /api/stream/{job_id}` | SSE stream de logs de un job |
 
 ### Dashboard — panel de métricas
-7 tiles: SOC batería · Potencia batería · **Producción solar** · **Consumo casa** · **Red** · Tensión · Temperatura.
+8 tiles: SOC batería · Potencia batería · **Producción solar** · **Consumo casa** · **Red** · Tensión · Temperatura · **Corr. carga máx.** (corriente máxima de carga leída de MODBUS 40087, `m-chgcur`).
 
 `Consumo casa` muestra `PacGrid` (W) del último registro del datalogger. `Red` muestra `|PacMeter|` (W) con label "Exportando a red" (verde, PacMeter < -50) / "Importando de red" (amber, PacMeter > 50) / "Sin flujo de red". Ambos se actualizan cada 60s junto con la producción solar.
 
