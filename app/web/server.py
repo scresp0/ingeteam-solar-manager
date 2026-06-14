@@ -330,6 +330,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
             "config":     "app.test_config",
             "automation": "app.test_automation",
             "main":       "app.test_main",
+            "charge_current": "app.test_charge_current",
         }
         if test_name not in allowed:
             return JSONResponse(status_code=400,

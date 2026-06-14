@@ -565,14 +565,17 @@ def run_charge_current_controller(cfg: AppConfig) -> None:
     target, mode = _compute_target_charge_current(cfg, state, hour, schedule_state, t_fin)
     current = int(round(state.charge_current_max_a))
 
-    logger.info(
+    msg = (
         f"[CORRIENTE] modo={mode} · SOC {state.soc_pct}% · temp {state.battery_temp_c}ºC · "
         f"V {state.battery_voltage_v} · T_fin {t_fin:.1f}h · actual {current}A · objetivo {target}A"
     )
 
+    # Sin cambios → DEBUG (cada 15 min sería ruido en INFO); solo INFO al reescribir.
     if current == target:
-        logger.debug("Corriente de carga ya correcta — no se reconfigura")
+        logger.debug(msg + " — sin cambios")
         return
+
+    logger.info(msg)
 
     try:
         set_charge_current(cfg.inverter, target, dry_run=cfg.system.dry_run)
