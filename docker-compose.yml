@@ -11,7 +11,8 @@ services:
     volumes:
       # rw (no :ro) — la pestaña Configuración de la web edita este fichero
       - ./config.yaml:/app/config.yaml
-      - solar-manager-logs:/app/logs
+      - ./logs/:/app/logs
+#      - solar-manager-logs:/app/logs
 
     env_file:
       - .env

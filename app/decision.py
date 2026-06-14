@@ -402,15 +402,3 @@ def discharge_oneliner(
         f"déficit día2 {result.deficit_day2_kwh} kWh · "
         f"energía fin día1 {result.energy_end_day1_kwh} kWh"
     )
-
-
-# ---------------------------------------------------------------------------
-# Compatibilidad con código anterior
-# ---------------------------------------------------------------------------
-
-def calculate_charge_target(inp: DecisionInput, dry_run: bool = False) -> ChargeDecision:
-    return decide_charge(inp, dry_run)
-
-
-def decision_summary(inp: DecisionInput, result: ChargeDecision) -> str:
-    return charge_summary(inp, result)

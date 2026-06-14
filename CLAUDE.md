@@ -1,5 +1,21 @@
 # solar-manager — contexto para Claude Code
 
+Reglas generales:
+- piensa antes de codificar
+- expón tus suposiciones. pregunta cuando no estés seguro. nunca adivines.
+
+- simplicidad primero
+escribe el código mínimo que resuelva el problema.
+sin abstracciones que nadie pidió.
+
+- cambios quirúrgicos
+no toques código no relacionado con la solicitud.
+cada línea cambiada debe rastrearse hasta lo que se pidió.
+
+- ejecución orientada a metas
+convierte instrucciones vagas en criterios de éxito verificables
+antes de escribir una sola línea.
+
 ## Objetivo del proyecto
 Sistema automatizado de gestión de carga de baterías fotovoltaicas domésticas.
 Cada noche decide si cargar las baterías desde la red (tarifa valle 00:00–08:00)

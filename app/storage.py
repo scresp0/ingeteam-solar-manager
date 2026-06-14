@@ -247,6 +247,60 @@ from(bucket: "{cfg.bucket}")
         return None
 
 
+def _forecast_real_pairs(cfg: InfluxDBConfig, fetch_days: int) -> list[tuple[float, float, float]]:
+    """
+    Cruza el forecast histórico (ciclo_carga) con la producción solar real
+    (stats_diarias) usando el JOIN forecast_date = ciclo_UTC.date() + 1 día.
+
+    Devuelve una lista de tuplas (p10, p50, solar_real) por cada día con ambos
+    datos. Propaga ImportError/excepciones de InfluxDB para que el caller las
+    maneje (devolviendo fallback).
+    """
+    from datetime import timedelta
+    from influxdb_client import InfluxDBClient
+
+    q_ciclo = f"""
+from(bucket: "{cfg.bucket}")
+  |> range(start: -{fetch_days}d)
+  |> filter(fn: (r) => r._measurement == "ciclo_carga" and
+     (r._field == "forecast_p10_kwh" or r._field == "forecast_p50_kwh"))
+  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
+"""
+
+    q_stats = f"""
+from(bucket: "{cfg.bucket}")
+  |> range(start: -{fetch_days}d)
+  |> filter(fn: (r) => r._measurement == "stats_diarias" and r._field == "solar_kwh")
+  |> filter(fn: (r) => r._value > 0.5)
+"""
+
+    with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
+        api = client.query_api()
+        ciclo_tables = api.query(q_ciclo, org=cfg.org)
+        stats_tables = api.query(q_stats, org=cfg.org)
+
+    # date -> solar_kwh (timestamp de stats_diarias = medianoche UTC del día)
+    solar_by_date: dict = {}
+    for table in stats_tables:
+        for rec in table.records:
+            solar_by_date[rec.get_time().date()] = rec.get_value()
+
+    pairs: list[tuple[float, float, float]] = []
+    for table in ciclo_tables:
+        for rec in table.records:
+            p10 = rec.values.get("forecast_p10_kwh")
+            p50 = rec.values.get("forecast_p50_kwh")
+            if p10 is None or p50 is None:
+                continue
+            # ciclo corre ~22-23h UTC → forecast es para el día siguiente UTC
+            forecast_date = rec.get_time().date() + timedelta(days=1)
+            solar_real = solar_by_date.get(forecast_date)
+            if solar_real is None:
+                continue
+            pairs.append((p10, p50, solar_real))
+    return pairs
+
+
 def get_dynamic_risk_factor(
     cfg: InfluxDBConfig,
     window_days: int = 30,
@@ -266,52 +320,15 @@ def get_dynamic_risk_factor(
     if not cfg.enabled:
         return None
 
-    from datetime import date as date_type, timedelta
-
-    fetch_days = window_days + 2  # margen para desfase UTC+1/+2
-
-    q_ciclo = f"""
-from(bucket: "{cfg.bucket}")
-  |> range(start: -{fetch_days}d)
-  |> filter(fn: (r) => r._measurement == "ciclo_carga" and
-     (r._field == "forecast_p10_kwh" or r._field == "forecast_p50_kwh"))
-  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
-"""
-
-    q_stats = f"""
-from(bucket: "{cfg.bucket}")
-  |> range(start: -{fetch_days}d)
-  |> filter(fn: (r) => r._measurement == "stats_diarias" and r._field == "solar_kwh")
-  |> filter(fn: (r) => r._value > 0.5)
-"""
-
     try:
-        from influxdb_client import InfluxDBClient
-        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
-            api = client.query_api()
-            ciclo_tables = api.query(q_ciclo, org=cfg.org)
-            stats_tables = api.query(q_stats, org=cfg.org)
-
-        # date -> solar_kwh (timestamp de stats_diarias = medianoche UTC del día)
-        solar_by_date: dict = {}
-        for table in stats_tables:
-            for rec in table.records:
-                solar_by_date[rec.get_time().date()] = rec.get_value()
+        pairs = _forecast_real_pairs(cfg, window_days + 2)  # +2: margen UTC+1/+2
 
         rf_values = []
-        for table in ciclo_tables:
-            for rec in table.records:
-                p10 = rec.values.get("forecast_p10_kwh")
-                p50 = rec.values.get("forecast_p50_kwh")
-                if p10 is None or p50 is None or p10 >= p50:
-                    continue
-                # ciclo corre ~22-23h UTC → forecast es para el día siguiente UTC
-                forecast_date = rec.get_time().date() + timedelta(days=1)
-                solar_real = solar_by_date.get(forecast_date)
-                if solar_real is None:
-                    continue
-                rf = (solar_real - p50) / (p10 - p50)
-                rf_values.append(max(0.0, min(1.0, rf)))
+        for p10, p50, solar_real in pairs:
+            if p10 >= p50:
+                continue
+            rf = (solar_real - p50) / (p10 - p50)
+            rf_values.append(max(0.0, min(1.0, rf)))
 
         if len(rf_values) < min_days:
             logger.debug(
@@ -351,46 +368,14 @@ def get_dynamic_solar_bias(
     if not cfg.enabled:
         return None
 
-    from datetime import timedelta
-
-    fetch_days = window_days + 2  # margen para desfase UTC+1/+2
-
-    q_ciclo = f"""
-from(bucket: "{cfg.bucket}")
-  |> range(start: -{fetch_days}d)
-  |> filter(fn: (r) => r._measurement == "ciclo_carga" and r._field == "forecast_p50_kwh")
-"""
-
-    q_stats = f"""
-from(bucket: "{cfg.bucket}")
-  |> range(start: -{fetch_days}d)
-  |> filter(fn: (r) => r._measurement == "stats_diarias" and r._field == "solar_kwh")
-  |> filter(fn: (r) => r._value > 0.5)
-"""
-
     try:
-        from influxdb_client import InfluxDBClient
-        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
-            api = client.query_api()
-            ciclo_tables = api.query(q_ciclo, org=cfg.org)
-            stats_tables = api.query(q_stats, org=cfg.org)
-
-        solar_by_date: dict = {}
-        for table in stats_tables:
-            for rec in table.records:
-                solar_by_date[rec.get_time().date()] = rec.get_value()
+        pairs = _forecast_real_pairs(cfg, window_days + 2)  # +2: margen UTC+1/+2
 
         factors = []
-        for table in ciclo_tables:
-            for rec in table.records:
-                p50 = rec.get_value()
-                if p50 is None or p50 <= 0.5:
-                    continue
-                forecast_date = rec.get_time().date() + timedelta(days=1)
-                solar_real = solar_by_date.get(forecast_date)
-                if solar_real is None:
-                    continue
-                factors.append(solar_real / p50)
+        for _p10, p50, solar_real in pairs:
+            if p50 <= 0.5:
+                continue
+            factors.append(solar_real / p50)
 
         if len(factors) < min_days:
             logger.debug(
