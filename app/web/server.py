@@ -187,6 +187,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
                 "battery_power_w": state.battery_power_w,
                 "battery_voltage_v": state.battery_voltage_v,
                 "battery_temp_c": state.battery_temp_c,
+                "charge_current_max_a": state.charge_current_max_a,
                 "timestamp": datetime.now().isoformat(),
             }
         except Exception as e:

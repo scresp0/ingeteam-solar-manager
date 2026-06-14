@@ -110,6 +110,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
 .grid-5 { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
 .grid-7 { display: grid; grid-template-columns: repeat(7, 1fr); gap: 10px; }
+.grid-8 { display: grid; grid-template-columns: repeat(8, 1fr); gap: 10px; }
 
 /* ── Cards ───────────────────────────────────────── */
 .card { background: var(--bg2); border: 1px solid var(--border); border-radius: var(--radius2); overflow: hidden; display: flex; flex-direction: column; }
@@ -338,6 +339,7 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
 @media (max-width: 800px) {
   .main   { padding: 12px 14px; }
   .grid-7 { grid-template-columns: repeat(4, 1fr); }
+  .grid-8 { grid-template-columns: repeat(4, 1fr); }
   .grid-3 { grid-template-columns: 1fr 1fr; }
 }
 
@@ -358,6 +360,7 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
   /* Layout principal */
   .main           { padding: 10px; gap: 10px; }
   .grid-7         { grid-template-columns: repeat(2, 1fr); gap: 8px; }
+  .grid-8         { grid-template-columns: repeat(2, 1fr); gap: 8px; }
   .grid-2         { grid-template-columns: 1fr; }
   .grid-3         { grid-template-columns: 1fr; }
   .cfg-grid       { grid-template-columns: 1fr; }
@@ -435,7 +438,7 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
   <div class="tab-panel active" id="tab-dashboard">
 
     <!-- Metric tiles -->
-    <div class="grid-7" id="metric-grid">
+    <div class="grid-8" id="metric-grid">
       <div class="metric"><div class="metric-label">SOC batería</div><div class="metric-value" id="m-soc">—</div><div class="metric-sub" id="m-soc-sub">Mín configurado: 35%</div></div>
       <div class="metric"><div class="metric-label">Potencia batería</div><div class="metric-value blue" id="m-pow">—</div><div class="metric-sub" id="m-pow-sub">W</div></div>
       <div class="metric"><div class="metric-label">Producción solar</div><div class="metric-value green" id="m-solar">—</div><div class="metric-sub" id="m-solar-sub">W ahora</div></div>
@@ -443,6 +446,7 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
       <div class="metric"><div class="metric-label">Red</div><div class="metric-value" id="m-grid">—</div><div class="metric-sub" id="m-grid-sub">W</div></div>
       <div class="metric"><div class="metric-label">Tensión batería</div><div class="metric-value" id="m-volt">—</div><div class="metric-sub">V</div></div>
       <div class="metric"><div class="metric-label">Temperatura</div><div class="metric-value" id="m-temp">—</div><div class="metric-sub">ºC</div></div>
+      <div class="metric"><div class="metric-label">Corr. carga máx.</div><div class="metric-value" id="m-chgcur">—</div><div class="metric-sub">A</div></div>
     </div>
 
     <!-- Estado inversor + Forecast -->
@@ -798,6 +802,8 @@ function applyStatus(d) {
   setMetric('m-volt', parseFloat(d.battery_voltage_v).toFixed(1) + ' V', '', 'Tensión batería');
   const tmp = parseFloat(d.battery_temp_c);
   setMetric('m-temp', tmp + ' ºC', tmp > 40 ? 'red' : tmp > 30 ? 'orange' : '', 'Temperatura batería');
+  const cc = parseFloat(d.charge_current_max_a);
+  setMetric('m-chgcur', (isNaN(cc) || cc <= 0) ? '—' : cc.toFixed(0) + ' A', '', 'Corriente máxima de carga');
 
   // Inverter detail
   document.getElementById('inv-status').textContent = d.inverter_status || '—';
