@@ -71,6 +71,10 @@ class ScheduleState:
     charge_active: bool
     charge_soc_pct: int      # SOC objetivo configurado (0 si desactivado)
     discharge_blocked: bool
+    # False si la config de 6.3.2 no es ninguna de las dos canónicas (libre /
+    # bloqueo canónico) — p.ej. el horario invertido de versiones <=1.50. Fuerza
+    # la reescritura aunque discharge_blocked coincida con la decisión.
+    discharge_recognized: bool = True
 
     def charge_str(self) -> str:
         return f"ACTIVA (SOC {self.charge_soc_pct}%)" if self.charge_active else "DESACTIVADA"
@@ -384,15 +388,19 @@ def _click_write(page: Page) -> None:
 LABEL_DISC_PROG_1 = "Programación Horaria 1: Descarga de baterías"
 LABEL_DISC_PROG_2 = "Programación Horaria 2: Descarga de baterías"
 
-# Horario de bloqueo de descarga — común a ambas programaciones
-DISC_HOUR_ON  = 0
-DISC_MIN_ON   = 1   # 00:01 (el inversor no acepta 00:00)
-
-# Fin de bloqueo: distinto según el tipo de día
-DISC_WEEKDAY_HOUR_OFF = 7    # 07:59 — L-V: solo el valle (08:00 en adelante puede descargar)
-DISC_WEEKDAY_MIN_OFF  = 59
-DISC_WEEKEND_HOUR_OFF = 23   # 23:59 — S-D: todo el día (fin de semana es valle 24h)
-DISC_WEEKEND_MIN_OFF  = 59
+# Bloqueo de descarga. MODELO REAL DEL INVERSOR (verificado con el usuario el
+# 2026-06-14): la franja "Hora On → Hora Off" es el periodo en que la descarga
+# está PERMITIDA; FUERA de ella la batería NO descarga. "Desactivado" = sin
+# restricción = descarga libre. Por tanto, para bloquear el valle hay que permitir
+# la descarga SOLO fuera del valle (hasta v1.50 se hacía al revés: la franja se
+# ponía DENTRO del valle, que es justo lo único que dejaba descargar — bug).
+#
+# Prog 1 — Entre semana (L-V): permitir 08:00–23:59 → bloquea el valle 00:00–08:00.
+DISC_WEEKDAY_ON_H,  DISC_WEEKDAY_ON_M  = 8, 0
+DISC_WEEKDAY_OFF_H, DISC_WEEKDAY_OFF_M = 23, 59
+# Prog 2 — Fin de semana (S-D): franja nula 00:00–00:01 → bloquea todo el día (valle 24h).
+DISC_WEEKEND_ON_H,  DISC_WEEKEND_ON_M  = 0, 0
+DISC_WEEKEND_OFF_H, DISC_WEEKEND_OFF_M = 0, 1
 
 
 def set_discharge_schedule(
@@ -446,28 +454,30 @@ def set_discharge_schedule(
                 _set_select_by_exact_label(page, LABEL_DISC_PROG_1, SCHEDULE_DISABLED)
                 _set_select_by_exact_label(page, LABEL_DISC_PROG_2, SCHEDULE_DISABLED)
             else:
-                # Prog 1 — Entre semana (L-V): 00:01–07:59 (solo el valle; puede descargar de 08:00 en adelante)
+                # La franja Hora On→Off = horas en que la descarga está PERMITIDA.
+                # Prog 1 — Entre semana (L-V): permitir 08:00–23:59 (bloquea el valle 00:00–08:00)
                 _set_select_by_exact_label(page, LABEL_DISC_PROG_1, SCHEDULE_WEEKDAY)
-                _set_input_by_index(page, "Hora On",    0, str(DISC_HOUR_ON))
-                _set_input_by_index(page, "Minuto On",  0, str(DISC_MIN_ON))
-                _set_input_by_index(page, "Hora Off",   0, str(DISC_WEEKDAY_HOUR_OFF))
-                _set_input_by_index(page, "Minuto Off", 0, str(DISC_WEEKDAY_MIN_OFF))
+                _set_input_by_index(page, "Hora On",    0, str(DISC_WEEKDAY_ON_H))
+                _set_input_by_index(page, "Minuto On",  0, str(DISC_WEEKDAY_ON_M))
+                _set_input_by_index(page, "Hora Off",   0, str(DISC_WEEKDAY_OFF_H))
+                _set_input_by_index(page, "Minuto Off", 0, str(DISC_WEEKDAY_OFF_M))
 
-                # Prog 2 — Fin de semana (S-D): 00:01–23:59 (todo el día es valle)
+                # Prog 2 — Fin de semana (S-D): franja nula 00:00–00:01 (bloquea todo el día)
                 _set_select_by_exact_label(page, LABEL_DISC_PROG_2, SCHEDULE_WEEKEND)
-                _set_input_by_index(page, "Hora On",    1, str(DISC_HOUR_ON))
-                _set_input_by_index(page, "Minuto On",  1, str(DISC_MIN_ON))
-                _set_input_by_index(page, "Hora Off",   1, str(DISC_WEEKEND_HOUR_OFF))
-                _set_input_by_index(page, "Minuto Off", 1, str(DISC_WEEKEND_MIN_OFF))
+                _set_input_by_index(page, "Hora On",    1, str(DISC_WEEKEND_ON_H))
+                _set_input_by_index(page, "Minuto On",  1, str(DISC_WEEKEND_ON_M))
+                _set_input_by_index(page, "Hora Off",   1, str(DISC_WEEKEND_OFF_H))
+                _set_input_by_index(page, "Minuto Off", 1, str(DISC_WEEKEND_OFF_M))
 
             if dry_run:
                 logger.info("[DRY RUN] Valores descarga rellenados — NO se pulsa Escribir")
             else:
                 _click_write(page)
+                _verify_discharge_written(page, discharge_blocked)
                 state = _load_schedule_state() or _ScheduleState()
                 state.discharge_blocked = discharge_blocked
                 _save_schedule_state(state)
-                logger.info(f"Programación descarga guardada (blocked={discharge_blocked})")
+                logger.info(f"Programación descarga guardada y verificada (blocked={discharge_blocked})")
 
         except PlaywrightTimeout as e:
             raise AutomationError(f"Timeout en la interfaz web (6.3.2): {e}") from e
@@ -507,6 +517,77 @@ def _get_input_value_by_label(page: Page, label: str) -> str:
     return row.locator("input").first.input_value()
 
 
+def _get_input_value_by_label_index(page: Page, label: str, index: int) -> str:
+    """Devuelve el valor de un input cuando la etiqueta aparece varias veces
+    (index=0 → Programación 1, index=1 → Programación 2)."""
+    rows = page.locator("table tr").filter(has_text=label).all()
+    if len(rows) <= index:
+        raise AutomationError(f"No se encontró la fila '{label}' [{index}]")
+    return rows[index].locator("input").first.input_value()
+
+
+def _discharge_config_is_blocked(page: Page) -> bool:
+    """
+    True solo si 6.3.2 coincide EXACTAMENTE con la configuración canónica de
+    bloqueo: Prog1 = Entre semana (L-V) 08:00–23:59 y Prog2 = Fin de semana (S-D)
+    00:00–00:01. Cualquier otra cosa (Desactivado o un horario distinto/antiguo)
+    devuelve False.
+    """
+    if (_get_select_value_by_label(page, LABEL_DISC_PROG_1) != SCHEDULE_WEEKDAY
+            or _get_select_value_by_label(page, LABEL_DISC_PROG_2) != SCHEDULE_WEEKEND):
+        return False
+    try:
+        weekday = (
+            _get_input_value_by_label_index(page, "Hora On",    0),
+            _get_input_value_by_label_index(page, "Minuto On",  0),
+            _get_input_value_by_label_index(page, "Hora Off",   0),
+            _get_input_value_by_label_index(page, "Minuto Off", 0),
+        )
+        weekend = (
+            _get_input_value_by_label_index(page, "Hora On",    1),
+            _get_input_value_by_label_index(page, "Minuto On",  1),
+            _get_input_value_by_label_index(page, "Hora Off",   1),
+            _get_input_value_by_label_index(page, "Minuto Off", 1),
+        )
+        weekday_i = tuple(int(float(v)) for v in weekday)
+        weekend_i = tuple(int(float(v)) for v in weekend)
+    except (AutomationError, ValueError, TypeError) as e:
+        logger.warning(f"No se pudieron leer las franjas de 6.3.2: {e}")
+        return False
+    return (
+        weekday_i == (DISC_WEEKDAY_ON_H, DISC_WEEKDAY_ON_M, DISC_WEEKDAY_OFF_H, DISC_WEEKDAY_OFF_M)
+        and weekend_i == (DISC_WEEKEND_ON_H, DISC_WEEKEND_ON_M, DISC_WEEKEND_OFF_H, DISC_WEEKEND_OFF_M)
+    )
+
+
+def _verify_discharge_written(page: Page, intended_blocked: bool) -> None:
+    """
+    Tras pulsar Escribir, recarga los valores desde el inversor (Leer) y comprueba
+    que 6.3.2 quedó como se pretendía. Lanza AutomationError si no coincide.
+
+    Hasta v1.50 el log [DESPUÉS] reflejaba la *intención*, no el estado real: una
+    escritura que no persistía pasaba desapercibida. Esto cierra ese hueco.
+    """
+    try:
+        page.locator("button.btn-success").click()   # Leer: recarga desde el inversor
+        page.wait_for_load_state("networkidle")
+        page.wait_for_timeout(2000)
+    except Exception as e:
+        logger.warning(f"No se pudo releer 6.3.2 para verificar la escritura: {e}")
+        return
+    if intended_blocked:
+        ok = _discharge_config_is_blocked(page)
+    else:
+        ok = (_get_select_value_by_label(page, LABEL_DISC_PROG_1) == SCHEDULE_DISABLED
+              and _get_select_value_by_label(page, LABEL_DISC_PROG_2) == SCHEDULE_DISABLED)
+    if not ok:
+        raise AutomationError(
+            "Verificación de 6.3.2 fallida tras Escribir: el inversor no quedó "
+            f"{'BLOQUEADA' if intended_blocked else 'LIBRE'} como se pretendía"
+        )
+    logger.info(f"6.3.2 verificada tras escritura: {'BLOQUEADA' if intended_blocked else 'LIBRE'}")
+
+
 def _read_charge_state(page: Page) -> tuple[bool, int]:
     """Lee el estado actual de 6.3.1. Devuelve (charge_active, soc_pct)."""
     prog1 = _get_select_value_by_label(page, LABEL_PROG_1)
@@ -521,15 +602,27 @@ def _read_charge_state(page: Page) -> tuple[bool, int]:
     return active, soc
 
 
-def _read_discharge_state(page: Page) -> bool:
+def _read_discharge_state(page: Page) -> tuple[bool, bool]:
     """
-    Lee el estado actual de 6.3.2. Devuelve True si la descarga está bloqueada.
+    Lee el estado actual de 6.3.2. Devuelve (discharge_blocked, recognized):
+    - discharge_blocked: True solo si coincide con la config canónica de bloqueo.
+    - recognized: True si la config es una de las dos canónicas (libre = ambas
+      Desactivado, o bloqueo canónico). False para cualquier otra (p.ej. el horario
+      invertido de versiones <=1.50) → el caller fuerza la reescritura.
     Loguea los valores brutos para diagnóstico.
     """
     prog1 = _get_select_value_by_label(page, LABEL_DISC_PROG_1)
     prog2 = _get_select_value_by_label(page, LABEL_DISC_PROG_2)
     logger.debug(f"  6.3.2 Prog1={prog1!r} Prog2={prog2!r}")
-    return prog1 != SCHEDULE_DISABLED or prog2 != SCHEDULE_DISABLED
+    if prog1 == SCHEDULE_DISABLED and prog2 == SCHEDULE_DISABLED:
+        return False, True            # descarga libre (canónica)
+    if _discharge_config_is_blocked(page):
+        return True, True             # bloqueo canónico
+    logger.warning(
+        "6.3.2 tiene una programación de descarga activa pero NO canónica "
+        "(posible config antigua invertida <=1.50) — se reescribirá"
+    )
+    return False, False               # config rara → no bloqueada + forzar reescritura
 
 
 # ---------------------------------------------------------------------------
@@ -575,12 +668,13 @@ def read_inverter_schedule(cfg: InverterConfig) -> Optional[ScheduleState]:
 
             _navigate_to_discharge_schedule(page)
             _read_current_values(page)   # loguea etiquetas y valores reales para diagnóstico
-            discharge_blocked = _read_discharge_state(page)
+            discharge_blocked, discharge_recognized = _read_discharge_state(page)
 
             state = ScheduleState(
                 charge_active=charge_active,
                 charge_soc_pct=charge_soc,
                 discharge_blocked=discharge_blocked,
+                discharge_recognized=discharge_recognized,
             )
             logger.info(
                 f"Programación leída del inversor: "

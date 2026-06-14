@@ -232,6 +232,7 @@ def _needs_update(
     )
     discharge_needs_update = (
         schedule_before is None
+        or not schedule_before.discharge_recognized   # config 6.3.2 no canónica → reescribir
         or schedule_before.discharge_blocked != discharge.discharge_blocked
     )
     return charge_needs_update, discharge_needs_update, charge_soc_target

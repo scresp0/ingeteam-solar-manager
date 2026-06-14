@@ -60,7 +60,7 @@ La versión se muestra en el log de arranque, en el header de la web (`/`) y en 
 - Clic en "Escribir" vía JavaScript para superar estado `disabled`
 - Secuencia de navegación exacta: Configuración → JS click `.inv-sett-top-cont` botón "Ajustes" → sección 6.3.1
 - Flags obligatorios en Linux sin entorno gráfico: `--no-sandbox --disable-dev-shm-usage --disable-gpu --single-process`
-- **Lectura de configuración:** `read_inverter_schedule(cfg)` navega a 6.3.1 y 6.3.2 en una sola sesión Playwright (un solo login), pulsa "Leer" en cada sección y extrae los valores de los selects/inputs via `input_value()`. Devuelve `ScheduleState(charge_active, charge_soc_pct, discharge_blocked)` o `None` si falla. Llama a `_read_current_values` al entrar en 6.3.2 para loguear todos los pares etiqueta=valor reales (útil para verificar que los `LABEL_DISC_PROG_*` coinciden con el DOM del inversor).
+- **Lectura de configuración:** `read_inverter_schedule(cfg)` navega a 6.3.1 y 6.3.2 en una sola sesión Playwright (un solo login), pulsa "Leer" en cada sección y extrae los valores de los selects/inputs via `input_value()`. Devuelve `ScheduleState(charge_active, charge_soc_pct, discharge_blocked, discharge_recognized)` o `None` si falla. Llama a `_read_current_values` al entrar en 6.3.2 para loguear todos los pares etiqueta=valor reales (útil para verificar que los `LABEL_DISC_PROG_*` coinciden con el DOM del inversor).
 - **Robustez de lectura:** `_get_select_value_by_label` captura cualquier excepción y devuelve `SCHEDULE_DISABLED` ("0") con un `WARNING` en el log si la etiqueta no se encuentra o el valor está vacío. Evita que una etiqueta no encontrada devuelva `""` que se interpretaría falsamente como "bloqueado" (`"" != "0"`).
 - **Flujo de escritura condicionada:** `main.py` llama a `read_inverter_schedule` antes de escribir. Solo lanza `set_charge_schedule` / `set_discharge_schedule` si el estado leído difiere de la decisión del algoritmo (o si es dry_run). El caché JSON (`/app/logs/inverter_schedule_state.json`) ya no condiciona ninguna escritura — solo se mantiene para diagnóstico.
 
@@ -165,12 +165,22 @@ Solo actúa cuando mañana (día 1) es día valle. Usa **dos pasadas**:
 
 El motivo ("reason") siempre muestra el déficit *sin bloqueo* para explicar por qué se decidió bloquear.
 
-**Diseño del horario de bloqueo en 6.3.2:**
+**Semántica REAL de 6.3.2 (verificada con el usuario el 2026-06-14, corregido en v1.51):**
+La franja `Hora On → Hora Off` de cada programación es el periodo en que la descarga
+está **PERMITIDA**; **fuera** de ella la batería NO descarga. `Desactivado` = sin
+restricción = **descarga libre**. Es el mismo modelo que 6.3.1 (la franja = cuándo se
+hace la acción), no lo contrario. ⚠️ Hasta v1.50 el código asumía justo lo opuesto
+(la franja como "horas bloqueadas") y ponía la franja DENTRO del valle — que es lo
+único que dejaba descargar: el bloqueo no funcionaba (bug detectado el 2026-06-14).
+
+**Diseño del horario de bloqueo en 6.3.2 (v1.51):**
 - `discharge_blocked=False` → Prog 1 = Desactivado, Prog 2 = Desactivado (descarga siempre libre)
-- `discharge_blocked=True`:
-  - Prog 1 **Entre semana (L-V): 00:01–07:59** — solo el valle; a partir de las 08:00 la batería puede descargar con normalidad.
-  - Prog 2 **Fin de semana (S-D): 00:01–23:59** — todo el día, porque el fin de semana la tarifa es valle las 24h.
-- Los festivos en día laborable (ej. martes festivo) los cubre Prog 1 (L-V) — el inversor los trata como laborable en su calendario; el bloqueo aplica solo 00:01–07:59, que es el valle de ese día (tarifa festivo = tarifa fin de semana en la práctica, pero el inversor no lo distingue).
+- `discharge_blocked=True` (se permite descargar SOLO fuera del valle):
+  - Prog 1 **Entre semana (L-V): 08:00–23:59** — permite descargar de día; bloquea el valle 00:00–08:00.
+  - Prog 2 **Fin de semana (S-D): 00:00–00:01** — franja nula (solo 1 min permitido) → bloquea todo el día, porque el fin de semana la tarifa es valle las 24h.
+- Los festivos en día laborable (ej. martes festivo) los cubre Prog 1 (L-V) — el inversor los trata como laborable en su calendario; el bloqueo aplica al valle 00:00–08:00 de ese día (tarifa festivo = tarifa fin de semana en la práctica, pero el inversor no lo distingue).
+- **Verificación read-back (v1.51):** tras pulsar "Escribir", `set_discharge_schedule` vuelve a pulsar "Leer" y comprueba que 6.3.2 quedó como se pretendía (`_verify_discharge_written`); si no, lanza `AutomationError`. Antes el log `[DESPUÉS]` reflejaba la *intención*, no el estado real, y una escritura que no persistía pasaba desapercibida.
+- **Detección de config no canónica (v1.51):** `_read_discharge_state` devuelve `(discharge_blocked, recognized)`. `recognized=False` si la config activa de 6.3.2 no es ninguna de las dos canónicas (p.ej. el horario invertido de versiones ≤1.50); `_needs_update` fuerza la reescritura en ese caso aunque `discharge_blocked` coincida con la decisión, para que al desplegar v1.51 la config antigua se corrija sola.
 
 ### Formato de log de decisiones y configuración
 `decision.py` expone `charge_oneliner()` y `discharge_oneliner()` que emiten líneas con prefijo `[CARGA]`/`[DESCARGA]` al nivel INFO. El detalle completo va a DEBUG. Estos prefijos los parsean tanto la web UI (badges de color, secciones colapsables) como `notifier.py` (tarjetas en el email HTML).
