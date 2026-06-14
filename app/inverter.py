@@ -173,7 +173,7 @@ def read_inverter_state(cfg: InverterConfig) -> InverterState:
             charge_current_max_a=charge_current_max,
         )
 
-        logger.info(
+        logger.debug(
             f"Inversor: {state.inverter_status} | "
             f"Batería: {state.battery_status} | "
             f"SOC: {state.soc_pct}% (min={state.min_soc_pct}%) | SOH: {state.soh_pct}% | "
