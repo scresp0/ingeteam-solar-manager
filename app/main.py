@@ -531,15 +531,19 @@ def _compute_target_charge_current(
     return cc.night_default_a, "IDLE"
 
 
-def run_charge_current_controller(cfg: AppConfig) -> None:
+def run_charge_current_controller(cfg: AppConfig, simulate: bool = False) -> None:
     """Ajusta la corriente máxima de carga (holding 40087) al mínimo necesario.
 
     Lee SOC/temp/V/tope por MODBUS, calcula el objetivo (valle/solar/idle) y, solo
     si difiere del tope actual, lo escribe por Playwright (1.2) y verifica el
     resultado releyendo 40087 por MODBUS.
+
+    Si `simulate=True`: solo lee y calcula, registra a INFO el tope actual, el
+    objetivo y si cambiaría, y NO toca el inversor (ni Playwright ni verificación).
+    Útil para el botón "Simular control" de la web.
     """
     logger = logging.getLogger(__name__)
-    if not cfg.charge_current.enabled:
+    if not cfg.charge_current.enabled and not simulate:
         return
 
     try:
@@ -569,6 +573,12 @@ def run_charge_current_controller(cfg: AppConfig) -> None:
         f"[CORRIENTE] modo={mode} · SOC {state.soc_pct}% · temp {state.battery_temp_c}ºC · "
         f"V {state.battery_voltage_v} · T_fin {t_fin:.1f}h · actual {current}A · objetivo {target}A"
     )
+
+    # Simulación: solo informa, no toca el inversor.
+    if simulate:
+        veredicto = f"cambiaría {current}A → {target}A" if current != target else "sin cambios"
+        logger.info(msg + f" → SIMULACIÓN: {veredicto} (no se escribe nada)")
+        return
 
     # Sin cambios → DEBUG (cada 15 min sería ruido en INFO); solo INFO al reescribir.
     if current == target:
