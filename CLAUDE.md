@@ -207,7 +207,7 @@ hace la acción), no lo contrario. ⚠️ Hasta v1.50 el código asumía justo l
 
 `notifier.py` parsea estas líneas para renderizar la tabla "Configuración aplicada" (ANTES/DESPUÉS) en el email HTML.
 
-## Control dinámico de corriente de carga (v1.52)
+## Control dinámico de corriente de carga (v1.53)
 
 Ajusta la "Corriente Máxima de Carga" de la batería al **mínimo necesario** para reducir el calor del inversor y las baterías (verano), garantizando llegar al tope de carga a tiempo. Para una misma energía, **calor ∝ corriente**, así que cargar despacio (cuando sobra tiempo) minimiza el calentamiento.
 
@@ -216,11 +216,12 @@ Ajusta la "Corriente Máxima de Carga" de la batería al **mínimo necesario** p
 - **Escritura por Playwright** (`automation.set_charge_current`, sección **1.2 Parámetros Batería con BMS**, campo "Corriente Máxima de Carga (A)"), **solo cuando el objetivo difiere** del tope leído. **Verificación read-back por MODBUS** releyendo 40087 (más fiable que releer la web).
 - **Modos** (`main._compute_target_charge_current`):
   - **VALLE** (00:00–08:00 y `charge_needed` del `inverter_schedule_state.json`): mín. corriente para cargar de red hasta `target_soc` en lo que queda de valle. Sin puerta de temperatura.
-  - **SOLAR** (08:00–`T_fin`): mín. corriente para llenar con solar hasta `max_soc_pct` antes de `T_fin`. **Si batería fría** (`temp < cold_threshold_c`, invierno) → `max_a` (66) para captar picos solares intermitentes. Si ya llena → `night_default_a`.
-  - **IDLE** (resto, o valle sin carga): `night_default_a` (66) para no estrangular nada.
-  - Fórmula: `I = E_pendiente_kWh·1000 / (V_batería · horas) · margin`, acotada `[floor_a, max_a]`. **OJO: la corriente es del lado batería DC (~50V), NO de la red AC (230V).** Auto-corrección: al recalcular cada 15 min sobre el SOC real y las horas restantes, si va lento (nubes / carga lenta) sube los amperios.
-  - `T_fin` = hora en que la producción real histórica acumula `productive_window_pct`% del total diario (`storage.get_production_window_end_hour` sobre `solar_media_hora`), fallback `productive_window_end_hour`.
+  - **SOLAR** (08:00–fin de producción del forecast): se calcula la **producción solar restante de hoy calibrada** = Σ por franja de 30 min `(p10·rf + p50·(1−rf))·bias` con `rf`/`bias` **dinámicos** (`get_dynamic_risk_factor`/`get_dynamic_solar_bias`, fallback config) — el `rf` inclina hacia `p10` = margen de seguridad. **Si `temp > hot_threshold_c` (30) Y la producción restante ≥ energía pendiente** → mín. corriente para llenar con esa solar antes de que acabe la producción. **Si no** (templada ≤30, o solar insuficiente, o sin forecast) → `max_a` (66) para llenar seguro. Batería llena → no toca.
+  - **IDLE** (resto / valle sin carga / objetivo alcanzado): **no toca** la corriente (devuelve el valor actual) → evita churn y subidas a 66 innecesarias.
+  - Fórmula del mínimo: `I = E_pendiente_kWh·1000 / (V_batería · horas) · margin`, acotada `[floor_a, max_a]`. **OJO: la corriente es del lado batería DC (~50V), NO de la red AC (230V).** Auto-corrección: al recalcular cada 15 min sobre el SOC real y las horas restantes, si va lento (nubes) sube los amperios.
+  - `_remaining_solar_forecast` usa `solcast.get_today_intervals` (franjas de HOY que quedan, de la caché Solcast). Fin de producción = última franja con producción calibrada > 0.02 kWh; fallback `_productive_window_end` (histórico `solar_media_hora`) → `productive_window_end_hour`.
 - **Concurrencia**: todas las funciones Playwright (`set_charge_schedule/set_discharge_schedule/set_charge_current/read_inverter_schedule`) van serializadas por `automation._WEB_LOCK` (decorador `@_serialize_web`) — el inversor admite una sola sesión web a la vez, así el controlador (15 min) y el ciclo nocturno no colisionan.
+- **Simulación**: `run_charge_current_controller(cfg, simulate=True)` (módulo `app.simulate_charge_current`, botón web "Simular control de corriente") lee y calcula sin tocar el inversor.
 - Parámetros en `config.yaml` sección `charge_current` (ver `config.example.yaml`).
 
 ## Interfaz web (`app/web/`)

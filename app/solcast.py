@@ -130,6 +130,23 @@ def get_day1_intervals(cfg: SolcastConfig, timezone: str = "Europe/Madrid") -> l
     return _filter_by_date(raw.get("forecasts", []), day1, timezone)
 
 
+def get_today_intervals(cfg: SolcastConfig, timezone: str = "Europe/Madrid") -> list[dict]:
+    """
+    Devuelve los intervalos de 30 min de Solcast para HOY (los que aún quedan,
+    ya que el forecast solo cubre de ahora en adelante). Reutiliza la caché.
+    """
+    cached = _load_cache(cfg.cache_ttl_hours)
+    if cached:
+        raw = cached["raw"]
+    else:
+        raw = _fetch_forecasts(cfg)
+        _save_cache(raw)
+
+    tz = ZoneInfo(timezone)
+    today = datetime.now(tz).date()
+    return _filter_by_date(raw.get("forecasts", []), today, timezone)
+
+
 def _fetch_forecasts(cfg: SolcastConfig) -> dict:
     """Llama a la API de Solcast y devuelve el JSON completo."""
     url = (
