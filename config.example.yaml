@@ -127,9 +127,10 @@ charging:
 # -----------------------------------------------------------------------------
 # Ajusta la "Corriente Máxima de Carga" de la batería (1-66 A) al mínimo necesario
 # para reducir el calor (calor ∝ corriente para una misma energía):
-#  · SOLAR (08:00–fin de producción): si temp > hot_threshold_c Y la producción solar
-#    restante (forecast calibrado con risk factor + bias dinámicos) cubre lo que falta
-#    para llenar → corriente mínima; si no (templada o solar insuficiente) → max_a.
+#  · SOLAR (08:00–fin de producción): si la producción solar restante (forecast
+#    calibrado con risk factor + bias dinámicos) cubre lo que falta para llenar →
+#    corriente mínima; si no (solar insuficiente o sin forecast) → max_a. Con
+#    temp_gate_enabled=true además exige temp > hot_threshold_c (batería fría → max_a).
 #  · VALLE (carga de red 00:00–08:00): corriente mínima para llegar al SOC objetivo en
 #    lo que queda de valle.
 #  · Sin carga (idle / batería llena) → no toca la corriente.
@@ -137,7 +138,8 @@ charging:
 charge_current:
   enabled: true
   interval_min: 15              # cada cuánto recalcula y, si procede, reescribe
-  hot_threshold_c: 30.0         # temp batería > umbral → carga suave; si no → max_a (llenar seguro)
+  temp_gate_enabled: true       # true: SOLAR solo carga suave si temp > hot_threshold_c | false: carga suave siempre que la solar baste (ignora temperatura)
+  hot_threshold_c: 30.0         # temp batería > umbral → carga suave; si no → max_a (solo si temp_gate_enabled)
   productive_window_pct: 90     # % del total diario real (fallback de fin de ventana si no hay forecast)
   productive_window_end_hour: 17.0  # fallback de fin de producción si no hay forecast ni histórico
   floor_a: 15                   # corriente mínima (para que la carga termine a tiempo)
