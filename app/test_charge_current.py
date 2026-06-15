@@ -86,6 +86,17 @@ def main():
     check("temp 40 > 35 + solar ok → mín 27", comp(cfg2, _state(70, 40), 12.0, None, 40, 10.0, 17.0), 27, "mín")
     check("mín por encima de max_a=50 → 50", comp(cfg2, _state(10, 40), 12.0, None, 40, 25.0, 17.0), 50, "mín")
 
+    print("=== SOLAR con puerta de temperatura DESACTIVADA (temp_gate_enabled=False) ===")
+    cfg3 = _cfg(temp_gate_enabled=False)
+    # batería fría (28 ≤ 30) pero solar suficiente → ahora carga suave (antes era 66)
+    check("fría + solar suficiente → mín 27", comp(cfg3, _state(70, 28), 12.0, None, 40, 10.0, 17.0), 27, "solar suficiente")
+    # la temperatura ya no influye: misma decisión esté fría o caliente
+    check("caliente + solar suficiente → mín 27", comp(cfg3, _state(70, 40), 12.0, None, 40, 10.0, 17.0), 27, "solar suficiente")
+    # solar insuficiente sigue forzando máx aunque esté fría
+    check("fría + solar insuficiente → 66", comp(cfg3, _state(30, 28), 12.0, None, 40, 5.0, 17.0), 66, "solar restante")
+    # sin forecast sigue forzando máx
+    check("fría + sin forecast → 66", comp(cfg3, _state(70, 28), 12.0, None, 40, None, 17.0), 66, "no disponible")
+
     print()
     if failed:
         print(f"✗ {failed} test(s) fallaron, {passed} OK")

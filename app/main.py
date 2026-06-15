@@ -554,9 +554,11 @@ def _compute_target_charge_current(
 
     - VALLE (00:00–08:00 con carga de red): corriente mínima para llegar al target
       en lo que queda de valle (sin temperatura — de noche no hay calor).
-    - SOLAR (08:00–fin de producción): si temp > hot_threshold Y la producción solar
-      restante calibrada cubre la energía pendiente → corriente mínima para llenar con
-      esa solar; si no (templada o solar insuficiente) → máx (66) para llenar seguro.
+    - SOLAR (08:00–fin de producción): si la producción solar restante calibrada cubre
+      la energía pendiente → corriente mínima para llenar con esa solar; si no (solar
+      insuficiente o sin forecast) → máx (66) para llenar seguro. Con
+      temp_gate_enabled=True además exige temp > hot_threshold (si la batería está fría
+      va a máx); con temp_gate_enabled=False la temperatura no influye.
     - Sin carga (idle / valle sin carga / batería llena) → deja la corriente como está.
     """
     cc = cfg.charge_current
@@ -585,14 +587,15 @@ def _compute_target_charge_current(
         energy = (max_soc - soc) / 100.0 * cap
         if energy <= 0:
             return current, "SOLAR (batería llena — sin cambios)"
-        if state.battery_temp_c <= cc.hot_threshold_c:
+        if cc.temp_gate_enabled and state.battery_temp_c <= cc.hot_threshold_c:
             return cc.max_a, f"SOLAR (temp {state.battery_temp_c}≤{cc.hot_threshold_c}ºC → máx)"
         if remaining_solar_kwh is None:
             return cc.max_a, "SOLAR (forecast no disponible → máx)"
         if remaining_solar_kwh < energy:
             return cc.max_a, (f"SOLAR (solar restante {remaining_solar_kwh:.1f} < "
                               f"{energy:.1f} kWh → máx)")
-        return amps_for(energy, solar_end_hour - hour), "SOLAR (calor + solar suficiente → mín)"
+        why = "calor + solar suficiente" if cc.temp_gate_enabled else "solar suficiente"
+        return amps_for(energy, solar_end_hour - hour), f"SOLAR ({why} → mín)"
 
     return current, "IDLE (sin carga — sin cambios)"
 
