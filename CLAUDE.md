@@ -223,6 +223,7 @@ Ajusta la "Corriente Máxima de Carga" de la batería al **mínimo necesario** p
   - `_remaining_solar_forecast` usa `solcast.get_today_intervals` (franjas de HOY que quedan, de la caché Solcast). Fin de producción = última franja con producción calibrada > 0.02 kWh; fallback `_productive_window_end` (histórico `solar_media_hora`) → `productive_window_end_hour`.
 - **Concurrencia**: todas las funciones Playwright (`set_charge_schedule/set_discharge_schedule/set_charge_current/read_inverter_schedule`) van serializadas por `automation._WEB_LOCK` (decorador `@_serialize_web`) — el inversor admite una sola sesión web a la vez, así el controlador (15 min) y el ciclo nocturno no colisionan.
 - **Simulación**: `run_charge_current_controller(cfg, simulate=True)` (módulo `app.simulate_charge_current`, botón web "Simular control de corriente") lee y calcula sin tocar el inversor.
+- **Persistencia de cambios (v1.57)**: cada cambio EFECTIVO de corriente (cuando `objetivo != actual`) se registra en InfluxDB measurement `corriente_carga` vía `storage.write_charge_current` — un punto con timestamp al segundo del cambio (hora local etiquetada como UTC, igual que el resto de datos de visualización), tag `mode` (VALLE/SOLAR/IDLE) y campos `current_a`/`previous_a`/`delta_a`/`soc_pct`/`battery_temp_c`/`battery_voltage_v`/`detail`/`verified`/`dry_run`. Pensado para informes posteriores. Un `StorageError` se loguea como WARNING pero no rompe el tick (helper `_record_charge_current_change`). En `dry_run` también se registra, con `dry_run=True` y `verified=False`. No se escribe en simulación ni cuando no hay cambio.
 - Parámetros en `config.yaml` sección `charge_current` (ver `config.example.yaml`).
 
 ## Interfaz web (`app/web/`)
@@ -236,6 +237,7 @@ Ajusta la "Corriente Máxima de Carga" de la batería al **mínimo necesario** p
 | `GET /api/today_solar` | Producción solar, consumo casa y flujo de red de hoy: datalogger minuto a minuto, agrupado por hora. Requiere `INVERTER_DEVICE_ID`. Devuelve `current_solar_w`, `total_solar_kwh`, `hours`, `solar_kw`, `current_grid_w` (PacMeter: + importando, - exportando), `current_house_w` (PacGrid). Refresco 60s. |
 | `GET /api/params` | Parámetros dinámicos activos: `night_consumption_kwh`, `risk_factor`, origen (dinámico/config) y `*_valid_days` (días válidos en InfluxDB dentro de la ventana). Refresco 10min. |
 | `GET /api/solar_history` | Historial forecast vs real desde InfluxDB. Params: `date=YYYY-MM-DD`, `view=day\|week\|month`. Vista semana/mes devuelve medias por hora entre días (`total_p50_kwh` y `total_real_kwh` son "media/día"). Fallback a caché Solcast para el forecast si InfluxDB no tiene datos. |
+| `GET /api/charge_current_today` | Cambios de la corriente máxima de carga registrados hoy (measurement `corriente_carga`). Devuelve `changes` (lista ordenada por hora con `hms`, `mode`, `previous_a`, `current_a`, `delta_a`, `soc_pct`, `battery_temp_c`, `detail`, `verified`, `dry_run`) y `count`. Refresco 60s. |
 | `GET /api/logs` | Últimas N líneas del fichero de log |
 | `GET /api/config` | Devuelve el contenido editable de `config.yaml` + lista `env_overrides` con (sección, key, env_var) para los campos sobreescritos por `.env`. No expone secretos. |
 | `POST /api/cycle` | Lanza ciclo completo manual (dry_run o real) |
@@ -248,6 +250,9 @@ Ajusta la "Corriente Máxima de Carga" de la batería al **mínimo necesario** p
 8 tiles: SOC batería · Potencia batería · **Producción solar** · **Consumo casa** · **Red** · Tensión · Temperatura · **Corr. carga máx.** (corriente máxima de carga leída de MODBUS 40087, `m-chgcur`).
 
 `Consumo casa` muestra `PacGrid` (W) del último registro del datalogger. `Red` muestra `|PacMeter|` (W) con label "Exportando a red" (verde, PacMeter < -50) / "Importando de red" (amber, PacMeter > 50) / "Sin flujo de red". Ambos se actualizan cada 60s junto con la producción solar.
+
+### Dashboard — card "Variaciones corriente de carga · hoy" (v1.58)
+Tabla bajo el panel de ejecución del dashboard. `loadChargeCurrentToday()` (init + refresco 60s) hace `GET /api/charge_current_today` y pinta una fila por cambio: hora (HH:MM:SS local), modo (VALLE azul / SOLAR ámbar / IDLE gris), corriente antes/después, Δ (verde si baja, ámbar si sube), SOC, temperatura y motivo (`detail`). Marca `(dry)` los cambios en dry_run y `⚠` los no verificados por MODBUS. "Sin variaciones de corriente hoy" cuando no hay registros.
 
 ### Dashboard — card "Estado inversor"
 Además del SOC ring y estados del inversor, muestra dos filas de parámetros del algoritmo:

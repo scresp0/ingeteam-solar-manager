@@ -8,6 +8,7 @@ Endpoints:
   POST /api/run/{test} → ejecutar un test
   GET  /api/stream/{job_id} → stream de logs via SSE
   GET  /api/solar_history → historial forecast vs real (día/semana/mes)
+  GET  /api/charge_current_today → cambios de corriente de carga de hoy
   GET  /api/logs      → últimas líneas del log
   POST /api/cycle     → ejecutar ciclo completo manual
 """
@@ -331,6 +332,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
             "automation": "app.test_automation",
             "main":       "app.test_main",
             "charge_current": "app.test_charge_current",
+            "charge_current_scenarios": "app.test_charge_current_scenarios",
             "simulate_current": "app.simulate_charge_current",
         }
         if test_name not in allowed:
@@ -571,6 +573,17 @@ def create_app(cfg: AppConfig) -> FastAPI:
             "current_grid_w": current_grid_w,
             "current_house_w": current_house_w,
         }
+
+    @app.get("/api/charge_current_today")
+    async def charge_current_today():
+        """Cambios de la corriente máxima de carga registrados hoy (measurement corriente_carga)."""
+        import asyncio as _asyncio
+        from app.storage import get_charge_current_changes, StorageError
+        try:
+            changes = await _asyncio.to_thread(get_charge_current_changes, cfg.influxdb)
+        except StorageError as e:
+            return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+        return {"ok": True, "changes": changes, "count": len(changes)}
 
     @app.get("/api/solar_history")
     async def solar_history(date: str, view: str = "day"):

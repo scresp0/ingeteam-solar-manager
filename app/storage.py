@@ -14,6 +14,12 @@ Guarda tres tipos de puntos por ciclo nocturno:
      forecast_p50/p10/p90_kwh: escritos en el ciclo nocturno para mañana
      real_kwh: escritos al día siguiente con los datos del datalogger
      Timestamps en "hora local española etiquetada como UTC" (igual que stats_diarias)
+
+4. measurement: corriente_carga
+   — un punto por cada cambio efectivo de la corriente máxima de carga (40087)
+     que aplica el controlador de corriente. Timestamp al segundo del cambio
+     ("hora local española etiquetada como UTC"). Tag mode=VALLE/SOLAR/IDLE.
+     Para informes posteriores de a qué hora y por qué cambió la corriente.
 """
 
 import logging
@@ -90,6 +96,67 @@ def write_cycle(
 
     _write_point(cfg, point)
     logger.info(f"Ciclo guardado en InfluxDB (charge_needed={result.charge_needed}, soc={state.soc_pct}%)")
+
+
+def write_charge_current(
+    cfg: InfluxDBConfig,
+    current_a: int,
+    previous_a: int,
+    mode: str,
+    state: InverterState,
+    now: datetime,
+    dry_run: bool = False,
+    verified: bool = True,
+) -> None:
+    """
+    Registra un cambio de la corriente máxima de carga (holding 40087) en InfluxDB.
+
+    Un punto por cada cambio efectivo aplicado por el controlador de corriente, con
+    timestamp al segundo del momento del cambio. Pensado para informes posteriores
+    (a qué hora y por qué cambió la corriente, con el SOC/temperatura del momento).
+
+    Args:
+        cfg:        configuración de InfluxDB
+        current_a:  corriente aplicada tras el cambio (A)
+        previous_a: corriente que había antes del cambio (A)
+        mode:       modo del controlador (la cadena de _compute_target_charge_current)
+        state:      estado del inversor leído vía MODBUS en ese momento
+        now:        hora local del cambio (aware); se etiqueta como UTC igual que el
+                    resto de datos de visualización del proyecto
+        dry_run:    True si el cambio no se escribió realmente en el inversor
+        verified:   True si la lectura read-back por MODBUS confirmó el valor aplicado
+    """
+    if not cfg.enabled:
+        return
+
+    # Hora local española etiquetada como UTC (misma convención que stats_diarias /
+    # solar_media_hora) — conserva fecha/hora/minuto/segundo del cambio tal cual.
+    ts = now.replace(tzinfo=timezone.utc)
+
+    point = {
+        "measurement": "corriente_carga",
+        "time": ts.isoformat(),
+        "tags": {
+            # primer token del modo: VALLE / SOLAR / IDLE → agrupa en informes
+            "mode": mode.split()[0] if mode else "?",
+        },
+        "fields": {
+            "current_a":         float(current_a),
+            "previous_a":        float(previous_a),
+            "delta_a":           float(current_a - previous_a),
+            "soc_pct":           state.soc_pct,
+            "battery_temp_c":    state.battery_temp_c,
+            "battery_voltage_v": state.battery_voltage_v,
+            "detail":            mode,
+            "verified":          verified,
+            "dry_run":           dry_run,
+        },
+    }
+
+    _write_point(cfg, point)
+    logger.info(
+        f"Cambio de corriente guardado en InfluxDB ({previous_a}A → {current_a}A, modo={mode})"
+    )
 
 
 def write_daily_stats(cfg: InfluxDBConfig, stats: DailyStats) -> None:
@@ -553,6 +620,62 @@ from(bucket: "{cfg.bucket}")
     except Exception as e:
         logger.warning(f"No se pudo consultar el último día con real en solar_media_hora: {e}")
         return None
+
+
+def get_charge_current_changes(cfg: InfluxDBConfig, day: date | None = None) -> list[dict]:
+    """
+    Devuelve los cambios de corriente registrados en `corriente_carga` para un día.
+
+    `day`: fecha local (por defecto hoy). Los timestamps son "hora local etiquetada
+    como UTC", así que el rango [día 00:00, día+1 00:00) en UTC corresponde al día
+    local. Cada elemento incluye `hms` (HH:MM:SS local) listo para mostrar y todos
+    los campos del punto. Orden ascendente por hora. Devuelve [] si InfluxDB está
+    deshabilitado, no hay cambios o la consulta falla.
+    """
+    if not cfg.enabled:
+        return []
+
+    day = day or date.today()
+    start = day.isoformat()
+    end = (day + timedelta(days=1)).isoformat()
+
+    query = f"""
+from(bucket: "{cfg.bucket}")
+  |> range(start: {start}T00:00:00Z, stop: {end}T00:00:00Z)
+  |> filter(fn: (r) => r._measurement == "corriente_carga")
+  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
+  |> sort(columns: ["_time"])
+"""
+    try:
+        from influxdb_client import InfluxDBClient
+        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
+            tables = client.query_api().query(query, org=cfg.org)
+            recs = [rec.values for table in tables for rec in table.records]
+    except ImportError:
+        raise StorageError("influxdb-client no está instalado.")
+    except Exception as e:
+        logger.warning(f"Error consultando corriente_carga {start}: {e}")
+        return []
+
+    out = []
+    for v in recs:
+        ts = v.get("_time")
+        if ts is None:
+            continue
+        out.append({
+            "time":            ts.isoformat(),
+            "hms":             ts.strftime("%H:%M:%S"),
+            "mode":            v.get("mode"),
+            "current_a":       v.get("current_a"),
+            "previous_a":      v.get("previous_a"),
+            "delta_a":         v.get("delta_a"),
+            "soc_pct":         v.get("soc_pct"),
+            "battery_temp_c":  v.get("battery_temp_c"),
+            "detail":          v.get("detail"),
+            "verified":        v.get("verified"),
+            "dry_run":         v.get("dry_run"),
+        })
+    return out
 
 
 def _solar_history(cfg: InfluxDBConfig, start_str: str, end_str: str) -> dict:
