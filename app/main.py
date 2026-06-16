@@ -40,6 +40,7 @@ from app.notifier import CycleEmailNotifier
 from app.logger_reader import get_yesterday_stats, get_daily_stats, LoggerReaderError
 from app.storage import (
     write_cycle, write_daily_stats, write_half_hour_solar, write_half_hour_forecast,
+    write_charge_current,
     get_avg_night_consumption, get_dynamic_risk_factor, get_dynamic_solar_bias,
     get_last_real_solar_date, get_production_window_end_hour, StorageError,
 )
@@ -666,13 +667,17 @@ def run_charge_current_controller(cfg: AppConfig, simulate: bool = False) -> Non
         return
 
     if cfg.system.dry_run:
+        _record_charge_current_change(cfg, target, current, mode, state, now,
+                                      dry_run=True, verified=False)
         return
 
     # Verificación read-back por MODBUS (más fiable que releer la web)
+    verified = False
     try:
         verify = read_inverter_state(cfg.inverter)
         if int(round(verify.charge_current_max_a)) == target:
             logger.info(f"[CORRIENTE] verificada: {target}A aplicada")
+            verified = True
         else:
             logger.error(
                 f"[CORRIENTE] verificación FALLIDA: objetivo {target}A, "
@@ -680,6 +685,20 @@ def run_charge_current_controller(cfg: AppConfig, simulate: bool = False) -> Non
             )
     except InverterError as e:
         logger.warning(f"No se pudo verificar la corriente de carga por MODBUS: {e}")
+
+    _record_charge_current_change(cfg, target, current, mode, state, now,
+                                  dry_run=False, verified=verified)
+
+
+def _record_charge_current_change(cfg, target, previous, mode, state, now,
+                                  dry_run, verified):
+    """Persiste el cambio de corriente en InfluxDB; un fallo de BD no rompe el ciclo."""
+    try:
+        write_charge_current(cfg.influxdb, target, previous, mode, state, now,
+                             dry_run=dry_run, verified=verified)
+    except StorageError as e:
+        logging.getLogger(__name__).warning(
+            f"No se pudo guardar el cambio de corriente en InfluxDB: {e}")
 
 
 def main() -> None:

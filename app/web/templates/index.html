@@ -576,6 +576,25 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
       </div>
     </div>
 
+    <!-- Variaciones de corriente de carga de hoy -->
+    <div class="card" style="margin-top:14px">
+      <div class="card-head">
+        <span class="card-title">Variaciones corriente de carga · hoy</span>
+        <span style="font-size:11px;font-family:var(--mono);color:var(--muted2)" id="chgcur-sub">—</span>
+      </div>
+      <div class="card-body p0">
+        <table class="hist-table">
+          <thead><tr>
+            <th>Hora</th><th>Modo</th><th>Antes</th><th>Después</th><th>Δ</th>
+            <th>SOC</th><th>Temp</th><th>Motivo</th>
+          </tr></thead>
+          <tbody id="chgcur-tbody">
+            <tr><td colspan="8" style="text-align:center;color:var(--muted2);padding:24px">Cargando…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
   </div><!-- /tab-dashboard -->
 
   <!-- ── TESTS ────────────────────────────────────── -->
@@ -608,6 +627,10 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
             <button class="btn" onclick="runTest('charge_current')">
               <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M9 1L3 9h4l-1 6 6-8H8l1-6z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
               Test corriente de carga
+            </button>
+            <button class="btn" onclick="runTest('charge_current_scenarios')">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M9 1L3 9h4l-1 6 6-8H8l1-6z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M1 14.5h14" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+              Test corriente (escenarios)
             </button>
             <button class="btn" onclick="runTest('simulate_current')">
               <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><path d="M8 14A6 6 0 108 2a6 6 0 000 12z" stroke="currentColor" stroke-width="1.3"/><path d="M8 8l3-2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M8 8v.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -1272,6 +1295,46 @@ async function loadTodaySolar() {
   } catch(e) {}
 }
 
+async function loadChargeCurrentToday() {
+  const tbody = document.getElementById('chgcur-tbody');
+  const sub = document.getElementById('chgcur-sub');
+  if (!tbody) return;
+  try {
+    const r = await fetch('/api/charge_current_today');
+    const d = await r.json();
+    if (!d.ok) {
+      tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--muted2);padding:24px">${d.error || 'Error'}</td></tr>`;
+      return;
+    }
+    const changes = d.changes || [];
+    if (sub) sub.textContent = changes.length === 0 ? 'sin cambios hoy' : `${changes.length} cambio${changes.length === 1 ? '' : 's'}`;
+    if (changes.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted2);padding:24px">Sin variaciones de corriente hoy.</td></tr>';
+      return;
+    }
+    const modeColor = { VALLE: 'var(--blue)', SOLAR: 'var(--amber, #f0a500)', IDLE: 'var(--muted2)' };
+    tbody.innerHTML = changes.map(c => {
+      const delta = (c.delta_a > 0 ? '+' : '') + (c.delta_a ?? 0).toFixed(0);
+      const deltaCol = c.delta_a > 0 ? 'var(--amber, #f0a500)' : (c.delta_a < 0 ? 'var(--green, #3fb950)' : 'var(--muted2)');
+      const mc = modeColor[c.mode] || 'var(--muted2)';
+      const dry = c.dry_run ? ' <span style="color:var(--muted2);font-size:10px">(dry)</span>' : '';
+      const unver = c.verified === false && !c.dry_run ? ' <span style="color:var(--amber,#f0a500);font-size:10px" title="No verificado por MODBUS">⚠</span>' : '';
+      return `<tr>
+        <td style="font-family:var(--mono)">${c.hms || '—'}</td>
+        <td><span style="color:${mc};font-weight:600">${c.mode || '—'}</span></td>
+        <td style="font-family:var(--mono)">${(c.previous_a ?? 0).toFixed(0)} A</td>
+        <td style="font-family:var(--mono)">${(c.current_a ?? 0).toFixed(0)} A${dry}${unver}</td>
+        <td style="font-family:var(--mono);color:${deltaCol}">${delta} A</td>
+        <td>${c.soc_pct != null ? c.soc_pct.toFixed(0) + '%' : '—'}</td>
+        <td>${c.battery_temp_c != null ? c.battery_temp_c.toFixed(1) + '°' : '—'}</td>
+        <td style="color:var(--muted);font-size:11px">${c.detail || '—'}</td>
+      </tr>`;
+    }).join('');
+  } catch(e) {
+    tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted2);padding:24px">Error cargando datos.</td></tr>';
+  }
+}
+
 function updateDecisionBadge(p50, p10, p90) {
   // Si ya tenemos SOC del inversor, recalcula la decisión localmente
   // para mostrar el badge correcto sin esperar al ciclo nocturno
@@ -1775,6 +1838,8 @@ loadParams();
 setInterval(loadParams, 600000);
 loadTodaySolar();
 setInterval(loadTodaySolar, 60000);
+loadChargeCurrentToday();
+setInterval(loadChargeCurrentToday, 60000);
 loadConfigForm();
 </script>
 </body>
