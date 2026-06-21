@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 import requests
 
 from app.config import SolcastConfig
-from app.decision import SolarForecast
+from app.decision import SolarForecast, reference_date
 
 logger = logging.getLogger(__name__)
 
@@ -58,11 +58,17 @@ def _save_cache(raw: dict) -> None:
 
 
 def get_two_day_forecast(
-    cfg: SolcastConfig, timezone: str = "Europe/Madrid"
+    cfg: SolcastConfig, timezone: str = "Europe/Madrid", night_cutoff_hour: int = 8
 ) -> tuple[SolarForecast, SolarForecast]:
     """
     Obtiene la previsión solar para los próximos 2 días.
     Usa caché de hasta 12 horas para no consumir llamadas de la API.
+
+    Los días se calculan desde reference_date(night_cutoff_hour), no desde
+    datetime.now().date(), para que el recheck de madrugada (03:00, hora <
+    night_cutoff_hour) mire el MISMO par de días que el ciclo de las 23:55
+    y que decide_charge/decide_discharge. Sin esto, a las 03:00 día1/día2 se
+    desplazan un día (el día 2 cae fuera del horizonte de Solcast → 0.0 kWh).
 
     Returns:
         (forecast_day1, forecast_day2) — día 1 = mañana, día 2 = pasado mañana
@@ -78,10 +84,9 @@ def get_two_day_forecast(
     if not forecasts:
         raise SolcastError("La API de Solcast devolvió una lista de previsiones vacía")
 
-    tz = ZoneInfo(timezone)
-    today = datetime.now(tz).date()
-    day1 = today + timedelta(days=1)
-    day2 = today + timedelta(days=2)
+    ref = reference_date(night_cutoff_hour)
+    day1 = ref + timedelta(days=1)
+    day2 = ref + timedelta(days=2)
 
     intervals_day1 = _filter_by_date(forecasts, day1, timezone)
     intervals_day2 = _filter_by_date(forecasts, day2, timezone)
@@ -113,10 +118,15 @@ def get_tomorrow_forecast(cfg: SolcastConfig, timezone: str = "Europe/Madrid") -
     return day1
 
 
-def get_day1_intervals(cfg: SolcastConfig, timezone: str = "Europe/Madrid") -> list[dict]:
+def get_day1_intervals(
+    cfg: SolcastConfig, timezone: str = "Europe/Madrid", night_cutoff_hour: int = 8
+) -> list[dict]:
     """
-    Devuelve los intervalos de 30 min de Solcast para mañana.
+    Devuelve los intervalos de 30 min de Solcast para mañana (día 1).
     Reutiliza la caché guardada por get_two_day_forecast — no hace llamada extra a la API.
+
+    Usa reference_date(night_cutoff_hour) por la misma razón que get_two_day_forecast:
+    a las 03:00 el día 1 debe ser el mismo que ve decide_charge, no el siguiente.
     """
     cached = _load_cache(cfg.cache_ttl_hours)
     if cached:
@@ -125,8 +135,7 @@ def get_day1_intervals(cfg: SolcastConfig, timezone: str = "Europe/Madrid") -> l
         raw = _fetch_forecasts(cfg)
         _save_cache(raw)
 
-    tz = ZoneInfo(timezone)
-    day1 = (datetime.now(tz) + timedelta(days=1)).date()
+    day1 = reference_date(night_cutoff_hour) + timedelta(days=1)
     return _filter_by_date(raw.get("forecasts", []), day1, timezone)
 
 
