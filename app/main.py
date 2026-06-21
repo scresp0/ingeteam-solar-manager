@@ -83,8 +83,9 @@ def _collect_decision_inputs(
     else:
         try:
             logger.info("Obteniendo previsión solar de Solcast...")
-            forecast_day1, forecast_day2 = get_two_day_forecast(cfg.solcast, cfg.system.timezone)
-            intervals_day1 = get_day1_intervals(cfg.solcast, cfg.system.timezone)
+            cutoff = cfg.tariff.night_cutoff_hour
+            forecast_day1, forecast_day2 = get_two_day_forecast(cfg.solcast, cfg.system.timezone, cutoff)
+            intervals_day1 = get_day1_intervals(cfg.solcast, cfg.system.timezone, cutoff)
         except SolcastError as e:
             logger.error(f"Error al obtener previsión solar: {e}")
             logger.warning("Usando previsión conservadora de 0 kWh como fallback")
