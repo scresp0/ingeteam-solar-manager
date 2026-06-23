@@ -41,7 +41,8 @@ from app.logger_reader import get_yesterday_stats, get_daily_stats, LoggerReader
 from app.storage import (
     write_cycle, write_daily_stats, write_half_hour_solar, write_half_hour_forecast,
     write_charge_current,
-    get_avg_night_consumption, get_dynamic_risk_factor, get_dynamic_solar_bias,
+    get_avg_night_consumption, get_avg_post_valley_consumption,
+    get_dynamic_risk_factor, get_dynamic_solar_bias,
     get_last_real_solar_date, get_production_window_end_hour, StorageError,
 )
 
@@ -489,16 +490,20 @@ def _productive_window_end(cfg: AppConfig) -> float:
 
 
 def _remaining_solar_forecast(cfg: AppConfig, now) -> tuple[float | None, float]:
-    """Producción solar que queda HOY (calibrada con risk factor + bias dinámicos) y
-    la hora local de fin de producción.
+    """Excedente solar NETO que queda HOY para la batería (producción calibrada
+    menos el consumo de la casa) y la hora local de fin de producción.
 
-    Devuelve (kWh_restantes, hora_fin):
-    - forecast OK con producción pendiente → (suma_calibrada, hora_última_franja)
+    Devuelve (kWh_restantes_neto, hora_fin):
+    - forecast OK con producción pendiente → (excedente_neto, hora_última_franja)
     - forecast OK sin producción pendiente → (0.0, 0.0)  → fuerza IDLE
     - forecast no disponible               → (None, fallback_histórico)  → SOLAR usará máx
 
-    Calibración por franja (igual que decide_charge): (p10·rf + p50·(1−rf))·bias.
+    Producción por franja (igual que decide_charge): (p10·rf + p50·(1−rf))·bias.
     El rf inclina hacia p10 (pesimista) = margen de seguridad ante menos producción.
+    A cada franja se le resta el consumo post-valle prorrateado (tasa plana sobre
+    16 h, suelo en 0): así el resultado es el excedente real que entra en batería,
+    no la producción bruta. El fin de producción se sigue calculando con la
+    producción bruta (una franja produce aunque la casa se la coma toda).
     """
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -525,7 +530,24 @@ def _remaining_solar_forecast(cfg: AppConfig, now) -> tuple[float | None, float]
         bias = None
     bias = cfg.charging.solar_bias_factor if bias is None else bias
 
+    # Consumo post-valle (08:00–24:00) que la casa restará al sol. Dinámico de
+    # InfluxDB con la misma ventana/mínimo que el nocturno (mismo origen
+    # stats_diarias → misma disponibilidad de datos); fallback a config
+    # (diario − nocturno). Se prorratea a tasa plana sobre las 16 h del tramo y
+    # se resta por franja, así solo descuenta el consumo de las horas solares.
+    try:
+        post_valley = get_avg_post_valley_consumption(
+            cfg.influxdb, cfg.charging.night_consumption_window_days,
+            cfg.charging.night_consumption_min_days_in_window)
+    except StorageError:
+        post_valley = None
+    if post_valley is None:
+        post_valley = max(0.0, cfg.installation.average_daily_consumption_kwh
+                          - cfg.charging.night_consumption_kwh)
+    house_per_interval = post_valley / 16.0 * 0.5   # kWh de casa en una franja de 30 min
+
     tz = ZoneInfo(cfg.system.timezone)
+    gross = 0.0
     remaining = 0.0
     end_hour = None
     for it in intervals:
@@ -539,11 +561,17 @@ def _remaining_solar_forecast(cfg: AppConfig, now) -> tuple[float | None, float]
         eff = (it.get("pv_estimate10", 0.0) * rf
                + it.get("pv_estimate", 0.0) * (1.0 - rf)) * bias * 0.5   # kWh de la franja
         if eff > 0.02:
-            remaining += eff
+            gross += eff
+            remaining += max(0.0, eff - house_per_interval)   # excedente neto a batería
             end_hour = end_local.hour + end_local.minute / 60.0
 
     if end_hour is None:
         return 0.0, 0.0   # forecast OK pero ya no queda producción → IDLE
+    logger.debug(
+        f"Excedente solar: bruto {gross:.2f} kWh − consumo casa "
+        f"{gross - remaining:.2f} kWh → neto {remaining:.2f} kWh "
+        f"(post-valle {post_valley:.2f} kWh/16h)"
+    )
     return round(remaining, 2), end_hour
 
 
