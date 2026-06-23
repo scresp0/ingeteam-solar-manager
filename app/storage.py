@@ -314,6 +314,68 @@ from(bucket: "{cfg.bucket}")
         return None
 
 
+def get_avg_post_valley_consumption(
+    cfg: InfluxDBConfig,
+    window_days: int = 30,
+    min_days: int = 14,
+) -> float | None:
+    """
+    Devuelve el consumo POST-VALLE medio (kWh, 08:00–24:00) de los últimos
+    window_days días almacenados en InfluxDB.
+
+    Post-valle = consumption_kwh − night_consumption_kwh por día. NO es el
+    consumo diurno solar (08:00–anochecer): es más ancho (incluye la tarde-noche
+    tras el ocaso). El controlador de corriente lo prorratea a tasa plana sobre
+    las 16 h del tramo para estimar el consumo que compite con el sol.
+
+    Devuelve None si:
+    - InfluxDB no está habilitado
+    - Hay menos de min_days días con AMBOS campos en la ventana
+    - La consulta falla (se loguea como warning)
+    """
+    if not cfg.enabled:
+        return None
+
+    query = f"""
+from(bucket: "{cfg.bucket}")
+  |> range(start: -{window_days}d)
+  |> filter(fn: (r) => r._measurement == "stats_diarias" and
+     (r._field == "consumption_kwh" or r._field == "night_consumption_kwh"))
+  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
+"""
+    try:
+        from influxdb_client import InfluxDBClient
+        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
+            tables = client.query_api().query(query, org=cfg.org)
+            values = []
+            for table in tables:
+                for rec in table.records:
+                    daily = rec.values.get("consumption_kwh")
+                    night = rec.values.get("night_consumption_kwh")
+                    if daily is None or night is None:
+                        continue
+                    post = daily - night
+                    if post > 0.5:   # descarta días con datos erróneos
+                        values.append(post)
+
+        if len(values) < min_days:
+            logger.debug(
+                f"Consumo post-valle dinámico: solo {len(values)} días válidos "
+                f"(mínimo {min_days}) — usando fallback"
+            )
+            return None
+
+        avg = sum(values) / len(values)
+        logger.debug(f"Consumo post-valle dinámico: {len(values)} días, media={avg:.3f} kWh")
+        return round(avg, 3)
+
+    except ImportError:
+        raise StorageError("influxdb-client no está instalado.")
+    except Exception as e:
+        logger.warning(f"No se pudo consultar consumo post-valle dinámico en InfluxDB: {e}")
+        return None
+
+
 def _forecast_real_pairs(cfg: InfluxDBConfig, fetch_days: int) -> list[tuple[float, float, float]]:
     """
     Cruza el forecast histórico (ciclo_carga) con la producción solar real
