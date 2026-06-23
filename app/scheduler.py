@@ -88,8 +88,14 @@ def start_scheduler(cfg: AppConfig) -> None:
     # Control de corriente máxima de carga: ajusta los amperios al mínimo necesario
     # (menos calor) garantizando llegar al tope a tiempo (valle de red / ventana solar).
     if cfg.charge_current.enabled:
+        from datetime import datetime, timedelta
+        from zoneinfo import ZoneInfo
         from apscheduler.triggers.interval import IntervalTrigger
         interval = cfg.charge_current.interval_min
+        # IntervalTrigger no dispara al arrancar (la 1ª ejecución es un intervalo
+        # después del start). Forzamos un primer tick ~20s tras el arranque para
+        # que un restart no deje el inversor con el tope anterior hasta ≤interval min.
+        first_run = datetime.now(ZoneInfo(timezone)) + timedelta(seconds=20)
         scheduler.add_job(
             func=_run_charge_current_job,
             trigger=IntervalTrigger(minutes=interval, timezone=timezone),
@@ -100,8 +106,12 @@ def start_scheduler(cfg: AppConfig) -> None:
             max_instances=1,
             coalesce=True,
             replace_existing=True,
+            next_run_time=first_run,
         )
-        logger.info(f"Control de corriente de carga programado cada {interval} min ({timezone})")
+        logger.info(
+            f"Control de corriente de carga programado cada {interval} min "
+            f"({timezone}); primer tick a las {first_run:%H:%M:%S}"
+        )
 
     # Ejecutar inmediatamente si se pide (útil para pruebas)
     if os.environ.get("RUN_ON_START", "").lower() in ("true", "1", "yes"):

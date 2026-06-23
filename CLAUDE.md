@@ -211,7 +211,7 @@ hace la acción), no lo contrario. ⚠️ Hasta v1.50 el código asumía justo l
 
 Ajusta la "Corriente Máxima de Carga" de la batería al **mínimo necesario** para reducir el calor del inversor y las baterías (verano), garantizando llegar al tope de carga a tiempo. Para una misma energía, **calor ∝ corriente**, así que cargar despacio (cuando sobra tiempo) minimiza el calentamiento.
 
-- **Job periódico** (`scheduler._run_charge_current_job` → `main.run_charge_current_controller`), cada `charge_current.interval_min` (default 15 min), 24h.
+- **Job periódico** (`scheduler._run_charge_current_job` → `main.run_charge_current_controller`), cada `charge_current.interval_min` (default 15 min), 24h. **Corre además al arrancar** (v1.61): el job se registra con `next_run_time` ≈ 20s tras el `start()` porque `IntervalTrigger` no dispara en el arranque (su 1ª ejecución es un intervalo después) — así un `make restart` no deja el inversor con el tope anterior hasta ≤`interval_min` min.
 - **Lectura por MODBUS** (`inverter.read_inverter_state`): SOC (30021), temp batería (30028), tensión (30018) y **el tope actual** (holding **40087**, address 86, amperios directos 1–66). Registro identificado por test diferencial (cambiar valor en web → reescanear). **MODBUS es solo lectura para este registro.**
 - **Escritura por Playwright** (`automation.set_charge_current`, sección **1.2 Parámetros Batería con BMS**, campo "Corriente Máxima de Carga (A)"), **solo cuando el objetivo difiere** del tope leído. **Verificación read-back por MODBUS** releyendo 40087 (más fiable que releer la web).
 - **Modos** (`main._compute_target_charge_current`):
