@@ -133,6 +133,10 @@ charging:
 #    temp_gate_enabled=true además exige temp > hot_threshold_c (batería fría → max_a).
 #  · VALLE (carga de red 00:00–08:00): corriente mínima para llegar al SOC objetivo en
 #    lo que queda de valle.
+#  · BALANCE (opcional): al alcanzar balance_soc_pct, carga lo más suave posible
+#    (balance_floor_a) hasta max_soc_pct para balancear las celdas del stack,
+#    siempre que dé tiempo antes de fin de ventana (solar o valle). Ignora la
+#    puerta de temperatura.
 #  · Sin carga (idle / batería llena) → no toca la corriente.
 # Lectura por MODBUS (holding 40087), escritura por web (1.2).
 charge_current:
@@ -145,6 +149,10 @@ charge_current:
   floor_a: 15                   # corriente mínima (para que la carga termine a tiempo)
   max_a: 66                     # tope máximo (66 = máximo del inversor)
   margin: 1.2                   # margen sobre el mínimo teórico
+  battery_balance: false        # true: cerca del tope, carga muy suave para balancear celdas del stack
+  balance_soc_pct: 98           # SOC a partir del cual entra el modo BALANCE (debe ser < charging.max_soc_pct)
+  balance_soc_pct_2: 99         # 2ª etapa: SOC a partir del cual la corriente de balanceo baja a la mitad (>= balance_soc_pct)
+  balance_floor_a: 10           # corriente mínima durante el balanceo (más baja que floor_a)
 
 # -----------------------------------------------------------------------------
 # Sistema

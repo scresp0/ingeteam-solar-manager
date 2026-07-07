@@ -597,10 +597,32 @@ def _compute_target_charge_current(
     cap = cfg.installation.battery_capacity_kwh
     max_soc = cfg.charging.max_soc_pct
 
-    def amps_for(energy_kwh: float, hours: float) -> int:
+    def amps_for(energy_kwh: float, hours: float, floor_a: int | None = None) -> int:
         hours = max(0.25, hours)
         i = (energy_kwh * 1000.0) / (v * hours) * cc.margin
-        return max(cc.floor_a, min(cc.max_a, int(round(i))))
+        return max(floor_a if floor_a is not None else cc.floor_a,
+                   min(cc.max_a, int(round(i))))
+
+    # Fin de la ventana de carga en curso (valle nocturno o ventana solar), o None
+    # si ahora mismo no estamos cargando. Sirve para el override de BALANCE.
+    charging_valle = (_VALLE_START_HOUR <= hour < _VALLE_END_HOUR
+                      and schedule_state is not None and schedule_state.charge_needed)
+    charging_solar = _VALLE_END_HOUR <= hour < solar_end_hour
+    window_end = (_VALLE_END_HOUR if charging_valle
+                  else solar_end_hour if charging_solar else None)
+
+    # BALANCE: cerca del tope, carga lo más suave posible para balancear las celdas
+    # del stack, siempre que dé tiempo a llegar a max_soc antes de fin de ventana.
+    # Ignora la puerta de temperatura y baja del floor normal (balance_floor_a).
+    if (cc.battery_balance and window_end is not None
+            and cc.balance_soc_pct <= soc < max_soc):
+        energy = (max_soc - soc) / 100.0 * cap
+        # 2ª etapa: aún más suave en el último tramo (balance_soc_pct_2, default 99%)
+        if soc >= cc.balance_soc_pct_2:
+            floor, label = max(1, cc.balance_floor_a // 2), "BALANCE (fino)"
+        else:
+            floor, label = cc.balance_floor_a, "BALANCE"
+        return amps_for(energy, window_end - hour, floor), label
 
     # VALLE: carga de red 00:00–08:00
     if _VALLE_START_HOUR <= hour < _VALLE_END_HOUR:
