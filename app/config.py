@@ -187,12 +187,25 @@ class ChargeCurrentConfig(BaseModel):
     floor_a: int = Field(default=15, ge=1, le=66)                    # corriente mínima (para que la carga termine)
     max_a: int = Field(default=66, ge=1, le=66)                      # tope máximo (66 = máximo del inversor)
     margin: float = Field(default=1.2, ge=1.0, le=3.0)              # margen sobre el mínimo teórico
+    battery_balance: bool = False                                    # cerca del tope, carga muy suave para balancear celdas del stack
+    balance_soc_pct: float = Field(default=98.0, ge=0.0, le=100.0)   # SOC a partir del cual entra el modo BALANCE
+    balance_soc_pct_2: float = Field(default=99.0, ge=0.0, le=100.0) # 2ª etapa: SOC a partir del cual la corriente de balanceo baja a la mitad
+    balance_floor_a: int = Field(default=10, ge=1, le=66)            # corriente mínima durante el balanceo (< floor_a normal)
 
     @model_validator(mode="after")
     def floor_not_above_max(self):
         if self.floor_a > self.max_a:
             raise ValueError(
                 f"charge_current.floor_a ({self.floor_a}) no puede superar max_a ({self.max_a})"
+            )
+        if self.balance_floor_a > self.max_a:
+            raise ValueError(
+                f"charge_current.balance_floor_a ({self.balance_floor_a}) no puede superar max_a ({self.max_a})"
+            )
+        if self.balance_soc_pct_2 < self.balance_soc_pct:
+            raise ValueError(
+                f"charge_current.balance_soc_pct_2 ({self.balance_soc_pct_2}) no puede ser menor "
+                f"que balance_soc_pct ({self.balance_soc_pct})"
             )
         return self
 
@@ -246,6 +259,20 @@ class AppConfig(BaseModel):
     charge_current: ChargeCurrentConfig = ChargeCurrentConfig()
     system: SystemConfig
     influxdb: InfluxDBConfig = InfluxDBConfig()
+
+    @model_validator(mode="after")
+    def balance_soc_reachable(self):
+        # El balanceo solo actúa entre balance_soc_pct y max_soc_pct; si el umbral
+        # iguala o supera el tope de carga nunca se alcanza y el modo BALANCE queda
+        # muerto silenciosamente. Para balancear de verdad conviene max_soc = 100.
+        if (self.charge_current.battery_balance
+                and self.charge_current.balance_soc_pct >= self.charging.max_soc_pct):
+            raise ValueError(
+                f"charge_current.balance_soc_pct ({self.charge_current.balance_soc_pct}%) "
+                f"debe ser menor que charging.max_soc_pct ({self.charging.max_soc_pct}%) "
+                "para que el balanceo pueda actuar"
+            )
+        return self
 
     @property
     def email(self) -> EmailConfig:

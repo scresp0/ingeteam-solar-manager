@@ -1312,7 +1312,7 @@ async function loadChargeCurrentToday() {
       tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--muted2);padding:24px">Sin variaciones de corriente hoy.</td></tr>';
       return;
     }
-    const modeColor = { VALLE: 'var(--blue)', SOLAR: 'var(--amber, #f0a500)', IDLE: 'var(--muted2)' };
+    const modeColor = { VALLE: 'var(--blue)', SOLAR: 'var(--amber, #f0a500)', BALANCE: 'var(--green, #3fb950)', IDLE: 'var(--muted2)' };
     tbody.innerHTML = changes.map(c => {
       const delta = (c.delta_a > 0 ? '+' : '') + (c.delta_a ?? 0).toFixed(0);
       const deltaCol = c.delta_a > 0 ? 'var(--amber, #f0a500)' : (c.delta_a < 0 ? 'var(--green, #3fb950)' : 'var(--muted2)');
