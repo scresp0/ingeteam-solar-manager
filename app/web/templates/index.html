@@ -1320,7 +1320,8 @@ async function loadChargeCurrentToday() {
       return;
     }
     const modeColor = { VALLE: 'var(--blue)', SOLAR: 'var(--amber, #f0a500)', BALANCE: 'var(--green, #3fb950)', IDLE: 'var(--muted2)' };
-    tbody.innerHTML = changes.map(c => {
+    // La API devuelve orden ascendente por hora; se muestra invertido (lo más reciente arriba).
+    tbody.innerHTML = [...changes].reverse().map(c => {
       const delta = (c.delta_a > 0 ? '+' : '') + (c.delta_a ?? 0).toFixed(0);
       const deltaCol = c.delta_a > 0 ? 'var(--amber, #f0a500)' : (c.delta_a < 0 ? 'var(--green, #3fb950)' : 'var(--muted2)');
       const mc = modeColor[c.mode] || 'var(--muted2)';
