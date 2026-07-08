@@ -198,6 +198,26 @@ hace la acción), no lo contrario. ⚠️ Hasta v1.50 el código asumía justo l
 - **Verificación read-back (v1.51):** tras pulsar "Escribir", `set_discharge_schedule` vuelve a pulsar "Leer" y comprueba que 6.3.2 quedó como se pretendía (`_verify_discharge_written`); si no, lanza `AutomationError`. Antes el log `[DESPUÉS]` reflejaba la *intención*, no el estado real, y una escritura que no persistía pasaba desapercibida.
 - **Detección de config no canónica (v1.51):** `_read_discharge_state` devuelve `(discharge_blocked, recognized)`. `recognized=False` si la config activa de 6.3.2 no es ninguna de las dos canónicas (p.ej. el horario invertido de versiones ≤1.50); `_needs_update` fuerza la reescritura en ese caso aunque `discharge_blocked` coincida con la decisión, para que al desplegar v1.51 la config antigua se corrija sola.
 
+**⚠️ Caveat Peak-Shaving: `discharge_blocked=True` NO garantiza batería 100% preservada.**
+El inversor tiene Peak-Shaving activado. Desde firmware ABH1007**AB** (funcionalidad
+"Peak Shaving All Range", 01/12/2025) el Peak-Shaving usa la batería para aportar los
+picos por encima de la potencia contratada **en todo el rango y fuera del horario de
+descarga** — es decir, tiene prioridad sobre el bloqueo de 6.3.2. Firmware ABH1007**AD**
+(15/06/2026, §29.3) extiende ese comportamiento a **dentro de la ventana de carga desde
+red** (valle). Consecuencia para `decide_discharge`: en un día valle con descarga
+bloqueada, si salta un pico la batería descargará igualmente esa energía extra, erosionando
+la carga que el algoritmo asume reservada para el día 2 → posible pequeño import de red.
+Está **acotado** (solo la energía por encima de la contratada, y solo cuando salta el pico,
+que casi nunca) y el `safety_margin_kwh` absorbe el caso típico, por lo que **no se modela
+en el algoritmo** (simplicidad > modelar un evento raro). Documentado como suposición
+implícita, no como bug.
+
+**Nota firmware — 6.3.3 (carga desde FV):** desde ABH1007**AC** (§28.3) la web separa la
+programación horaria en tres secciones hermanas: **6.3.1** (Carga desde Red), **6.3.2**
+(Descarga) y **6.3.3** (Carga desde FV, NUEVA). El proyecto solo usa 6.3.1 y 6.3.2; 6.3.3
+no se toca (la carga solar es libre). La navegación Playwright es por etiqueta "6.3.x", no
+por índice, así que la sección extra no descoloca `read_inverter_schedule`.
+
 ### Formato de log de decisiones y configuración
 `decision.py` expone `charge_oneliner()` y `discharge_oneliner()` que emiten líneas con prefijo `[CARGA]`/`[DESCARGA]` al nivel INFO. El detalle completo va a DEBUG. Estos prefijos los parsean tanto la web UI (badges de color, secciones colapsables) como `notifier.py` (tarjetas en el email HTML).
 
