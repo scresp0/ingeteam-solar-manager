@@ -1331,7 +1331,7 @@ async function loadChargeCurrentToday() {
         <td style="font-family:var(--mono)">${c.hms || '—'}</td>
         <td><span style="color:${mc};font-weight:600">${c.mode || '—'}</span></td>
         <td style="font-family:var(--mono)">${(c.previous_a ?? 0).toFixed(0)} A</td>
-        <td style="font-family:var(--mono)">${(c.current_a ?? 0).toFixed(0)} A${dry}${unver}</td>
+        <td style="font-family:var(--mono);color:#7fc4ff;font-weight:600">${(c.current_a ?? 0).toFixed(0)} A${dry}${unver}</td>
         <td style="font-family:var(--mono);color:${deltaCol}">${delta} A</td>
         <td>${c.soc_pct != null ? c.soc_pct.toFixed(0) + '%' : '—'}</td>
         <td>${c.battery_temp_c != null ? c.battery_temp_c.toFixed(1) + '°' : '—'}</td>
