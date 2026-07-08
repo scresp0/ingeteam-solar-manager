@@ -737,6 +737,11 @@ from(bucket: "{cfg.bucket}")
             "verified":        v.get("verified"),
             "dry_run":         v.get("dry_run"),
         })
+    # `mode` es un tag → el pivot de Flux devuelve una tabla por modo y su
+    # sort(_time) ordena solo dentro de cada tabla; al aplanar en Python la lista
+    # queda agrupada por modo, no por hora. Reordenar aquí por hora ascendente
+    # (los timestamps son ISO UTC con el mismo offset → orden lexicográfico = cronológico).
+    out.sort(key=lambda r: r["time"])
     return out
 
 
