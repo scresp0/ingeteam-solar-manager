@@ -800,7 +800,12 @@ tickClock(); setInterval(tickClock, 1000);
 
 // ══ Status refresh ══════════════════════════════════
 let lastStatus = null;
+let _statusInFlight = false;
 async function refreshStatus() {
+  // Evita solapar peticiones: si una lectura MODBUS se demora, el siguiente poll
+  // no debe dispararse y repintar una respuesta fuera de orden (valor anterior).
+  if (_statusInFlight) return;
+  _statusInFlight = true;
   try {
     const r = await fetch('/api/status');
     const d = await r.json();
@@ -811,6 +816,8 @@ async function refreshStatus() {
     updateLastUpdate();
   } catch(e) {
     setHeaderStatus(false, 'Sin conexión');
+  } finally {
+    _statusInFlight = false;
   }
 }
 

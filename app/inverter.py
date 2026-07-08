@@ -14,7 +14,9 @@ Registros usados:
   30028 — Battery Temperature [ºC x10]  INT16
 """
 
+import functools
 import logging
+import threading
 from dataclasses import dataclass
 
 from pymodbus.client import ModbusTcpClient
@@ -23,6 +25,22 @@ from pymodbus.exceptions import ModbusException
 from app.config import InverterConfig
 
 logger = logging.getLogger(__name__)
+
+# El inversor Ingeteam admite muy pocas conexiones MODBUS TCP simultáneas: si el
+# read-back del controlador de corriente y el poll del dashboard leen a la vez,
+# una conexión recibe el frame de la otra y se lee un snapshot caducado (SOC y
+# corriente oscilando entre el valor correcto y el anterior). Este lock serializa
+# todo el acceso MODBUS, igual que _WEB_LOCK hace con Playwright en automation.py.
+_MODBUS_LOCK = threading.Lock()
+
+
+def _serialize_modbus(fn):
+    """Serializa el acceso MODBUS (una transacción TCP con el inversor a la vez)."""
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _MODBUS_LOCK:
+            return fn(*args, **kwargs)
+    return wrapper
 
 # ---------------------------------------------------------------------------
 # Tablas de estados (de la documentación oficial)
@@ -83,6 +101,7 @@ class InverterError(Exception):
     """Error al leer datos del inversor."""
 
 
+@_serialize_modbus
 def read_inverter_state(cfg: InverterConfig) -> InverterState:
     """
     Lee el estado actual del inversor y las baterías vía MODBUS TCP.
