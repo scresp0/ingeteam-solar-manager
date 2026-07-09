@@ -43,7 +43,7 @@ def main():
 
     def check(desc, got, exp_amps=None, mode_has=None):
         nonlocal passed, failed
-        amps, mode = got
+        amps, _calc, mode = got
         ok = (exp_amps is None or amps == exp_amps) and (mode_has is None or mode_has in mode)
         if ok:
             passed += 1

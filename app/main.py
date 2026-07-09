@@ -579,8 +579,16 @@ def _compute_target_charge_current(
     cfg: AppConfig, state: InverterState, hour: float,
     schedule_state, current: int,
     remaining_solar_kwh: float | None, solar_end_hour: float,
-) -> tuple[int, str]:
-    """Devuelve (amperios_objetivo, modo).
+) -> tuple[int, int, str]:
+    """Devuelve (amperios_objetivo, amperios_calculados, modo).
+
+    `amperios_calculados` es la corriente cruda que sale de la fórmula solar/valle
+    ANTES de acotarla al `[floor_a, max_a]` de la configuración; `amperios_objetivo`
+    es esa misma corriente ya acotada (la que se fija en el inversor). Cuando el
+    cálculo cae por debajo del mínimo configurado, `objetivo` = mínimo pero
+    `calculado` refleja el valor real que pedía la fórmula. En los modos que no
+    calculan corriente (idle / batería llena / máx por solar insuficiente) ambos
+    coinciden con el valor devuelto.
 
     - VALLE (00:00–08:00 con carga de red): corriente mínima para llegar al target
       en lo que queda de valle (sin temperatura — de noche no hay calor).
@@ -597,11 +605,14 @@ def _compute_target_charge_current(
     cap = cfg.installation.battery_capacity_kwh
     max_soc = cfg.charging.max_soc_pct
 
-    def amps_for(energy_kwh: float, hours: float, floor_a: int | None = None) -> int:
+    def amps_for(energy_kwh: float, hours: float, floor_a: int | None = None) -> tuple[int, int]:
+        """(acotado a [floor, max], crudo sin acotar) — el crudo es "calculado"."""
         hours = max(0.25, hours)
         i = (energy_kwh * 1000.0) / (v * hours) * cc.margin
-        return max(floor_a if floor_a is not None else cc.floor_a,
-                   min(cc.max_a, int(round(i))))
+        raw = int(round(i))
+        return (max(floor_a if floor_a is not None else cc.floor_a,
+                    min(cc.max_a, raw)),
+                raw)
 
     # Fin de la ventana de carga en curso (valle nocturno o ventana solar), o None
     # si ahora mismo no estamos cargando. Sirve para el override de BALANCE.
@@ -622,7 +633,8 @@ def _compute_target_charge_current(
             floor, label = max(1, cc.balance_floor_a // 2), "BALANCE (fino)"
         else:
             floor, label = cc.balance_floor_a, "BALANCE"
-        return amps_for(energy, window_end - hour, floor), label
+        target, raw = amps_for(energy, window_end - hour, floor)
+        return target, raw, label
 
     # VALLE: carga de red 00:00–08:00
     if _VALLE_START_HOUR <= hour < _VALLE_END_HOUR:
@@ -630,26 +642,28 @@ def _compute_target_charge_current(
             target_soc = schedule_state.target_soc_pct or max_soc
             energy = max(0.0, (target_soc - soc) / 100.0 * cap)
             if energy <= 0:
-                return current, "VALLE (objetivo alcanzado — sin cambios)"
-            return amps_for(energy, _VALLE_END_HOUR - hour), "VALLE"
-        return current, "IDLE (valle sin carga — sin cambios)"
+                return current, current, "VALLE (objetivo alcanzado — sin cambios)"
+            target, raw = amps_for(energy, _VALLE_END_HOUR - hour)
+            return target, raw, "VALLE"
+        return current, current, "IDLE (valle sin carga — sin cambios)"
 
     # SOLAR: ventana diurna productiva 08:00 – fin de producción del forecast
     if _VALLE_END_HOUR <= hour < solar_end_hour:
         energy = (max_soc - soc) / 100.0 * cap
         if energy <= 0:
-            return current, "SOLAR (batería llena — sin cambios)"
+            return current, current, "SOLAR (batería llena — sin cambios)"
         if cc.temp_gate_enabled and state.battery_temp_c <= cc.hot_threshold_c:
-            return cc.max_a, f"SOLAR (temp {state.battery_temp_c}≤{cc.hot_threshold_c}ºC → máx)"
+            return cc.max_a, cc.max_a, f"SOLAR (temp {state.battery_temp_c}≤{cc.hot_threshold_c}ºC → máx)"
         if remaining_solar_kwh is None:
-            return cc.max_a, "SOLAR (forecast no disponible → máx)"
+            return cc.max_a, cc.max_a, "SOLAR (forecast no disponible → máx)"
         if remaining_solar_kwh < energy:
-            return cc.max_a, (f"SOLAR (solar restante {remaining_solar_kwh:.1f} < "
-                              f"{energy:.1f} kWh → máx)")
+            return cc.max_a, cc.max_a, (f"SOLAR (solar restante {remaining_solar_kwh:.1f} < "
+                                        f"{energy:.1f} kWh → máx)")
         why = "calor + solar suficiente" if cc.temp_gate_enabled else "solar suficiente"
-        return amps_for(energy, solar_end_hour - hour), f"SOLAR ({why} → mín)"
+        target, raw = amps_for(energy, solar_end_hour - hour)
+        return target, raw, f"SOLAR ({why} → mín)"
 
-    return current, "IDLE (sin carga — sin cambios)"
+    return current, current, "IDLE (sin carga — sin cambios)"
 
 
 def run_charge_current_controller(cfg: AppConfig, simulate: bool = False) -> None:
@@ -688,14 +702,15 @@ def run_charge_current_controller(cfg: AppConfig, simulate: bool = False) -> Non
 
     remaining_solar, solar_end = _remaining_solar_forecast(cfg, now)
     schedule_state = _load_schedule_state()
-    target, mode = _compute_target_charge_current(
+    target, calculated, mode = _compute_target_charge_current(
         cfg, state, hour, schedule_state, current, remaining_solar, solar_end)
 
     solar_txt = "?" if remaining_solar is None else f"{remaining_solar:.1f}"
+    calc_txt = "" if calculated == target else f" (calculado {calculated}A)"
     msg = (
         f"[CORRIENTE] modo={mode} · SOC {state.soc_pct}% · temp {state.battery_temp_c}ºC · "
         f"V {state.battery_voltage_v} · solar_rest {solar_txt}kWh · fin_solar {solar_end:.1f}h · "
-        f"actual {current}A · objetivo {target}A"
+        f"actual {current}A · objetivo {target}A{calc_txt}"
     )
 
     # Simulación: solo informa, no toca el inversor.
@@ -718,7 +733,7 @@ def run_charge_current_controller(cfg: AppConfig, simulate: bool = False) -> Non
         return
 
     if cfg.system.dry_run:
-        _record_charge_current_change(cfg, target, current, mode, state, now,
+        _record_charge_current_change(cfg, target, current, calculated, mode, state, now,
                                       dry_run=True, verified=False)
         return
 
@@ -737,16 +752,16 @@ def run_charge_current_controller(cfg: AppConfig, simulate: bool = False) -> Non
     except InverterError as e:
         logger.warning(f"No se pudo verificar la corriente de carga por MODBUS: {e}")
 
-    _record_charge_current_change(cfg, target, current, mode, state, now,
+    _record_charge_current_change(cfg, target, current, calculated, mode, state, now,
                                   dry_run=False, verified=verified)
 
 
-def _record_charge_current_change(cfg, target, previous, mode, state, now,
+def _record_charge_current_change(cfg, target, previous, calculated, mode, state, now,
                                   dry_run, verified):
     """Persiste el cambio de corriente en InfluxDB; un fallo de BD no rompe el ciclo."""
     try:
         write_charge_current(cfg.influxdb, target, previous, mode, state, now,
-                             dry_run=dry_run, verified=verified)
+                             calculated_a=calculated, dry_run=dry_run, verified=verified)
     except StorageError as e:
         logging.getLogger(__name__).warning(
             f"No se pudo guardar el cambio de corriente en InfluxDB: {e}")
