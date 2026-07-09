@@ -105,6 +105,7 @@ def write_charge_current(
     mode: str,
     state: InverterState,
     now: datetime,
+    calculated_a: int | None = None,
     dry_run: bool = False,
     verified: bool = True,
 ) -> None:
@@ -117,12 +118,15 @@ def write_charge_current(
 
     Args:
         cfg:        configuración de InfluxDB
-        current_a:  corriente aplicada tras el cambio (A)
+        current_a:  corriente aplicada tras el cambio (A) = "fijado" (acotado a config)
         previous_a: corriente que había antes del cambio (A)
         mode:       modo del controlador (la cadena de _compute_target_charge_current)
         state:      estado del inversor leído vía MODBUS en ese momento
         now:        hora local del cambio (aware); se etiqueta como UTC igual que el
                     resto de datos de visualización del proyecto
+        calculated_a: corriente cruda calculada por el algoritmo ANTES de acotarla al
+                    mínimo/máximo de config = "calculado". None (registros antiguos) o
+                    igual a current_a cuando no hubo acotación.
         dry_run:    True si el cambio no se escribió realmente en el inversor
         verified:   True si la lectura read-back por MODBUS confirmó el valor aplicado
     """
@@ -142,6 +146,7 @@ def write_charge_current(
         },
         "fields": {
             "current_a":         float(current_a),
+            "calculated_a":      float(current_a if calculated_a is None else calculated_a),
             "previous_a":        float(previous_a),
             "delta_a":           float(current_a - previous_a),
             "soc_pct":           state.soc_pct,
@@ -729,6 +734,7 @@ from(bucket: "{cfg.bucket}")
             "hms":             ts.strftime("%H:%M:%S"),
             "mode":            v.get("mode"),
             "current_a":       v.get("current_a"),
+            "calculated_a":    v.get("calculated_a"),
             "previous_a":      v.get("previous_a"),
             "delta_a":         v.get("delta_a"),
             "soc_pct":         v.get("soc_pct"),

@@ -88,7 +88,7 @@ def run():
         else:
             sched, hour = None, sc["hour"]
             remaining, solar_end = sc["remaining"], sc["solar_end"]
-        amps, mode = _compute_target_charge_current(
+        amps, _calc, mode = _compute_target_charge_current(
             cfg, state, hour, sched, sc["current"], remaining, solar_end)
         narra(sc, cfg, amps, mode)
         exp = sc["esperado"]
