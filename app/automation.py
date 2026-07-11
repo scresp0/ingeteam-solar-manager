@@ -8,22 +8,22 @@ Ruta de navegación:
   6.3.2- Programación Horaria: Descarga de Batería → Leer/Escribir
 
 Campos en la tabla — 6.3.1 (textos exactos de las etiquetas):
-  "Programación Horaria 1: Carga de baterías desde la Red"  → select
+  "Programación Horaria 1: Modo"  → select   (antes "...: Carga de baterías desde la Red")
   "SOC Grid 1: Carga máxima para mantener las baterías desde la Red" → input
   "Hora On"    (aparece 2 veces, una por cada programación) → input
   "Minuto On"  (ídem) → input
   "Hora Off"   (ídem) → input
   "Minuto Off" (ídem) → input
-  "Programación Horaria 2: Carga de baterías desde la Red"  → select
+  "Programación Horaria 2: Modo"  → select
   "SOC Grid 2: Carga máxima para mantener las baterías desde la Red" → input
 
 Campos en la tabla — 6.3.2 (textos exactos de las etiquetas):
-  "Programación Horaria 1: Descarga de baterías"  → select
+  "Programación Horaria 1: Modo"  → select   (antes "...: Descarga de baterías")
   "Hora On"    (aparece 2 veces, una por cada programación) → input
   "Minuto On"  (ídem) → input
   "Hora Off"   (ídem) → input
   "Minuto Off" (ídem) → input
-  "Programación Horaria 2: Descarga de baterías"  → select
+  "Programación Horaria 2: Modo"  → select
 
 Opciones del desplegable de tipo:
   0 = Desactivado
@@ -140,12 +140,96 @@ SCHEDULE_ALLWEEK  = "1"  # Toda la semana
 SCHEDULE_WEEKDAY  = "2"  # Entre semana (L-V)
 SCHEDULE_WEEKEND  = "3"  # Fin de semana (S-D)
 
-# Textos exactos de las etiquetas en la tabla
-LABEL_PROG_1 = "Programación Horaria 1: Carga de baterías desde la Red"
+# Etiquetas ESTABLES entre firmwares (no dependen del perfil):
+#   - SOC Grid conserva el texto largo en todas las versiones conocidas.
+#   - Hora On/Off y Minuto On/Off aparecen dos veces — se localizan por índice.
 LABEL_SOC_1  = "SOC Grid 1: Carga máxima para mantener las baterías desde la Red"
-LABEL_PROG_2 = "Programación Horaria 2: Carga de baterías desde la Red"
 LABEL_SOC_2  = "SOC Grid 2: Carga máxima para mantener las baterías desde la Red"
-# Hora On/Off y Minuto On/Off aparecen dos veces — se localizan por índice
+
+
+# ---------------------------------------------------------------------------
+# Perfiles de etiquetas por versión de firmware (6.3.1 / 6.3.2)
+# ---------------------------------------------------------------------------
+# La única etiqueta que ha cambiado entre firmwares es la fila del SELECT de
+# "Programación Horaria N": antes decía "...: Carga de baterías desde la Red" (6.3.1)
+# y "...: Descarga de baterías" (6.3.2); desde ABH1007AD dice "...: Modo" en ambas
+# secciones (verificado por dump del DOM el 2026-07-11). El resto de campos (SOC Grid,
+# Hora/Minuto On/Off) son estables. Por eso el perfil solo modela esas 4 etiquetas.
+#
+# Solo el perfil "Modo" (ABH1007AD) está verificado en vivo; el perfil "legacy"
+# documenta las etiquetas anteriores (histórico, sin inversor viejo para verificar).
+# Firmware desconocido → se usa DEFAULT (el más reciente) con un WARNING para revisar.
+
+@dataclass(frozen=True)
+class LabelProfile:
+    """Etiquetas de los selects de Programación Horaria que varían por firmware."""
+    name: str
+    charge_prog_1: str   # 6.3.1 Programación 1
+    charge_prog_2: str   # 6.3.1 Programación 2
+    disc_prog_1: str     # 6.3.2 Programación 1
+    disc_prog_2: str     # 6.3.2 Programación 2
+
+
+_PROFILE_MODO = LabelProfile(
+    name="modo",
+    charge_prog_1="Programación Horaria 1: Modo",
+    charge_prog_2="Programación Horaria 2: Modo",
+    disc_prog_1="Programación Horaria 1: Modo",
+    disc_prog_2="Programación Horaria 2: Modo",
+)
+_PROFILE_LEGACY = LabelProfile(
+    name="legacy",
+    charge_prog_1="Programación Horaria 1: Carga de baterías desde la Red",
+    charge_prog_2="Programación Horaria 2: Carga de baterías desde la Red",
+    disc_prog_1="Programación Horaria 1: Descarga de baterías",
+    disc_prog_2="Programación Horaria 2: Descarga de baterías",
+)
+
+# Mapa firmware exacto → perfil. Añadir aquí cada versión conocida.
+FIRMWARE_PROFILES: dict[str, LabelProfile] = {
+    "ABH1007AD": _PROFILE_MODO,
+}
+# Perfil por defecto para firmware desconocido/no leído: el más reciente verificado.
+DEFAULT_PROFILE = _PROFILE_MODO
+
+# Perfil activo del proceso, configurable al arrancar con configure_active_profile().
+# Las funciones web usan este perfil salvo que se les pase uno explícito.
+_ACTIVE_PROFILE = DEFAULT_PROFILE
+
+
+def resolve_label_profile(firmware: Optional[str]) -> LabelProfile:
+    """Devuelve el LabelProfile para una versión de firmware.
+
+    Firmware conocido → su perfil. Desconocido → DEFAULT (más reciente) con WARNING.
+    firmware=None (no se pudo leer) → DEFAULT sin warning ruidoso (solo debug)."""
+    if firmware is None:
+        logger.debug("Firmware no leído — usando perfil de etiquetas por defecto "
+                     f"'{DEFAULT_PROFILE.name}'")
+        return DEFAULT_PROFILE
+    profile = FIRMWARE_PROFILES.get(firmware)
+    if profile is None:
+        logger.warning(
+            f"Firmware '{firmware}' no reconocido — usando perfil de etiquetas más "
+            f"reciente '{DEFAULT_PROFILE.name}'. Verifica las etiquetas de 6.3.1/6.3.2 "
+            "si la web ha cambiado y añade el firmware a FIRMWARE_PROFILES."
+        )
+        return DEFAULT_PROFILE
+    return profile
+
+
+def configure_active_profile(firmware: Optional[str]) -> LabelProfile:
+    """Fija el perfil de etiquetas activo del proceso a partir del firmware leído.
+    Se llama una vez al arrancar (tras read_firmware_version). Devuelve el perfil."""
+    global _ACTIVE_PROFILE
+    _ACTIVE_PROFILE = resolve_label_profile(firmware)
+    logger.info(f"Perfil de etiquetas activo: '{_ACTIVE_PROFILE.name}' "
+                f"(firmware={firmware or 'desconocido'})")
+    return _ACTIVE_PROFILE
+
+
+def _profile(profile: Optional[LabelProfile]) -> LabelProfile:
+    """Resuelve el perfil a usar: el explícito si se pasa, si no el activo del proceso."""
+    return profile if profile is not None else _ACTIVE_PROFILE
 
 
 class AutomationError(Exception):
@@ -158,6 +242,7 @@ def set_charge_schedule(
     charge_needed: bool,
     target_soc_pct: float = 0.0,
     dry_run: bool = False,
+    profile: Optional[LabelProfile] = None,
 ) -> None:
     """
     Configura la programación horaria de carga en la web del inversor.
@@ -172,10 +257,12 @@ def set_charge_schedule(
         charge_needed:  si False, desactiva la carga de red
         target_soc_pct: SOC objetivo (solo relevante si charge_needed=True)
         dry_run:        si True, navega y rellena pero NO pulsa Escribir
+        profile:        perfil de etiquetas; None → perfil activo del proceso
 
     Raises:
         AutomationError: si no se puede completar la operación
     """
+    prof = _profile(profile)
     soc = int(round(target_soc_pct)) if charge_needed else 0
     action = f"SOC objetivo = {soc}%" if charge_needed else "DESACTIVAR carga de red"
     logger.info(f"{'[DRY RUN] ' if dry_run else ''}Configurando carga horaria: {action}")
@@ -208,11 +295,11 @@ def set_charge_schedule(
 
             if not charge_needed:
                 # Desactivar ambas programaciones — no cargar de red
-                _set_select_by_exact_label(page, LABEL_PROG_1, SCHEDULE_DISABLED)
-                _set_select_by_exact_label(page, LABEL_PROG_2, SCHEDULE_DISABLED)
+                _set_select_by_exact_label(page, prof.charge_prog_1, SCHEDULE_DISABLED)
+                _set_select_by_exact_label(page, prof.charge_prog_2, SCHEDULE_DISABLED)
             else:
                 # Programación 1 — entre semana
-                _set_select_by_exact_label(page, LABEL_PROG_1, SCHEDULE_WEEKDAY)
+                _set_select_by_exact_label(page, prof.charge_prog_1, SCHEDULE_WEEKDAY)
                 _set_input_by_exact_label(page, LABEL_SOC_1, str(soc))
                 _set_input_by_index(page, "Hora On",    0, str(VALLEY_HOUR_ON))
                 _set_input_by_index(page, "Minuto On",  0, str(VALLEY_MIN_ON))
@@ -220,7 +307,7 @@ def set_charge_schedule(
                 _set_input_by_index(page, "Minuto Off", 0, str(VALLEY_MIN_OFF))
 
                 # Programación 2 — fin de semana
-                _set_select_by_exact_label(page, LABEL_PROG_2, SCHEDULE_WEEKEND)
+                _set_select_by_exact_label(page, prof.charge_prog_2, SCHEDULE_WEEKEND)
                 _set_input_by_exact_label(page, LABEL_SOC_2, str(soc))
                 _set_input_by_index(page, "Hora On",    1, str(VALLEY_HOUR_ON))
                 _set_input_by_index(page, "Minuto On",  1, str(VALLEY_MIN_ON))
@@ -404,9 +491,8 @@ def _click_write(page: Page) -> None:
 # 6.3.2 — Programación Horaria Descarga de Batería
 # ---------------------------------------------------------------------------
 
-# Etiquetas de 6.3.2 (misma estructura que 6.3.1)
-LABEL_DISC_PROG_1 = "Programación Horaria 1: Descarga de baterías"
-LABEL_DISC_PROG_2 = "Programación Horaria 2: Descarga de baterías"
+# Las etiquetas de los selects de 6.3.2 (Programación Horaria N) dependen del
+# firmware y viven en LabelProfile.disc_prog_1/2 (ver sección de perfiles arriba).
 
 # Bloqueo de descarga. MODELO REAL DEL INVERSOR (verificado con el usuario el
 # 2026-06-14): la franja "Hora On → Hora Off" es el periodo en que la descarga
@@ -428,6 +514,7 @@ def set_discharge_schedule(
     cfg: InverterConfig,
     discharge_blocked: bool,
     dry_run: bool = False,
+    profile: Optional[LabelProfile] = None,
 ) -> None:
     """
     Configura la programación horaria de descarga en la web del inversor (6.3.2).
@@ -441,7 +528,9 @@ def set_discharge_schedule(
         cfg:               configuración del inversor
         discharge_blocked: si True, bloquea descarga durante el horario valle
         dry_run:           si True, navega y rellena pero NO pulsa Escribir
+        profile:           perfil de etiquetas; None → perfil activo del proceso
     """
+    prof = _profile(profile)
     action = "BLOQUEAR descarga valle (L-V 00:01–07:59 · S-D 00:01–23:59)" if discharge_blocked else "Descarga libre"
     logger.info(f"{'[DRY RUN] ' if dry_run else ''}Configurando descarga horaria: {action}")
 
@@ -472,19 +561,19 @@ def set_discharge_schedule(
             _read_current_values(page)
 
             if not discharge_blocked:
-                _set_select_by_exact_label(page, LABEL_DISC_PROG_1, SCHEDULE_DISABLED)
-                _set_select_by_exact_label(page, LABEL_DISC_PROG_2, SCHEDULE_DISABLED)
+                _set_select_by_exact_label(page, prof.disc_prog_1, SCHEDULE_DISABLED)
+                _set_select_by_exact_label(page, prof.disc_prog_2, SCHEDULE_DISABLED)
             else:
                 # La franja Hora On→Off = horas en que la descarga está PERMITIDA.
                 # Prog 1 — Entre semana (L-V): permitir 08:00–23:59 (bloquea el valle 00:00–08:00)
-                _set_select_by_exact_label(page, LABEL_DISC_PROG_1, SCHEDULE_WEEKDAY)
+                _set_select_by_exact_label(page, prof.disc_prog_1, SCHEDULE_WEEKDAY)
                 _set_input_by_index(page, "Hora On",    0, str(DISC_WEEKDAY_ON_H))
                 _set_input_by_index(page, "Minuto On",  0, str(DISC_WEEKDAY_ON_M))
                 _set_input_by_index(page, "Hora Off",   0, str(DISC_WEEKDAY_OFF_H))
                 _set_input_by_index(page, "Minuto Off", 0, str(DISC_WEEKDAY_OFF_M))
 
                 # Prog 2 — Fin de semana (S-D): franja nula 00:00–00:01 (bloquea todo el día)
-                _set_select_by_exact_label(page, LABEL_DISC_PROG_2, SCHEDULE_WEEKEND)
+                _set_select_by_exact_label(page, prof.disc_prog_2, SCHEDULE_WEEKEND)
                 _set_input_by_index(page, "Hora On",    1, str(DISC_WEEKEND_ON_H))
                 _set_input_by_index(page, "Minuto On",  1, str(DISC_WEEKEND_ON_M))
                 _set_input_by_index(page, "Hora Off",   1, str(DISC_WEEKEND_OFF_H))
@@ -494,7 +583,7 @@ def set_discharge_schedule(
                 logger.info("[DRY RUN] Valores descarga rellenados — NO se pulsa Escribir")
             else:
                 _click_write(page)
-                _verify_discharge_written(page, discharge_blocked)
+                _verify_discharge_written(page, discharge_blocked, prof)
                 state = _load_schedule_state() or _ScheduleState()
                 state.discharge_blocked = discharge_blocked
                 _save_schedule_state(state)
@@ -518,18 +607,22 @@ def set_discharge_schedule(
 def _get_select_value_by_label(page: Page, label: str) -> str:
     """
     Devuelve el valor actual de un select localizado por texto de etiqueta.
-    Devuelve SCHEDULE_DISABLED y loguea un warning si no se encuentra la fila o el valor.
+
+    Lanza AutomationError si la fila/select no se encuentra o el valor está vacío.
+    NUNCA asume un valor por defecto: un fallo de lectura devolviendo "Desactivado"
+    (SCHEDULE_DISABLED) daría un estado falso pero plausible que el flujo de escritura
+    condicionada interpretaría como "ya correcto" y omitiría la reconfiguración. El
+    caller (read_inverter_schedule) convierte esta excepción en None → main fuerza la
+    reescritura de forma segura (fail-safe).
     """
     try:
         row = page.locator("table tr").filter(has_text=label).first
         value = row.locator("select").input_value()
-        if not value:
-            logger.warning(f"Select '{label[:50]}' encontrado pero sin valor — asumiendo Desactivado")
-            return SCHEDULE_DISABLED
-        return value
     except Exception as e:
-        logger.warning(f"No se pudo leer select '{label[:50]}': {e} — asumiendo Desactivado")
-        return SCHEDULE_DISABLED
+        raise AutomationError(f"No se pudo leer el select '{label[:50]}': {e}") from e
+    if not value:
+        raise AutomationError(f"Select '{label[:50]}' encontrado pero sin valor")
+    return value
 
 
 def _get_input_value_by_label(page: Page, label: str) -> str:
@@ -547,15 +640,15 @@ def _get_input_value_by_label_index(page: Page, label: str, index: int) -> str:
     return rows[index].locator("input").first.input_value()
 
 
-def _discharge_config_is_blocked(page: Page) -> bool:
+def _discharge_config_is_blocked(page: Page, profile: LabelProfile) -> bool:
     """
     True solo si 6.3.2 coincide EXACTAMENTE con la configuración canónica de
     bloqueo: Prog1 = Entre semana (L-V) 08:00–23:59 y Prog2 = Fin de semana (S-D)
     00:00–00:01. Cualquier otra cosa (Desactivado o un horario distinto/antiguo)
     devuelve False.
     """
-    if (_get_select_value_by_label(page, LABEL_DISC_PROG_1) != SCHEDULE_WEEKDAY
-            or _get_select_value_by_label(page, LABEL_DISC_PROG_2) != SCHEDULE_WEEKEND):
+    if (_get_select_value_by_label(page, profile.disc_prog_1) != SCHEDULE_WEEKDAY
+            or _get_select_value_by_label(page, profile.disc_prog_2) != SCHEDULE_WEEKEND):
         return False
     try:
         weekday = (
@@ -581,7 +674,7 @@ def _discharge_config_is_blocked(page: Page) -> bool:
     )
 
 
-def _verify_discharge_written(page: Page, intended_blocked: bool) -> None:
+def _verify_discharge_written(page: Page, intended_blocked: bool, profile: LabelProfile) -> None:
     """
     Tras pulsar Escribir, recarga los valores desde el inversor (Leer) y comprueba
     que 6.3.2 quedó como se pretendía. Lanza AutomationError si no coincide.
@@ -597,10 +690,10 @@ def _verify_discharge_written(page: Page, intended_blocked: bool) -> None:
         logger.warning(f"No se pudo releer 6.3.2 para verificar la escritura: {e}")
         return
     if intended_blocked:
-        ok = _discharge_config_is_blocked(page)
+        ok = _discharge_config_is_blocked(page, profile)
     else:
-        ok = (_get_select_value_by_label(page, LABEL_DISC_PROG_1) == SCHEDULE_DISABLED
-              and _get_select_value_by_label(page, LABEL_DISC_PROG_2) == SCHEDULE_DISABLED)
+        ok = (_get_select_value_by_label(page, profile.disc_prog_1) == SCHEDULE_DISABLED
+              and _get_select_value_by_label(page, profile.disc_prog_2) == SCHEDULE_DISABLED)
     if not ok:
         raise AutomationError(
             "Verificación de 6.3.2 fallida tras Escribir: el inversor no quedó "
@@ -609,10 +702,10 @@ def _verify_discharge_written(page: Page, intended_blocked: bool) -> None:
     logger.info(f"6.3.2 verificada tras escritura: {'BLOQUEADA' if intended_blocked else 'LIBRE'}")
 
 
-def _read_charge_state(page: Page) -> tuple[bool, int]:
+def _read_charge_state(page: Page, profile: LabelProfile) -> tuple[bool, int]:
     """Lee el estado actual de 6.3.1. Devuelve (charge_active, soc_pct)."""
-    prog1 = _get_select_value_by_label(page, LABEL_PROG_1)
-    prog2 = _get_select_value_by_label(page, LABEL_PROG_2)
+    prog1 = _get_select_value_by_label(page, profile.charge_prog_1)
+    prog2 = _get_select_value_by_label(page, profile.charge_prog_2)
     active = prog1 != SCHEDULE_DISABLED or prog2 != SCHEDULE_DISABLED
     soc = 0
     if active:
@@ -623,7 +716,7 @@ def _read_charge_state(page: Page) -> tuple[bool, int]:
     return active, soc
 
 
-def _read_discharge_state(page: Page) -> tuple[bool, bool]:
+def _read_discharge_state(page: Page, profile: LabelProfile) -> tuple[bool, bool]:
     """
     Lee el estado actual de 6.3.2. Devuelve (discharge_blocked, recognized):
     - discharge_blocked: True solo si coincide con la config canónica de bloqueo.
@@ -632,12 +725,12 @@ def _read_discharge_state(page: Page) -> tuple[bool, bool]:
       invertido de versiones <=1.50) → el caller fuerza la reescritura.
     Loguea los valores brutos para diagnóstico.
     """
-    prog1 = _get_select_value_by_label(page, LABEL_DISC_PROG_1)
-    prog2 = _get_select_value_by_label(page, LABEL_DISC_PROG_2)
+    prog1 = _get_select_value_by_label(page, profile.disc_prog_1)
+    prog2 = _get_select_value_by_label(page, profile.disc_prog_2)
     logger.debug(f"  6.3.2 Prog1={prog1!r} Prog2={prog2!r}")
     if prog1 == SCHEDULE_DISABLED and prog2 == SCHEDULE_DISABLED:
         return False, True            # descarga libre (canónica)
-    if _discharge_config_is_blocked(page):
+    if _discharge_config_is_blocked(page, profile):
         return True, True             # bloqueo canónico
     logger.warning(
         "6.3.2 tiene una programación de descarga activa pero NO canónica "
@@ -747,16 +840,22 @@ def set_charge_current(cfg: InverterConfig, amps: int, dry_run: bool = False) ->
 # ---------------------------------------------------------------------------
 
 @_serialize_web
-def read_inverter_schedule(cfg: InverterConfig) -> Optional[ScheduleState]:
+def read_inverter_schedule(
+    cfg: InverterConfig, profile: Optional[LabelProfile] = None
+) -> Optional[ScheduleState]:
     """
     Lee el estado actual de 6.3.1 (carga) y 6.3.2 (descarga) del inversor vía web.
 
     Navega en una sola sesión de Playwright a ambas secciones, pulsa Leer en cada
     una y extrae los valores configurados. No escribe nada.
 
+    Args:
+        profile: perfil de etiquetas; None → perfil activo del proceso.
+
     Returns:
         ScheduleState con la configuración actual, o None si no se puede leer.
     """
+    prof = _profile(profile)
     logger.info("Leyendo programación del inversor vía web (6.3.1 y 6.3.2)...")
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -782,11 +881,11 @@ def read_inverter_schedule(cfg: InverterConfig) -> Optional[ScheduleState]:
             _login(page, cfg)
 
             _navigate_to_charge_schedule(page)
-            charge_active, charge_soc = _read_charge_state(page)
+            charge_active, charge_soc = _read_charge_state(page, prof)
 
             _navigate_to_discharge_schedule(page)
             _read_current_values(page)   # loguea etiquetas y valores reales para diagnóstico
-            discharge_blocked, discharge_recognized = _read_discharge_state(page)
+            discharge_blocked, discharge_recognized = _read_discharge_state(page, prof)
 
             state = ScheduleState(
                 charge_active=charge_active,
@@ -802,6 +901,80 @@ def read_inverter_schedule(cfg: InverterConfig) -> Optional[ScheduleState]:
             return state
         except Exception as e:
             logger.warning(f"No se pudo leer la programación del inversor: {e}")
+            return None
+        finally:
+            context.close()
+            browser.close()
+
+
+# ---------------------------------------------------------------------------
+# Versión de firmware (menú Actualización)
+# ---------------------------------------------------------------------------
+# El firmware NO se expone por MODBUS (comprobado por escaneo ASCII de los input y
+# holding registers 0..2000). La única forma de leerlo es vía web, en el menú
+# "Actualización", fila "Firmware" de la tabla (ej. "ABH1007AD"). "Web" es la versión
+# del frontend (ej. "6.1.0"), que no nos interesa para las decisiones de etiquetas.
+LABEL_MENU_UPDATE = "Actualización"
+LABEL_ROW_FIRMWARE = "Firmware"
+
+
+def _read_firmware_from_page(page: Page) -> Optional[str]:
+    """Extrae el valor de la fila 'Firmware' de la tabla del menú Actualización.
+    Devuelve la cadena (p.ej. 'ABH1007AD') o None si no se encuentra."""
+    row = page.locator("tr", has_text=LABEL_ROW_FIRMWARE).first
+    cells = [c.strip() for c in row.locator("td").all_inner_texts() if c.strip()]
+    # Estructura: ['Firmware', 'ABH1007AD']. Descartamos la etiqueta y nos quedamos
+    # con el primer valor distinto de la propia etiqueta.
+    for c in cells:
+        if c != LABEL_ROW_FIRMWARE:
+            return c
+    return None
+
+
+@_serialize_web
+def read_firmware_version(cfg: InverterConfig) -> Optional[str]:
+    """
+    Lee la versión de firmware del inversor desde el menú Actualización de la web.
+
+    Devuelve la cadena de firmware (p.ej. "ABH1007AD") o None si no se pudo leer.
+    Sesión Playwright propia (un solo login), serializada con el resto de operaciones
+    web. NO escribe nada en el inversor.
+    """
+    logger.debug("Leyendo versión de firmware vía web (menú Actualización)...")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-zygote",
+                "--single-process",
+            ],
+        )
+        context = browser.new_context(
+            ignore_https_errors=True,
+            locale="es-ES",
+            timezone_id="Europe/Madrid",
+        )
+        page = context.new_page()
+        page.set_default_timeout(cfg.browser_timeout_seconds * 1000)
+        try:
+            _login(page, cfg)
+            page.wait_for_selector(f"text={LABEL_MENU_UPDATE}", timeout=15000)
+            page.locator(f"text={LABEL_MENU_UPDATE}").first.click()
+            page.wait_for_load_state("networkidle")
+            page.wait_for_timeout(3000)
+            firmware = _read_firmware_from_page(page)
+            if firmware:
+                logger.info(f"Firmware del inversor: {firmware}")
+            else:
+                logger.warning("No se encontró la fila 'Firmware' en el menú Actualización")
+            return firmware
+        except Exception as e:
+            logger.warning(f"No se pudo leer la versión de firmware: {e}")
             return None
         finally:
             context.close()

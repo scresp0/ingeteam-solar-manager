@@ -16,6 +16,8 @@ from app.automation import (
     read_inverter_schedule,
     set_charge_schedule,
     set_discharge_schedule,
+    read_firmware_version,
+    configure_active_profile,
     AutomationError,
 )
 
@@ -35,6 +37,14 @@ def main():
 
     print(f"\nTest de automatización")
     print(f"  Inversor : {cfg.inverter.web_url}")
+    print()
+
+    # ── Firmware → perfil de etiquetas ─────────────────────────────────────
+    print("── Leyendo firmware y fijando perfil de etiquetas ──")
+    firmware = read_firmware_version(cfg.inverter)
+    profile = configure_active_profile(firmware)
+    print(f"  Firmware : {firmware or 'desconocido'}")
+    print(f"  Perfil   : {profile.name}")
     print()
 
     # ── Lectura del estado actual (siempre) ────────────────────────────────
