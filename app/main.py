@@ -35,6 +35,7 @@ from app.decision import (
 from app.automation import (
     set_charge_schedule, set_discharge_schedule, AutomationError,
     read_inverter_schedule, ScheduleState, set_charge_current, _load_schedule_state,
+    read_firmware_version, configure_active_profile,
 )
 from app.notifier import CycleEmailNotifier
 from app.logger_reader import get_yesterday_stats, get_daily_stats, LoggerReaderError
@@ -767,6 +768,19 @@ def _record_charge_current_change(cfg, target, previous, calculated, mode, state
             f"No se pudo guardar el cambio de corriente en InfluxDB: {e}")
 
 
+def _configure_firmware_profile(cfg: AppConfig) -> None:
+    """Lee el firmware del inversor y fija el perfil de etiquetas activo.
+    Pensado para ejecutarse en un hilo daemon al arrancar. Nunca lanza: si la
+    lectura falla, configure_active_profile(None) deja el perfil por defecto."""
+    logger = logging.getLogger(__name__)
+    try:
+        firmware = read_firmware_version(cfg.inverter)
+    except Exception as e:
+        logger.warning(f"No se pudo leer el firmware al arrancar: {e}")
+        firmware = None
+    configure_active_profile(firmware)
+
+
 def main() -> None:
     """Punto de entrada — carga config, arranca el scheduler y la interfaz web."""
     try:
@@ -802,9 +816,18 @@ def main() -> None:
         t.start()
         logger.info(f"Interfaz web disponible en http://0.0.0.0:{cfg.system.web_port}")
 
+    # Leer el firmware del inversor y fijar el perfil de etiquetas de 6.3.1/6.3.2
+    # acorde (ver FIRMWARE_PROFILES en automation.py). En segundo plano para no
+    # bloquear el arranque; completa en pocos segundos, mucho antes del ciclo de
+    # las 23:55. Si falla la lectura, queda el perfil por defecto (el más reciente).
+    import threading as _threading
+    _threading.Thread(
+        target=_configure_firmware_profile, args=(cfg,), daemon=True,
+        name="firmware-profile-startup",
+    ).start()
+
     # Rellenar huecos de producción histórica al arrancar (en segundo plano para
     # no bloquear el scheduler). El job diario de las 00:30 mantiene "ayer" al día.
-    import threading as _threading
     _threading.Thread(
         target=backfill_solar_history, args=(cfg,), daemon=True, name="backfill-startup",
     ).start()
