@@ -17,6 +17,8 @@ RUN apt-get update && apt-get install -y \
     libgbm1 libasound2 libpango-1.0-0 libcairo2 \
     # Utilidades
     curl tzdata \
+    # Cliente SSH/SCP para el backup externo (sección `backup` de config.yaml)
+    openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 # CLI de InfluxDB (influx) — usada por /api/db/export para hacer backups

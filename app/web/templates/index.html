@@ -721,6 +721,7 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
           <button class="btn btn-accent" onclick="saveConfig()">Guardar cambios</button>
           <button class="btn" onclick="loadConfigForm()">Recargar desde disco</button>
           <button class="btn" id="cfg-export-btn" onclick="exportDb()">Exportar BD</button>
+          <button class="btn" id="cfg-backup-btn" onclick="runBackup()">Backup a servidor</button>
           <span class="save-feedback" id="cfg-ok">Guardado correctamente</span>
           <span id="cfg-err" style="font-size:12px;color:var(--red);display:none"></span>
         </div>
@@ -778,6 +779,31 @@ async function exportDb() {
     URL.revokeObjectURL(url);
   } catch (e) {
     if (err) { err.textContent = 'Export falló: ' + e.message; err.style.display = ''; }
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = orig; }
+  }
+}
+
+// Lanza una copia de seguridad externa por SCP (POST protegido con X-API-Key).
+async function runBackup() {
+  const btn = document.getElementById('cfg-backup-btn');
+  const err = document.getElementById('cfg-err');
+  const ok = document.getElementById('cfg-ok');
+  if (err) err.style.display = 'none';
+  if (ok) ok.classList.remove('show');
+  const orig = btn ? btn.textContent : '';
+  if (btn) { btn.disabled = true; btn.textContent = 'Copiando…'; }
+  try {
+    const r = await _postWithAuth('/api/backup/run');
+    if (!r.ok) {
+      let detail = `HTTP ${r.status}`;
+      try { const j = await r.json(); detail = j.detail || detail; } catch (e) {}
+      throw new Error(detail);
+    }
+    const j = await r.json();
+    if (ok) { ok.textContent = 'Backup subido: ' + (j.file || 'ok'); ok.classList.add('show'); }
+  } catch (e) {
+    if (err) { err.textContent = 'Backup falló: ' + e.message; err.style.display = ''; }
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = orig; }
   }

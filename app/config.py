@@ -210,6 +210,47 @@ class ChargeCurrentConfig(BaseModel):
         return self
 
 
+class BackupConfig(BaseModel):
+    """Copia de seguridad periódica a un servidor externo por SCP.
+
+    Empaqueta en un único .tar.gz el backup online de InfluxDB, el directorio de
+    logs y config.yaml, y lo sube por SCP (clave SSH) al `remote_dir` del host
+    remoto. Tras subir, rota los backups antiguos manteniendo `retention`.
+    No contiene secretos: la autenticación es por clave SSH (fichero montado).
+    """
+    enabled: bool = False
+    schedule_at: str = "04:00"                 # HH:MM diario
+    host: str = ""                             # servidor destino
+    port: int = Field(default=22, ge=1, le=65535)
+    user: str = ""                             # usuario SSH en el destino
+    remote_dir: str = ""                       # directorio destino en el remoto
+    ssh_key_path: str = "/root/.ssh/id_backup" # clave privada montada en el contenedor
+    # Verificación de la clave del host remoto. True (recomendado) exige que el
+    # host esté en known_hosts; False la desactiva (inseguro, útil solo para un
+    # primer arranque hasta poblar known_hosts).
+    strict_host_key_checking: bool = True
+    known_hosts_path: str = "/root/.ssh/known_hosts"
+    retention: int = Field(default=7, ge=1)    # nº de backups a mantener en el remoto
+    timeout_seconds: int = Field(default=600, ge=30)  # timeout de scp/ssh
+
+    @model_validator(mode="after")
+    def required_when_enabled(self):
+        if self.enabled:
+            missing = [
+                name for name, val in (
+                    ("host", self.host),
+                    ("user", self.user),
+                    ("remote_dir", self.remote_dir),
+                ) if not str(val).strip()
+            ]
+            if missing:
+                raise ValueError(
+                    "backup habilitado pero faltan campos obligatorios: "
+                    + ", ".join(missing)
+                )
+        return self
+
+
 class EmailConfig(BaseModel):
     enabled: bool = True
     smtp_host: str = ""
@@ -259,6 +300,7 @@ class AppConfig(BaseModel):
     charge_current: ChargeCurrentConfig = ChargeCurrentConfig()
     system: SystemConfig
     influxdb: InfluxDBConfig = InfluxDBConfig()
+    backup: BackupConfig = BackupConfig()
 
     @model_validator(mode="after")
     def balance_soc_reachable(self):

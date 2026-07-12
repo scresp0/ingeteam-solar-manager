@@ -923,6 +923,24 @@ def create_app(cfg: AppConfig) -> FastAPI:
             background=BackgroundTask(lambda: shutil.rmtree(tmp, ignore_errors=True)),
         )
 
+    @app.post("/api/backup/run", dependencies=[Depends(_require_api_key)])
+    async def backup_run():
+        """Lanza una copia de seguridad externa por SCP bajo demanda.
+
+        Empaqueta DB + logs + config y la sube al servidor remoto configurado en
+        la sección `backup` de config.yaml, rotando los backups antiguos.
+        """
+        from app import backup as backup_mod
+
+        if not cfg.backup.enabled:
+            raise HTTPException(status_code=503, detail="Backup externo no habilitado")
+        try:
+            fname = await asyncio.to_thread(backup_mod.run_backup, cfg)
+        except Exception as e:
+            logger.error(f"Backup externo falló: {e}")
+            raise HTTPException(status_code=500, detail=f"Backup falló: {e}")
+        return {"status": "ok", "file": fname}
+
     @app.get("/api/logs")
     async def get_logs(lines: int = 100):
         """Devuelve las últimas N líneas del fichero de log."""
