@@ -578,8 +578,7 @@ def _remaining_solar_forecast(cfg: AppConfig, now) -> tuple[float | None, float]
 
 def _compute_target_charge_current(
     cfg: AppConfig, state: InverterState, hour: float,
-    schedule_state, current: int,
-    remaining_solar_kwh: float | None, solar_end_hour: float,
+    schedule_state, current: int, solar_end_hour: float,
 ) -> tuple[int, int, str]:
     """Devuelve (amperios_objetivo, amperios_calculados, modo).
 
@@ -588,16 +587,18 @@ def _compute_target_charge_current(
     es esa misma corriente ya acotada (la que se fija en el inversor). Cuando el
     cálculo cae por debajo del mínimo configurado, `objetivo` = mínimo pero
     `calculado` refleja el valor real que pedía la fórmula. En los modos que no
-    calculan corriente (idle / batería llena / máx por solar insuficiente) ambos
+    calculan corriente (idle / batería llena / máx por temperatura) ambos
     coinciden con el valor devuelto.
 
     - VALLE (00:00–08:00 con carga de red): corriente mínima para llegar al target
       en lo que queda de valle (sin temperatura — de noche no hay calor).
-    - SOLAR (08:00–fin de producción): si la producción solar restante calibrada cubre
-      la energía pendiente → corriente mínima para llenar con esa solar; si no (solar
-      insuficiente o sin forecast) → máx (66) para llenar seguro. Con
-      temp_gate_enabled=True además exige temp > hot_threshold (si la batería está fría
-      va a máx); con temp_gate_enabled=False la temperatura no influye.
+    - SOLAR (08:00–fin de producción): corriente MÍNIMA que llena la batería antes
+      del fin de producción (amps_for), acotada a [floor_a, max_a]. Ya NO hay
+      acantilado "solar insuficiente → máx": si falta tiempo o sobra energía, amps_for
+      sube sola hasta el tope, y el recálculo cada interval_min la reajusta si la carga
+      va por detrás (nubes). Con temp_gate_enabled=True, si la batería está fría
+      (temp ≤ hot_threshold) va a máx (capta picos intermitentes); con False la
+      temperatura no influye.
     - Sin carga (idle / valle sin carga / batería llena) → deja la corriente como está.
     """
     cc = cfg.charge_current
@@ -648,21 +649,19 @@ def _compute_target_charge_current(
             return target, raw, "VALLE"
         return current, current, "IDLE (valle sin carga — sin cambios)"
 
-    # SOLAR: ventana diurna productiva 08:00 – fin de producción del forecast
+    # SOLAR: ventana diurna productiva 08:00 – fin de producción del forecast.
+    # Corriente mínima que llena la batería antes del fin de producción; amps_for
+    # sube sola hasta max_a cuando queda poco tiempo o mucha energía, y baja al
+    # floor cuando sobra tiempo. Sin acantilado "solar insuficiente → 66A": el
+    # recálculo cada interval_min corrige si la carga se retrasa por nubes.
     if _VALLE_END_HOUR <= hour < solar_end_hour:
         energy = (max_soc - soc) / 100.0 * cap
         if energy <= 0:
             return current, current, "SOLAR (batería llena — sin cambios)"
         if cc.temp_gate_enabled and state.battery_temp_c <= cc.hot_threshold_c:
             return cc.max_a, cc.max_a, f"SOLAR (temp {state.battery_temp_c}≤{cc.hot_threshold_c}ºC → máx)"
-        if remaining_solar_kwh is None:
-            return cc.max_a, cc.max_a, "SOLAR (forecast no disponible → máx)"
-        if remaining_solar_kwh < energy:
-            return cc.max_a, cc.max_a, (f"SOLAR (solar restante {remaining_solar_kwh:.1f} < "
-                                        f"{energy:.1f} kWh → máx)")
-        why = "calor + solar suficiente" if cc.temp_gate_enabled else "solar suficiente"
         target, raw = amps_for(energy, solar_end_hour - hour)
-        return target, raw, f"SOLAR ({why} → mín)"
+        return target, raw, "SOLAR (rampa a fin de producción)"
 
     return current, current, "IDLE (sin carga — sin cambios)"
 
@@ -704,7 +703,7 @@ def run_charge_current_controller(cfg: AppConfig, simulate: bool = False) -> Non
     remaining_solar, solar_end = _remaining_solar_forecast(cfg, now)
     schedule_state = _load_schedule_state()
     target, calculated, mode = _compute_target_charge_current(
-        cfg, state, hour, schedule_state, current, remaining_solar, solar_end)
+        cfg, state, hour, schedule_state, current, solar_end)
 
     solar_txt = "?" if remaining_solar is None else f"{remaining_solar:.1f}"
     calc_txt = "" if calculated == target else f" (calculado {calculated}A)"
