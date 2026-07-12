@@ -110,6 +110,18 @@ La versión se muestra en el log de arranque, en el header de la web (`/`) y en 
   - `docker-compose.yml` espera la variable `${HOST_HOSTNAME}`, que el Makefile provee
   - Otros targets: `make down`, `make restart`, `make build`, `make logs`, `make shell`, `make migrate-config`
 
+## Copia de seguridad externa por SCP (v1.70, `app/backup.py`)
+
+Empaqueta en un `.tar.gz` el **backup online de InfluxDB** (mismo `influx backup` que `GET /api/db/export`), el **directorio de logs** y **`config.yaml`**, y lo sube por **SCP** a un servidor remoto. Todo se configura en la sección `backup` de `config.yaml` (no hay secretos: la autenticación es por **clave SSH** montada como fichero, no por contraseña).
+
+- **Job diario** (`scheduler._run_backup_job` → `backup.run_backup`) a `backup.schedule_at` (CronTrigger; solo si `backup.enabled`). Patrón idéntico al backfill de las 00:30.
+- **Disparo manual**: `POST /api/backup/run` (protegido con `web_api_key`) + botón "Backup a servidor" en la pestaña Configuración (`runBackup()` en `index.html`).
+- **Rotación remota**: tras subir, `_rotate_remote` borra por SSH los backups que excedan `backup.retention` (`ls -1t <dir>/solar-backup-*.tar.gz | tail -n +N+1 | xargs -r rm -f`). Un fallo de rotación **no** invalida un backup ya subido (WARNING y sigue).
+- **Autenticación SSH**: `scp -i <ssh_key_path> -o BatchMode=yes` (nunca prompt interactivo). `scp` usa `-P` para el puerto; `ssh` usa `-p`. `strict_host_key_checking: true` (default) exige el host en `known_hosts` (`known_hosts_path`); `false` lo desactiva (inseguro, solo para primer arranque). Validación cruzada en `BackupConfig`: con `enabled: true`, `host`/`user`/`remote_dir` son obligatorios.
+- **Requisitos de entorno**: el Dockerfile instala `openssh-client` (scp/ssh). Hay que **montar la clave SSH** en el contenedor — volumen comentado en `docker-compose.yml` (`./ssh:/root/.ssh:ro`); la ruta interna debe coincidir con `backup.ssh_key_path`. La clave pública debe estar en el `authorized_keys` del destino.
+- **Fail-safe**: si InfluxDB está deshabilitado, el archivo se genera igualmente con logs+config (WARNING). Errores de creación/subida lanzan `BackupError` → el job los loguea; el endpoint devuelve 500.
+- **No editable desde la web**: la sección `backup` no está en la lista blanca de `POST /api/config` ni en el `CONFIG_SCHEMA` del form; se edita a mano en `config.yaml` (más el botón de disparo manual).
+
 ## Parámetros dinámicos (calibración automática desde InfluxDB)
 
 Tres parámetros se calculan automáticamente a partir del histórico almacenado en InfluxDB, usando el valor de `config.yaml` como fallback mientras no haya suficientes días:
@@ -265,6 +277,7 @@ Ajusta la "Corriente Máxima de Carga" de la batería al **mínimo necesario** p
 | `POST /api/cycle` | Lanza ciclo completo manual (dry_run o real) |
 | `POST /api/config` | Aplica `{values: {<seccion>: {<key>: <valor>}}}` a `config.yaml` preservando comentarios (ruamel.yaml round-trip). Valida el YAML completo contra el modelo Pydantic `AppConfig` antes de escribir. Requiere `web_api_key`. |
 | `GET /api/db/export` | Backup consistente de InfluxDB (`influx backup` online sobre el bucket configurado) empaquetado en `.tar.gz` descargable. Requiere `web_api_key`. El token se pasa por env var `INFLUX_TOKEN`, no en argv. |
+| `POST /api/backup/run` | Lanza bajo demanda la copia de seguridad externa por SCP (DB + logs + config → servidor remoto, con rotación). Requiere `web_api_key`. Ver sección "Copia de seguridad externa". |
 | `POST /api/run/{test}` | Lanza test unitario en background |
 | `GET /api/stream/{job_id}` | SSE stream de logs de un job |
 

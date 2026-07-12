@@ -113,6 +113,30 @@ def start_scheduler(cfg: AppConfig) -> None:
             f"({timezone}); primer tick a las {first_run:%H:%M:%S}"
         )
 
+    # Copia de seguridad externa por SCP: empaqueta DB + logs + config y la sube
+    # a un servidor remoto, rotando los backups antiguos.
+    if cfg.backup.enabled:
+        try:
+            bh, bm = cfg.backup.schedule_at.split(":")
+            scheduler.add_job(
+                func=_run_backup_job,
+                trigger=CronTrigger(hour=int(bh), minute=int(bm), timezone=timezone),
+                args=[cfg],
+                id="external_backup",
+                name=f"Backup externo por SCP ({cfg.backup.schedule_at})",
+                misfire_grace_time=3600,
+                replace_existing=True,
+            )
+            logger.info(
+                f"Backup externo programado a las {cfg.backup.schedule_at} ({timezone}) "
+                f"→ {cfg.backup.user}@{cfg.backup.host}:{cfg.backup.remote_dir}"
+            )
+        except ValueError:
+            logger.error(
+                f"backup.schedule_at inválido ({cfg.backup.schedule_at!r}); "
+                f"se esperaba formato HH:MM. Backup externo desactivado."
+            )
+
     # Ejecutar inmediatamente si se pide (útil para pruebas)
     if os.environ.get("RUN_ON_START", "").lower() in ("true", "1", "yes"):
         logger.info("RUN_ON_START activo — ejecutando ciclo ahora")
@@ -174,3 +198,13 @@ def _run_charge_current_job(cfg: AppConfig) -> None:
         run_charge_current_controller(cfg)
     except Exception as e:
         logger.exception(f"Scheduler: error inesperado en el control de corriente de carga: {e}")
+
+
+def _run_backup_job(cfg: AppConfig) -> None:
+    """Copia de seguridad externa por SCP — llamado por el scheduler a backup.schedule_at."""
+    from app.backup import run_backup
+    logger.info("Scheduler: iniciando copia de seguridad externa")
+    try:
+        run_backup(cfg)
+    except Exception as e:
+        logger.exception(f"Scheduler: error inesperado en la copia de seguridad externa: {e}")

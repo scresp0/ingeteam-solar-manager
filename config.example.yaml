@@ -189,3 +189,27 @@ influxdb:
   org: "solar"                   # INFLUXDB_ORG en .env
   bucket: "solar-manager"        # INFLUXDB_BUCKET en .env
   # token en .env como INFLUXDB_TOKEN
+
+# -----------------------------------------------------------------------------
+# Copia de seguridad externa por SCP
+# -----------------------------------------------------------------------------
+# Empaqueta la BD de InfluxDB + los logs + config.yaml en un .tar.gz y lo sube
+# por SCP a un servidor remoto, rotando los backups antiguos. Autenticación por
+# clave SSH (sin secretos en este fichero: la clave privada se monta en el
+# contenedor). Requiere montar el volumen de la clave SSH en docker-compose.yml
+# (ver ejemplo comentado) y que la clave pública esté en el authorized_keys del
+# destino. También hay un botón "Backup a servidor" en la pestaña Configuración.
+backup:
+  enabled: false                # true para activar el backup automático diario
+  schedule_at: "04:00"          # hora diaria (HH:MM) del backup automático
+  host: "backup.example.com"    # servidor de destino
+  port: 22
+  user: "backup"                # usuario SSH en el destino
+  remote_dir: "/srv/backups/solar-manager"   # directorio destino en el remoto
+  ssh_key_path: "/root/.ssh/id_backup"       # clave privada montada en el contenedor
+  # Verificación de la clave del host remoto. true (recomendado) exige el host en
+  # known_hosts; ponlo en false solo para un primer arranque hasta poblarlo.
+  strict_host_key_checking: true
+  known_hosts_path: "/root/.ssh/known_hosts"
+  retention: 7                  # nº de backups a mantener en el remoto (borra los más antiguos)
+  timeout_seconds: 600          # timeout de scp/ssh
