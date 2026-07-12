@@ -12,9 +12,10 @@ haría el algoritmo en cada situación. Para cada escenario imprime:
       · VALLE: energía que la red puede entregar a la corriente máxima en la ventana
   - potencia de carga configurada (amperios DC y vatios sobre la tensión de batería)
 
-Escenario protagonista: la batería necesita ir del 30% al 100% pero el forecast solo
-da para llegar al 80% → en modo SOLAR es "todo o nada": si la solar prevista no cubre
-el objetivo COMPLETO, el algoritmo carga a máximo (66A) para no quedarse corto.
+Escenario protagonista: la batería necesita ir del 30% al 100%. En modo SOLAR se
+carga a la corriente MÍNIMA que llena la batería antes del fin de producción (rampa);
+amps_for sube hacia el máximo solo cuando falta tiempo o sobra energía, y el recálculo
+periódico la reajusta si la carga se retrasa. Ya no hay acantilado "insuficiente → 66A".
 
 Ejecutar:
   PYTHONPATH=. python app/test_charge_current_scenarios.py
@@ -89,7 +90,7 @@ def run():
             sched, hour = None, sc["hour"]
             remaining, solar_end = sc["remaining"], sc["solar_end"]
         amps, _calc, mode = _compute_target_charge_current(
-            cfg, state, hour, sched, sc["current"], remaining, solar_end)
+            cfg, state, hour, sched, sc["current"], solar_end)
         narra(sc, cfg, amps, mode)
         exp = sc["esperado"]
         if amps == exp:
@@ -100,15 +101,17 @@ def run():
             print(f"     ✗ esperado {exp}A  pero dio {amps}A")
 
     print("=" * 72)
-    print(" MODO SOLAR — la solar prevista DEBE cubrir el objetivo completo, si no → máx")
+    print(" MODO SOLAR — corriente mínima para llenar antes del fin de producción (rampa)")
     print("=" * 72)
 
     escenarios_solar = [
-        # PROTAGONISTA: 30→100% pero el forecast solo da para el 80% (11.25 kWh).
-        # 15.75 kWh pendientes > 11.25 kWh de sol → insuficiente → MÁX 66A.
-        dict(titulo="30→100%, forecast solo cubre hasta 80%", modo="SOLAR",
+        # PROTAGONISTA: 30→100% (15.75 kWh) con 7h por delante. Ya NO importa que la
+        # solar "cubra" el objetivo: se carga a la corriente que llena antes del fin
+        # de producción. amps = 24·15.75/7 = 54A (el recálculo cada 15 min sube si la
+        # tarde flojea). El `remaining` pequeño es irrelevante para la decisión.
+        dict(titulo="30→100%, 7h por delante → rampa", modo="SOLAR",
              soc=30, temp=32, hour=11.0, solar_end=18.0,
-             remaining=kwh(80) - kwh(30), current=40, esperado=66),
+             remaining=kwh(80) - kwh(30), current=40, esperado=54),
 
         # Forecast cubre JUSTO hasta el 100% (15.75 kWh), 8h por delante → carga suave.
         # amps = 24·15.75/8 = 47A.
@@ -138,10 +141,11 @@ def run():
              soc=100, temp=32, hour=11.0, solar_end=18.0,
              remaining=10.0, current=40, esperado=40),
 
-        # Sin forecast disponible → no se puede asegurar la solar → MÁX 66A.
-        dict(titulo="30→100%, sin forecast → máx", modo="SOLAR",
+        # Sin forecast disponible → usa el fin de ventana (histórico) y rampa igual.
+        # 30→100% en 7h = 54A (ya no salta a máx por no tener forecast).
+        dict(titulo="30→100%, sin forecast → rampa", modo="SOLAR",
              soc=30, temp=32, hour=11.0, solar_end=18.0,
-             remaining=None, current=40, esperado=66),
+             remaining=None, current=40, esperado=54),
 
         # Batería FRÍA (28≤30ºC) con puerta de temperatura activa → MÁX 66A
         # aunque la solar bastaría (capta picos intermitentes en invierno).
