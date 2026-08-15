@@ -1667,7 +1667,7 @@ const CONFIG_SCHEMA = [
     section: 'tariff', title: 'Planificador',
     fields: [
       { key: 'schedule_at',         label: 'Hora ciclo nocturno (HH:MM)',     type: 'text',     placeholder: '23:55' },
-      { key: 'schedule_recheck_at', label: 'Hora re-evaluación (HH:MM, vacío = desactivado)', type: 'text', placeholder: '03:00', nullable: true },
+      { key: 'schedule_recheck_at', label: 'Horas re-evaluación (HH:MM, coma para varias; vacío = desactivado)', type: 'text', placeholder: '19:00, 03:00', nullable: true },
       { key: 'night_cutoff_hour',   label: 'Hora límite madrugada (0–12)',    type: 'number',   min: 0, max: 12, step: 1 },
     ],
   },

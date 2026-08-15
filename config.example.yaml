@@ -60,15 +60,21 @@ tariff:
   # Hora de ejecución del ciclo nocturno (HH:MM)
   schedule_at: "23:55"
 
-  # Segunda ejecución en madrugada (HH:MM) para re-evaluar la decisión
-  # de carga teniendo en cuenta el consumo nocturno real entre
-  # schedule_at y esta hora. Si el SOC ha bajado más de lo previsto,
-  # la decisión puede cambiar (de "no cargar" a "cargar") con tiempo
-  # de sobra antes del fin del valle (08:00).
-  # Esta ejecución solo recalcula la decisión y reconfigura el inversor
-  # si difiere; no escribe ciclo_carga en InfluxDB ni lee stats.
-  # null o no definido = desactivado.
-  schedule_recheck_at: "03:00"
+  # Re-evaluaciones adicionales (HH:MM) que recalculan la decisión con el SOC
+  # del momento — que ya refleja el consumo y la producción solar reales — y
+  # reconfiguran el inversor solo si difiere de lo ya programado. No escriben
+  # ciclo_carga en InfluxDB ni leen stats. Varias horas separadas por coma.
+  # Vacío o null = desactivado.
+  #   "03:00" → capta el consumo nocturno real; queda margen hasta el fin
+  #             del valle (08:00) para pasar de "no cargar" a "cargar".
+  #   "19:00" → capta un día solar peor de lo previsto (lluvia, nubes) con
+  #             5 h de antelación sobre el ciclo de las 23:55.
+  # OJO a las horas de tarde: el algoritmo parte del SOC actual y solo descuenta
+  # el consumo de 00:00–07:59, así que a las 19:00 el consumo de la tarde-noche
+  # no se resta → decisión optimista. El ciclo de schedule_at sigue siendo el
+  # canónico. Además, si hoy es fin de semana y se decide bloquear la descarga,
+  # el bloqueo (Prog 2 = 6.3.2) pasa a aplicar YA, no a medianoche.
+  schedule_recheck_at: "19:00, 03:00"
 
   # Hora límite de "madrugada" (0-12).
   # Si el programa se ejecuta ANTES de esta hora, actúa como si fuera

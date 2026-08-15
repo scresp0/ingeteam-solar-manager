@@ -72,11 +72,12 @@ class TariffPeriods(BaseModel):
 
 class TariffConfig(BaseModel):
     schedule_at: str = "23:30"
-    # Segunda ejecución en madrugada (HH:MM) para re-evaluar la decisión
-    # tras el consumo entre schedule_at y esa hora. null = desactivado.
-    # Recalcula y reconfigura el inversor si la decisión cambió; no escribe
-    # ciclo_carga en InfluxDB ni lee stats del día anterior.
-    schedule_recheck_at: Optional[str] = None
+    # Re-evaluaciones adicionales (HH:MM) que recalculan la decisión con el SOC
+    # del momento y reconfiguran el inversor si difiere de lo ya programado.
+    # No escriben ciclo_carga en InfluxDB ni leen stats del día anterior.
+    # Acepta una hora ("03:00"), varias separadas por coma ("19:00, 03:00")
+    # o una lista YAML. Vacío/null = desactivado. Se normaliza a lista ordenada.
+    schedule_recheck_at: List[str] = []
     weekend_days: List[int] = [5, 6]   # 0=lunes..6=domingo
     holidays: List[str] = []           # ["YYYY-MM-DD", ...]
     periods: TariffPeriods
@@ -90,6 +91,38 @@ class TariffConfig(BaseModel):
     @classmethod
     def coerce_holidays_to_str(cls, v):
         return [d.isoformat() if hasattr(d, "isoformat") else str(d) for d in (v or [])]
+
+    @field_validator("schedule_recheck_at", mode="before")
+    @classmethod
+    def coerce_recheck_times(cls, v):
+        """Normaliza a lista de "HH:MM" ordenada, sin duplicados.
+
+        Un formato inválido aborta el arranque en vez de desactivarse en
+        silencio: una re-evaluación que no corre no deja ninguna traza.
+        """
+        if v is None or v == "":
+            return []
+        items = v if isinstance(v, (list, tuple)) else str(v).split(",")
+
+        out = []
+        for raw in items:
+            s = str(raw).strip()
+            if not s:
+                continue
+            try:
+                h, m = s.split(":")
+                hh, mm = int(h), int(m)
+                if not (0 <= hh <= 23 and 0 <= mm <= 59):
+                    raise ValueError
+            except ValueError:
+                raise ValueError(
+                    f"tariff.schedule_recheck_at: {s!r} no es una hora válida; "
+                    f"se esperaba HH:MM (ej. '03:00' o '19:00, 03:00')"
+                )
+            norm = f"{hh:02d}:{mm:02d}"
+            if norm not in out:
+                out.append(norm)
+        return sorted(out)
 
     def is_valley_day(self, d: date) -> bool:
         if d.weekday() in self.weekend_days:

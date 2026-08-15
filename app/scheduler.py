@@ -2,8 +2,8 @@
 scheduler.py — cron interno con APScheduler.
 
 Ejecuta el ciclo completo cada noche a tariff.schedule_at (por defecto 23:55)
-y, opcionalmente, una re-evaluación a tariff.schedule_recheck_at (p.ej. 03:00)
-que recalcula la decisión y reconfigura el inversor si difiere.
+y, opcionalmente, una re-evaluación por cada hora de tariff.schedule_recheck_at
+(p.ej. "19:00, 03:00") que recalcula la decisión y reconfigura el inversor si difiere.
 
 También ejecuta un ciclo inmediatamente al arrancar si RUN_ON_START=true,
 útil para pruebas sin esperar a la hora programada.
@@ -48,28 +48,25 @@ def start_scheduler(cfg: AppConfig) -> None:
         f"({timezone})"
     )
 
-    recheck_at = cfg.tariff.schedule_recheck_at
-    if recheck_at:
-        try:
-            rh, rm = recheck_at.split(":")
-            scheduler.add_job(
-                func=_run_recheck_job,
-                trigger=CronTrigger(hour=int(rh), minute=int(rm), timezone=timezone),
-                args=[cfg],
-                id="charge_recheck",
-                name=f"Re-evaluación nocturna ({recheck_at})",
-                misfire_grace_time=300,
-                replace_existing=True,
-            )
-            logger.info(
-                f"Re-evaluación nocturna programada a las {recheck_at} ({timezone}) — "
-                f"reconfigura el inversor solo si la decisión cambia"
-            )
-        except ValueError:
-            logger.error(
-                f"tariff.schedule_recheck_at inválido ({recheck_at!r}); "
-                f"se esperaba formato HH:MM. Re-evaluación desactivada."
-            )
+    # Re-evaluaciones: una por cada hora de tariff.schedule_recheck_at. El formato
+    # ya lo validó TariffConfig al cargar la config, así que aquí no puede fallar.
+    for i, recheck_at in enumerate(cfg.tariff.schedule_recheck_at, start=1):
+        rh, rm = recheck_at.split(":")
+        scheduler.add_job(
+            func=_run_recheck_job,
+            trigger=CronTrigger(hour=int(rh), minute=int(rm), timezone=timezone),
+            args=[cfg],
+            id=f"charge_recheck_{i}",
+            name=f"Re-evaluación de la decisión ({recheck_at})",
+            misfire_grace_time=300,
+            replace_existing=True,
+        )
+    if cfg.tariff.schedule_recheck_at:
+        logger.info(
+            f"Re-evaluación de la decisión programada a las "
+            f"{', '.join(cfg.tariff.schedule_recheck_at)} ({timezone}) — "
+            f"reconfigura el inversor solo si la decisión cambia"
+        )
 
     # Backfill diario de producción histórica: a las 00:30 rellena el día que
     # acaba de terminar, de modo que "ayer" esté disponible en el gráfico durante
@@ -170,9 +167,9 @@ def _run_job(cfg: AppConfig) -> None:
 
 
 def _run_recheck_job(cfg: AppConfig) -> None:
-    """Re-evaluación nocturna — llamado por el scheduler a schedule_recheck_at."""
+    """Re-evaluación de la decisión — llamado por el scheduler a cada schedule_recheck_at."""
     from app.main import run_recheck
-    logger.info("Scheduler: iniciando re-evaluación nocturna")
+    logger.info("Scheduler: iniciando re-evaluación de la decisión")
     try:
         success = run_recheck(cfg)
         if not success:

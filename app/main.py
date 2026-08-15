@@ -11,9 +11,9 @@ Flujo completo (run):
   7. Leer stats del día anterior y guardar en InfluxDB
   8. Enviar email de notificación
 
-Re-evaluación nocturna (run_recheck), ejecutada a tariff.schedule_recheck_at:
-  Repite pasos 2-6 con el SOC actualizado tras el consumo entre schedule_at y
-  esa hora. Si la decisión cambia respecto al estado actual del inversor,
+Re-evaluación (run_recheck), ejecutada a cada hora de tariff.schedule_recheck_at:
+  Repite pasos 2-6 con el SOC del momento, que ya refleja el consumo y la
+  producción solar reales. Si la decisión cambia respecto al estado del inversor,
   reescribe y notifica por email; si no, sale sin tocar nada ni escribir
   ciclo_carga (rompería el JOIN con stats_diarias).
 """
@@ -362,12 +362,17 @@ def run(cfg: AppConfig) -> bool:
 
 def run_recheck(cfg: AppConfig) -> bool:
     """
-    Re-evaluación de la decisión a media madrugada (schedule_recheck_at, p.ej. 03:00).
+    Re-evaluación de la decisión (cada tariff.schedule_recheck_at, p.ej. 19:00 y 03:00).
 
-    Recoge inputs frescos (SOC actualizado tras el consumo entre schedule_at y
-    esta hora), recalcula decide_charge/decide_discharge y, si la decisión
+    Recoge inputs frescos (SOC actual, que ya incorpora el consumo y la producción
+    solar reales del día), recalcula decide_charge/decide_discharge y, si la decisión
     difiere del estado actual del inversor, la aplica y notifica por email.
     Si no difiere, sale silenciosamente.
+
+    Ojo con las horas de tarde: el algoritmo parte del SOC actual y solo descuenta
+    el consumo nocturno (00:00–07:59), así que a las 19:00 el consumo de la tarde
+    aún no se resta → la decisión es optimista respecto a la de las 23:55, que es
+    la canónica. Ver la nota de reference_date en CLAUDE.md.
 
     NO escribe ciclo_carga ni stats en InfluxDB: el ciclo de las 23:55 ya lo hizo
     y un segundo ciclo_carga del mismo día tendría timestamp en madrugada UTC,
