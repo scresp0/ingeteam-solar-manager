@@ -222,6 +222,7 @@ class ChargeCurrentConfig(BaseModel):
     temp_gate_enabled: bool = True                                   # SOLAR: si True solo carga suave con temp > umbral; si False carga suave siempre que la solar baste
     hot_threshold_c: float = Field(default=30.0)                     # temp batería > umbral → carga suave; si no → max_a (solo si temp_gate_enabled)
     house_power_window_min: int = Field(default=60, ge=5, le=240)    # minutos de datalogger para estimar el consumo de casa (mediana)
+    house_power_cache_min: int = Field(default=15, ge=0, le=120)     # minutos que se reutiliza esa lectura (0 = sin caché); cada lectura descarga el día completo del datalogger
     productive_window_pct: int = Field(default=90, ge=10, le=100)    # % del total diario real (fallback de fin de ventana)
     productive_window_end_hour: float = Field(default=17.0, ge=0.0, le=24.0)  # fallback si no hay forecast ni histórico
     floor_a: int = Field(default=15, ge=1, le=66)                    # corriente mínima (para que la carga termine)

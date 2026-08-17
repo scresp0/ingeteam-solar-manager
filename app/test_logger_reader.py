@@ -10,6 +10,7 @@ Ejecutar:
   o en el contenedor:  docker exec -i solar-manager python -m app.test_logger_reader
 """
 import sys
+import time
 from datetime import date
 
 from app.logger_reader import house_power_w, _calculate_stats
@@ -74,6 +75,58 @@ def main():
     # Slot 16 (08:00–08:30) ya es día: casa 1200 W × 0.5 h = 0.6 kWh.
     check("slot 16 casa (día)", stats.half_hour_house_kwh[16], 0.6)
     check("slot 16 solar (día)", stats.half_hour_solar_kwh[16], 1.5)
+
+    print("=== caché de get_recent_house_power ===")
+    import app.logger_reader as lr
+
+    calls = {"n": 0}
+    fake = [_rec(pacgrid=1000, pacmeter=200)] * 60
+
+    def fake_fetch(cfg, target_date):
+        calls["n"] += 1
+        return fake, "TEST"
+
+    real_fetch = lr._fetch_records
+    lr._fetch_records = fake_fetch
+    try:
+        lr._house_power_cache = None
+        # Con caché: la 1ª llamada baja el día, las siguientes lo reutilizan.
+        v1 = lr.get_recent_house_power(None, 60, cache_min=15)
+        v2 = lr.get_recent_house_power(None, 60, cache_min=15)
+        v3 = lr.get_recent_house_power(None, 60, cache_min=15)
+        check("valor con caché", v1, 1200.0)
+        check("caché devuelve el mismo valor", v3, v1)
+        check("3 llamadas → 1 sola descarga", calls["n"], 1)
+
+        # cache_min=0 desactiva el caché: cada llamada vuelve a descargar.
+        calls["n"] = 0
+        lr._house_power_cache = None
+        lr.get_recent_house_power(None, 60, cache_min=0)
+        lr.get_recent_house_power(None, 60, cache_min=0)
+        check("sin caché → 2 descargas", calls["n"], 2)
+
+        # Caché caducado (edad simulada por encima del límite) → vuelve a descargar.
+        calls["n"] = 0
+        lr._house_power_cache = (time.monotonic() - 16 * 60, 999.0)
+        v = lr.get_recent_house_power(None, 60, cache_min=15)
+        check("caché caducado → relee", calls["n"], 1)
+        check("caché caducado no devuelve el valor viejo", v, 1200.0)
+
+        # Un fallo NO debe cachearse: el siguiente tick tiene que reintentar.
+        def failing_fetch(cfg, target_date):
+            calls["n"] += 1
+            raise lr.LoggerReaderError("datalogger caído")
+
+        calls["n"] = 0
+        lr._house_power_cache = None
+        lr._fetch_records = failing_fetch
+        f1 = lr.get_recent_house_power(None, 60, cache_min=15)
+        f2 = lr.get_recent_house_power(None, 60, cache_min=15)
+        check("fallo devuelve None", f1, None)
+        check("fallo no se cachea → reintenta", calls["n"], 2)
+    finally:
+        lr._fetch_records = real_fetch
+        lr._house_power_cache = None
 
     print()
     if failed:
