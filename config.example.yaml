@@ -162,6 +162,16 @@ charge_current:
   interval_min: 15              # cada cuánto recalcula y, si procede, reescribe
   temp_gate_enabled: true       # true: SOLAR solo carga suave si temp > hot_threshold_c | false: carga suave siempre que la solar baste (ignora temperatura)
   hot_threshold_c: 30.0         # con temp_gate_enabled: batería fría (temp ≤ umbral) → max_a
+  house_power_cache_min: 15     # minutos que se reutiliza la lectura de consumo (0 = sin caché).
+                                # Cada lectura descarga el día COMPLETO del datalogger (~1 MB y
+                                # creciendo), porque el endpoint no admite rangos. Con interval_min
+                                # bajo eso son cientos de MB/día contra un equipo empotrado: con
+                                # interval_min=3 y sin caché, ~480 descargas y ~450 MB/día.
+                                # 15 min corta el 80% del tráfico sin perder reactividad (el SOC se
+                                # sigue leyendo por MODBUS en cada tick, que es barato). Subirlo a 60
+                                # no compensa: sumado a house_power_window_min, el dato efectivo
+                                # pasaría a representar hasta 2 h atrás, justo lo que hace inútil la
+                                # estimación cuando arranca el aire acondicionado.
   house_power_window_min: 60    # minutos del datalogger para estimar el consumo de la vivienda (mediana).
                                 # Predictor de persistencia: lo consumido en la última hora es la mejor
                                 # estimación de la próxima (el AC tiene inercia de horas). Mediana y no

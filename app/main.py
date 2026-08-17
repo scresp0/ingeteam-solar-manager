@@ -585,7 +585,11 @@ def _house_power_estimate(cfg: AppConfig) -> tuple[float, str]:
     """
     logger = logging.getLogger(__name__)
 
-    house_w = get_recent_house_power(cfg.inverter, cfg.charge_current.house_power_window_min)
+    house_w = get_recent_house_power(
+        cfg.inverter,
+        cfg.charge_current.house_power_window_min,
+        cfg.charge_current.house_power_cache_min,
+    )
     if house_w is not None:
         return house_w / 1000.0, "medido"
 

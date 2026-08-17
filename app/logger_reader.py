@@ -15,6 +15,8 @@ Calcula acumulados diarios a partir de los datos minuto a minuto:
 """
 
 import logging
+import threading
+import time
 from dataclasses import dataclass
 from datetime import date, timedelta
 from statistics import median
@@ -48,6 +50,11 @@ def house_power_w(record: dict) -> float:
 
 
 _NIGHT_MINUTES = 480  # 00:00–07:59 (8 h × 60 min)
+
+# Caché de `get_recent_house_power`: (instante monotónico, vatios). El controlador
+# de corriente corre en un hilo de APScheduler, de ahí el lock.
+_house_power_cache: tuple[float, float] | None = None
+_house_power_lock = threading.Lock()
 
 
 @dataclass
@@ -127,7 +134,9 @@ def _fetch_records(cfg: InverterConfig, target_date: date) -> tuple[list[dict], 
     return records, device_id
 
 
-def get_recent_house_power(cfg: InverterConfig, minutes: int = 60) -> float | None:
+def get_recent_house_power(
+    cfg: InverterConfig, minutes: int = 60, cache_min: int = 0,
+) -> float | None:
     """Potencia típica (W) que la vivienda ha consumido en los últimos `minutes`.
 
     Lee el datalogger de HOY (permitido: es una lectura en tiempo real, no una stat
@@ -137,9 +146,33 @@ def get_recent_house_power(cfg: InverterConfig, minutes: int = 60) -> float | No
     la media y, extrapolada a las horas de sol restantes, dejarían el excedente
     previsto casi a cero. La mediana de 60 muestras ignora esos picos cortos.
 
+    `cache_min` > 0 reutiliza la última lectura durante ese número de minutos. Cada
+    llamada descarga el día COMPLETO del datalogger (~1 MB y creciendo conforme
+    avanza el día), porque el endpoint no admite rangos; con el controlador de
+    corriente a 3 min eso son ~480 descargas y ~450 MB/día contra un equipo
+    empotrado. El caché lo corta sin renunciar a un lazo de control rápido: el SOC
+    se sigue leyendo por MODBUS en cada tick, que es barato.
+
+    Un fallo NO se cachea: si el datalogger no responde se devuelve None y el
+    siguiente tick reintenta, en vez de arrastrar el fallo durante `cache_min`.
+
     Devuelve None si el datalogger no responde o no hay registros — el llamante debe
     tener un fallback.
     """
+    global _house_power_cache
+
+    if cache_min > 0:
+        with _house_power_lock:
+            cached = _house_power_cache
+        if cached is not None:
+            age_s = time.monotonic() - cached[0]
+            if age_s < cache_min * 60:
+                logger.debug(
+                    f"Consumo de casa: {cached[1]} W de caché ({age_s / 60:.1f} min, "
+                    f"válido {cache_min} min)"
+                )
+                return cached[1]
+
     try:
         records, _ = _fetch_records(cfg, date.today())
     except LoggerReaderError as e:
@@ -149,7 +182,11 @@ def get_recent_house_power(cfg: InverterConfig, minutes: int = 60) -> float | No
     recent = records[-minutes:]
     if not recent:
         return None
-    return round(median(house_power_w(r) for r in recent), 1)
+
+    value = round(median(house_power_w(r) for r in recent), 1)
+    with _house_power_lock:
+        _house_power_cache = (time.monotonic(), value)
+    return value
 
 
 def get_daily_stats(cfg: InverterConfig, target_date: date) -> DailyStats:
