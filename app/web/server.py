@@ -331,6 +331,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
             "config":     "app.test_config",
             "automation": "app.test_automation",
             "main":       "app.test_main",
+            "logger_reader": "app.test_logger_reader",
             "charge_current": "app.test_charge_current",
             "charge_current_scenarios": "app.test_charge_current_scenarios",
             "simulate_current": "app.simulate_charge_current",
