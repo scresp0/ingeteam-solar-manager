@@ -17,6 +17,7 @@ Calcula acumulados diarios a partir de los datos minuto a minuto:
 import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
+from statistics import median
 
 import requests
 
@@ -25,6 +26,25 @@ from app.config import InverterConfig
 logger = logging.getLogger(__name__)
 
 LOGGER_PATH = "/inverter/log"
+
+
+def house_power_w(record: dict) -> float:
+    """Potencia instantánea de la vivienda (W) a partir de un registro del datalogger.
+
+    ⚠️ NO es `PacGrid`. `PacGrid` ≈ `Pac` = potencia de SALIDA AC del inversor, que
+    incluye lo que se está exportando a la red. El consumo real de la casa es lo que
+    sale del inversor MÁS lo que entra de la red:
+
+        casa = PacGrid + PacMeter        (PacMeter: + importando, − exportando)
+
+    Verificado contra el balance energético del datalogger (2026-08-17):
+      · mediodía exportando → PacGrid 1468 W, PacMeter −1034 W → casa 434 W
+      · noche con batería a min_soc → PacGrid −23 W, PacMeter +538 W → casa 515 W
+    Con `PacGrid` a secas, ese segundo caso da un consumo NEGATIVO.
+
+    El suelo en 0 cubre desincronizaciones puntuales entre las dos medidas.
+    """
+    return max(0.0, record.get("PacGrid", 0) + record.get("PacMeter", 0))
 
 
 _NIGHT_MINUTES = 480  # 00:00–07:59 (8 h × 60 min)
@@ -64,8 +84,8 @@ def get_yesterday_stats(cfg: InverterConfig) -> DailyStats:
     return get_daily_stats(cfg, yesterday)
 
 
-def get_daily_stats(cfg: InverterConfig, target_date: date) -> DailyStats:
-    """Obtiene los acumulados de un día concreto."""
+def _fetch_records(cfg: InverterConfig, target_date: date) -> tuple[list[dict], str]:
+    """Descarga los registros minuto a minuto de un día. Devuelve (registros, device_id)."""
     host = cfg.get_modbus_host()
     date_str = target_date.isoformat()
 
@@ -100,6 +120,39 @@ def get_daily_stats(cfg: InverterConfig, target_date: date) -> DailyStats:
     records = [entry["val"] for entry in data.get("data", [])]
     if not records:
         raise LoggerReaderError(f"No hay datos en el logger para {date_str}")
+
+    return records, device_id
+
+
+def get_recent_house_power(cfg: InverterConfig, minutes: int = 60) -> float | None:
+    """Potencia típica (W) que la vivienda ha consumido en los últimos `minutes`.
+
+    Lee el datalogger de HOY (permitido: es una lectura en tiempo real, no una stat
+    diaria) y devuelve la MEDIANA de `house_power_w` sobre los últimos registros.
+
+    Mediana y no media a propósito: un horno o una lavadora de 20 min desplazarían
+    la media y, extrapolada a las horas de sol restantes, dejarían el excedente
+    previsto casi a cero. La mediana de 60 muestras ignora esos picos cortos.
+
+    Devuelve None si el datalogger no responde o no hay registros — el llamante debe
+    tener un fallback.
+    """
+    try:
+        records, _ = _fetch_records(cfg, date.today())
+    except LoggerReaderError as e:
+        logger.warning(f"No se pudo leer el consumo reciente de la vivienda: {e}")
+        return None
+
+    recent = records[-minutes:]
+    if not recent:
+        return None
+    return round(median(house_power_w(r) for r in recent), 1)
+
+
+def get_daily_stats(cfg: InverterConfig, target_date: date) -> DailyStats:
+    """Obtiene los acumulados de un día concreto."""
+    date_str = target_date.isoformat()
+    records, device_id = _fetch_records(cfg, target_date)
 
     stats = _calculate_stats(records, target_date, device_id)
     logger.info(

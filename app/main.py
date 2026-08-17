@@ -20,6 +20,7 @@ Re-evaluación (run_recheck), ejecutada a cada hora de tariff.schedule_recheck_a
 
 import logging
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from app.version import VERSION
@@ -38,7 +39,9 @@ from app.automation import (
     read_firmware_version, configure_active_profile,
 )
 from app.notifier import CycleEmailNotifier
-from app.logger_reader import get_yesterday_stats, get_daily_stats, LoggerReaderError
+from app.logger_reader import (
+    get_yesterday_stats, get_daily_stats, get_recent_house_power, LoggerReaderError,
+)
 from app.storage import (
     write_cycle, write_daily_stats, write_half_hour_solar, write_half_hour_forecast,
     write_charge_current,
@@ -495,52 +498,51 @@ def _productive_window_end(cfg: AppConfig) -> float:
     return h if h is not None else cfg.charge_current.productive_window_end_hour
 
 
-def _remaining_solar_forecast(cfg: AppConfig, now) -> tuple[float | None, float]:
-    """Excedente solar NETO que queda HOY para la batería (producción calibrada
-    menos el consumo de la casa) y la hora local de fin de producción.
+@dataclass
+class SolarWindow:
+    """Perfil de excedente solar que queda HOY, franja de 30 min a franja de 30 min.
 
-    Devuelve (kWh_restantes_neto, hora_fin):
-    - forecast OK con producción pendiente → (excedente_neto, hora_última_franja)
-    - forecast OK sin producción pendiente → (0.0, 0.0)  → fuerza IDLE
-    - forecast no disponible               → (None, fallback_histórico)  → SOLAR usará máx
-
-    Producción por franja (igual que decide_charge): (p10·rf + p50·(1−rf))·bias.
-    El rf inclina hacia p10 (pesimista) = margen de seguridad ante menos producción.
-    A cada franja se le resta el consumo post-valle prorrateado (tasa plana sobre
-    16 h, suelo en 0): así el resultado es el excedente real que entra en batería,
-    no la producción bruta. El fin de producción se sigue calculando con la
-    producción bruta (una franja produce aunque la casa se la coma toda).
+    `surplus[i]` = kWh que la batería PODRÍA absorber en esa franja si la corriente
+    no la limitase (producción calibrada − consumo de la vivienda, suelo en 0).
+    Es la entrada de `_min_current_for_surplus`.
     """
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
+    surplus: list[float]     # kWh de excedente por franja futura de 30 min
+    end_hour: float          # hora local de fin de producción
+    gross_kwh: float         # producción calibrada restante, antes de restar casa
+    house_kw: float          # potencia de casa asumida por franja
+    house_source: str        # "medido" (datalogger de hoy) | "media" (fallback)
+
+    @property
+    def surplus_kwh(self) -> float:
+        return round(sum(self.surplus), 2)
+
+
+def _house_power_estimate(cfg: AppConfig) -> tuple[float, str]:
+    """Potencia (kW) que se asume que la vivienda consumirá en las horas de sol restantes.
+
+    Predictor de PERSISTENCIA: lo que la casa ha consumido en la última hora es la
+    mejor estimación de lo que consumirá en la próxima. Para el aire acondicionado
+    —que es lo que domina la varianza en verano— la inercia es de horas, así que
+    esto bate a cualquier media histórica de 30 días, que no sabe si hoy hace 40º o
+    está nublado.
+
+    Fallback si el datalogger no responde: consumo post-valle medio prorrateado a
+    tasa plana sobre las 16 h del tramo (el comportamiento hasta v1.71).
+
+    ⚠️ El fallback SOBREESTIMA el consumo diurno por dos motivos acumulados: reparte
+    sobre las horas solares un total que incluye la tarde-noche sin sol, y se calcula
+    sobre `stats_diarias.consumption_kwh`, que integra `PacGrid` (salida AC del
+    inversor, exportación incluida) en lugar del consumo real de la vivienda — medido
+    +39% sobre 14 días (2026-08-17). Sobreestimar el consumo infravalora el excedente
+    y sube la corriente, que es el lado seguro para llenar la batería, pero cuesta
+    calor. Por eso el camino medido es el principal y este solo el paracaídas.
+    """
     logger = logging.getLogger(__name__)
 
-    try:
-        intervals = get_today_intervals(cfg.solcast, cfg.system.timezone)
-    except SolcastError as e:
-        logger.warning(f"Controlador corriente: forecast de hoy no disponible — {e}")
-        return None, _productive_window_end(cfg)
+    house_w = get_recent_house_power(cfg.inverter, cfg.charge_current.house_power_window_min)
+    if house_w is not None:
+        return house_w / 1000.0, "medido"
 
-    try:
-        rf = get_dynamic_risk_factor(
-            cfg.influxdb, cfg.charging.risk_factor_window_days,
-            cfg.charging.risk_factor_min_days_in_window)
-    except StorageError:
-        rf = None
-    rf = cfg.charging.risk_factor if rf is None else rf
-    try:
-        bias = get_dynamic_solar_bias(
-            cfg.influxdb, cfg.charging.solar_bias_window_days,
-            cfg.charging.solar_bias_min_days_in_window)
-    except StorageError:
-        bias = None
-    bias = cfg.charging.solar_bias_factor if bias is None else bias
-
-    # Consumo post-valle (08:00–24:00) que la casa restará al sol. Dinámico de
-    # InfluxDB con la misma ventana/mínimo que el nocturno (mismo origen
-    # stats_diarias → misma disponibilidad de datos); fallback a config
-    # (diario − nocturno). Se prorratea a tasa plana sobre las 16 h del tramo y
-    # se resta por franja, así solo descuenta el consumo de las horas solares.
     try:
         post_valley = get_avg_post_valley_consumption(
             cfg.influxdb, cfg.charging.night_consumption_window_days,
@@ -550,11 +552,53 @@ def _remaining_solar_forecast(cfg: AppConfig, now) -> tuple[float | None, float]
     if post_valley is None:
         post_valley = max(0.0, cfg.installation.average_daily_consumption_kwh
                           - cfg.charging.night_consumption_kwh)
-    house_per_interval = post_valley / 16.0 * 0.5   # kWh de casa en una franja de 30 min
+    logger.debug(f"Consumo de casa: sin lectura del datalogger → media {post_valley:.2f} kWh/16h")
+    return post_valley / 16.0, "media"
+
+
+def _solar_surplus_window(cfg: AppConfig, now) -> SolarWindow | None:
+    """Construye el perfil de excedente solar restante de HOY por franjas de 30 min.
+
+    Devuelve:
+    - forecast OK con producción pendiente → SolarWindow
+    - forecast OK sin producción pendiente → SolarWindow con end_hour = 0.0 → fuerza IDLE
+    - forecast no disponible               → None (el llamante cae a la fórmula plana)
+
+    **Producción por franja: p50 · bias, sin ponderar con p10.** El `risk_factor`
+    inclina hacia p10 (pesimista) porque `decide_charge` toma UNA decisión a las 23:55
+    que no puede revisar hasta las 08:00. Este controlador se recalcula cada
+    `interval_min`: si se queda corto, el siguiente tick lo ve y sube la corriente. En
+    un lazo cerrado el pesimismo no compra seguridad, solo cuesta calor — y apilado
+    sobre la resta del consumo fue lo que disparó el acantilado a 66 A de v1.68. El
+    único margen deliberado vive en `charge_current.margin`.
+
+    El fin de producción se calcula con la producción BRUTA: una franja sigue
+    produciendo aunque la casa se coma todo lo que da.
+    """
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    logger = logging.getLogger(__name__)
+
+    try:
+        intervals = get_today_intervals(cfg.solcast, cfg.system.timezone)
+    except SolcastError as e:
+        logger.warning(f"Controlador corriente: forecast de hoy no disponible — {e}")
+        return None
+
+    try:
+        bias = get_dynamic_solar_bias(
+            cfg.influxdb, cfg.charging.solar_bias_window_days,
+            cfg.charging.solar_bias_min_days_in_window)
+    except StorageError:
+        bias = None
+    bias = cfg.charging.solar_bias_factor if bias is None else bias
+
+    house_kw, house_source = _house_power_estimate(cfg)
+    house_per_interval = house_kw * 0.5   # kWh que la casa consume en una franja de 30 min
 
     tz = ZoneInfo(cfg.system.timezone)
+    surplus: list[float] = []
     gross = 0.0
-    remaining = 0.0
     end_hour = None
     for it in intervals:
         try:
@@ -564,26 +608,69 @@ def _remaining_solar_forecast(cfg: AppConfig, now) -> tuple[float | None, float]
             continue
         if end_local <= now:
             continue
-        eff = (it.get("pv_estimate10", 0.0) * rf
-               + it.get("pv_estimate", 0.0) * (1.0 - rf)) * bias * 0.5   # kWh de la franja
+        eff = it.get("pv_estimate", 0.0) * bias * 0.5   # kWh de la franja (p50 calibrado)
         if eff > 0.02:
             gross += eff
-            remaining += max(0.0, eff - house_per_interval)   # excedente neto a batería
+            surplus.append(max(0.0, eff - house_per_interval))
             end_hour = end_local.hour + end_local.minute / 60.0
 
     if end_hour is None:
-        return 0.0, 0.0   # forecast OK pero ya no queda producción → IDLE
+        return SolarWindow([], 0.0, 0.0, house_kw, house_source)   # ya no queda sol → IDLE
+
+    win = SolarWindow(surplus, end_hour, round(gross, 2), house_kw, house_source)
     logger.debug(
-        f"Excedente solar: bruto {gross:.2f} kWh − consumo casa "
-        f"{gross - remaining:.2f} kWh → neto {remaining:.2f} kWh "
-        f"(post-valle {post_valley:.2f} kWh/16h)"
+        f"Excedente solar: bruto {win.gross_kwh:.2f} kWh − casa "
+        f"{house_kw:.2f} kW ({house_source}) → neto {win.surplus_kwh:.2f} kWh "
+        f"en {len(surplus)} franjas hasta las {end_hour:.1f}h"
     )
-    return round(remaining, 2), end_hour
+    return win
+
+
+def _min_current_for_surplus(
+    surplus: list[float], energy_kwh: float, v: float, cc,
+) -> tuple[int, bool]:
+    """Corriente mínima (A) que mete `energy_kwh` en la batería dado el perfil de
+    excedente solar por franja. Devuelve (amperios_sin_acotar, objetivo_alcanzable).
+
+    La batería carga en cada franja a `min(I·V·0.5h, excedente_de_la_franja)`: la
+    corriente es un TECHO, no un caudal garantizado. Repartir la energía linealmente
+    sobre las horas restantes —lo que hacía `amps_for`— ignora que la producción es
+    una campana: a las 9:00 y a las 18:00 no hay `I·V` disponibles aunque el total
+    del día sobre, así que el plan se quedaba corto y el lazo lo corregía tarde,
+    subiendo a 66 A al final de la tarde.
+
+    `captured(I)` es monótona creciente en I, así que el primer I que alcanza el
+    objetivo es el mínimo. 66×48 iteraciones cada `interval_min`: irrelevante.
+
+    Si ni `max_a` llega, se devuelve el pico de excedente previsto: por encima de él
+    no se captura ni un vatio más, así que es el techo útil. Devolver eso en lugar de
+    `max_a` es lo que evita el acantilado a 66 A por unas décimas de kWh. Ojo: ese
+    pico puede quedar por ENCIMA de `max_a` (excedente concentrado al mediodía), y
+    entonces el límite real es la corriente, no el sol — el llamante distingue los
+    dos casos al etiquetar comparando el valor crudo con `max_a`.
+
+    En el régimen sin limitación solar el resultado coincide con la fórmula plana
+    `E·1000/(V·H)·margin` salvo por el redondeo (aquí hacia arriba, por ser "el
+    mínimo que cumple"), así que el cambio no altera los casos que ya funcionaban.
+    """
+    target = energy_kwh * cc.margin
+
+    def captured(amps: int) -> float:
+        cap_slot = amps * v * 0.5 / 1000.0      # kWh que caben en una franja a `amps`
+        return sum(min(cap_slot, s) for s in surplus)
+
+    for amps in range(1, cc.max_a + 1):
+        if captured(amps) >= target:
+            return amps, True
+
+    peak_kwh = max(surplus, default=0.0)
+    return max(1, int(round(peak_kwh / 0.5 * 1000.0 / v))), False
 
 
 def _compute_target_charge_current(
     cfg: AppConfig, state: InverterState, hour: float,
     schedule_state, current: int, solar_end_hour: float,
+    window: SolarWindow | None = None,
 ) -> tuple[int, int, str]:
     """Devuelve (amperios_objetivo, amperios_calculados, modo).
 
@@ -596,15 +683,18 @@ def _compute_target_charge_current(
     coinciden con el valor devuelto.
 
     - VALLE (00:00–08:00 con carga de red): corriente mínima para llegar al target
-      en lo que queda de valle (sin temperatura — de noche no hay calor).
-    - SOLAR (08:00–fin de producción): corriente MÍNIMA que llena la batería antes
-      del fin de producción (amps_for), acotada a [floor_a, max_a]. Ya NO hay
-      acantilado "solar insuficiente → máx": si falta tiempo o sobra energía, amps_for
-      sube sola hasta el tope, y el recálculo cada interval_min la reajusta si la carga
-      va por detrás (nubes). Con temp_gate_enabled=True, si la batería está fría
-      (temp ≤ hot_threshold) va a máx (capta picos intermitentes); con False la
-      temperatura no influye.
+      en lo que queda de valle (sin temperatura — de noche no hay calor). La red
+      entrega potencia constante, así que aquí el reparto lineal SÍ es correcto.
+    - SOLAR (08:00–fin de producción): con `window`, corriente mínima que llena la
+      batería simulando el excedente franja a franja (`_min_current_for_surplus`);
+      sin `window` (forecast caído), reparto lineal sobre las horas restantes.
+      Acotada a [floor_a, max_a]. Con temp_gate_enabled=True, si la batería está fría
+      (temp ≤ hot_threshold) va a máx (capta picos intermitentes que el forecast p50
+      no ve); con False la temperatura no influye.
     - Sin carga (idle / valle sin carga / batería llena) → deja la corriente como está.
+
+    BALANCE conserva el reparto lineal a propósito: es el último 2 % de la batería,
+    con su propio suelo, y el lazo de 15 min lo reajusta.
     """
     cc = cfg.charge_current
     soc = state.soc_pct
@@ -655,18 +745,24 @@ def _compute_target_charge_current(
         return current, current, "IDLE (valle sin carga — sin cambios)"
 
     # SOLAR: ventana diurna productiva 08:00 – fin de producción del forecast.
-    # Corriente mínima que llena la batería antes del fin de producción; amps_for
-    # sube sola hasta max_a cuando queda poco tiempo o mucha energía, y baja al
-    # floor cuando sobra tiempo. Sin acantilado "solar insuficiente → 66A": el
-    # recálculo cada interval_min corrige si la carga se retrasa por nubes.
     if _VALLE_END_HOUR <= hour < solar_end_hour:
         energy = (max_soc - soc) / 100.0 * cap
         if energy <= 0:
             return current, current, "SOLAR (batería llena — sin cambios)"
         if cc.temp_gate_enabled and state.battery_temp_c <= cc.hot_threshold_c:
             return cc.max_a, cc.max_a, f"SOLAR (temp {state.battery_temp_c}≤{cc.hot_threshold_c}ºC → máx)"
+        if window is not None and window.surplus:
+            raw, reached = _min_current_for_surplus(window.surplus, energy, v, cc)
+            target = max(cc.floor_a, min(cc.max_a, raw))
+            if reached:
+                label = "SOLAR (rampa al excedente previsto)"
+            elif raw >= cc.max_a:
+                label = "SOLAR (máx — el excedente supera el tope de corriente)"
+            else:
+                label = "SOLAR (limitada por sol — más A no captan más)"
+            return target, raw, label
         target, raw = amps_for(energy, solar_end_hour - hour)
-        return target, raw, "SOLAR (rampa a fin de producción)"
+        return target, raw, "SOLAR (rampa a fin de producción — sin forecast)"
 
     return current, current, "IDLE (sin carga — sin cambios)"
 
@@ -705,17 +801,22 @@ def run_charge_current_controller(cfg: AppConfig, simulate: bool = False) -> Non
     hour = now.hour + now.minute / 60.0
     current = int(round(state.charge_current_max_a))
 
-    remaining_solar, solar_end = _remaining_solar_forecast(cfg, now)
+    window = _solar_surplus_window(cfg, now)
+    solar_end = window.end_hour if window is not None else _productive_window_end(cfg)
     schedule_state = _load_schedule_state()
     target, calculated, mode = _compute_target_charge_current(
-        cfg, state, hour, schedule_state, current, solar_end)
+        cfg, state, hour, schedule_state, current, solar_end, window)
 
-    solar_txt = "?" if remaining_solar is None else f"{remaining_solar:.1f}"
+    if window is None:
+        solar_txt, house_txt = "?", "?"
+    else:
+        solar_txt = f"{window.surplus_kwh:.1f}"
+        house_txt = f"{window.house_kw:.2f}kW/{window.house_source}"
     calc_txt = "" if calculated == target else f" (calculado {calculated}A)"
     msg = (
         f"[CORRIENTE] modo={mode} · SOC {state.soc_pct}% · temp {state.battery_temp_c}ºC · "
-        f"V {state.battery_voltage_v} · solar_rest {solar_txt}kWh · fin_solar {solar_end:.1f}h · "
-        f"actual {current}A · objetivo {target}A{calc_txt}"
+        f"V {state.battery_voltage_v} · excedente {solar_txt}kWh · casa {house_txt} · "
+        f"fin_solar {solar_end:.1f}h · actual {current}A · objetivo {target}A{calc_txt}"
     )
 
     # Simulación: solo informa, no toca el inversor.

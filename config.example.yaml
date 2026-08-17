@@ -133,10 +133,15 @@ charging:
 # -----------------------------------------------------------------------------
 # Ajusta la "Corriente Máxima de Carga" de la batería (1-66 A) al mínimo necesario
 # para reducir el calor (calor ∝ corriente para una misma energía):
-#  · SOLAR (08:00–fin de producción): corriente mínima que llena la batería antes del
-#    fin de producción; sube sola hacia max_a si falta tiempo o sobra energía, y el
-#    recálculo cada interval_min la reajusta si la carga se retrasa (nubes). Con
-#    temp_gate_enabled=true, batería fría (temp ≤ hot_threshold_c) → max_a.
+#  · SOLAR (08:00–fin de producción): corriente mínima que llena la batería simulando
+#    el EXCEDENTE previsto franja a franja (producción p50 calibrada − consumo de la
+#    vivienda). La batería carga a min(I·V, excedente): la corriente es un techo, no
+#    un caudal garantizado, así que repartir la energía linealmente sobre las horas
+#    restantes se quedaba corto (la producción es una campana) y el lazo lo corregía
+#    tarde, subiendo a max_a al final de la tarde. Si ni max_a llena la batería, se
+#    usa el pico de excedente previsto: por encima de él más amperios no captan más.
+#    El consumo de la vivienda se mide del datalogger (ver house_power_window_min).
+#    Con temp_gate_enabled=true, batería fría (temp ≤ hot_threshold_c) → max_a.
 #  · VALLE (carga de red 00:00–08:00): corriente mínima para llegar al SOC objetivo en
 #    lo que queda de valle.
 #  · BALANCE (opcional): al alcanzar balance_soc_pct, carga lo más suave posible
@@ -150,15 +155,20 @@ charge_current:
   interval_min: 15              # cada cuánto recalcula y, si procede, reescribe
   temp_gate_enabled: true       # true: SOLAR solo carga suave si temp > hot_threshold_c | false: carga suave siempre que la solar baste (ignora temperatura)
   hot_threshold_c: 30.0         # con temp_gate_enabled: batería fría (temp ≤ umbral) → max_a
+  house_power_window_min: 60    # minutos del datalogger para estimar el consumo de la vivienda (mediana).
+                                # Predictor de persistencia: lo consumido en la última hora es la mejor
+                                # estimación de la próxima (el AC tiene inercia de horas). Mediana y no
+                                # media para que un horno de 20 min no dispare la estimación. Si el
+                                # datalogger no responde, cae a la media post-valle prorrateada.
   productive_window_pct: 90     # % del total diario real (fallback de fin de ventana si no hay forecast)
   productive_window_end_hour: 17.0  # fallback de fin de producción si no hay forecast ni histórico
-  floor_a: 15                   # corriente mínima (para que la carga termine a tiempo)
+  floor_a: 22                   # corriente mínima (para que la carga termine a tiempo)
   max_a: 66                     # tope máximo (66 = máximo del inversor)
   margin: 1.2                   # margen sobre el mínimo teórico
   battery_balance: false        # true: cerca del tope, carga muy suave para balancear celdas del stack
-  balance_soc_pct: 98           # SOC a partir del cual entra el modo BALANCE (debe ser < charging.max_soc_pct)
+  balance_soc_pct: 97           # SOC a partir del cual entra el modo BALANCE (debe ser < charging.max_soc_pct)
   balance_soc_pct_2: 99         # 2ª etapa: SOC a partir del cual la corriente de balanceo baja a la mitad (>= balance_soc_pct)
-  balance_floor_a: 10           # corriente mínima durante el balanceo (más baja que floor_a)
+  balance_floor_a: 12           # corriente mínima durante el balanceo (más baja que floor_a)
 
 # -----------------------------------------------------------------------------
 # Sistema
