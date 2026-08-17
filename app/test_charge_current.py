@@ -14,7 +14,7 @@ import sys
 from types import SimpleNamespace as NS
 
 from app.config import ChargeCurrentConfig
-from app.main import _compute_target_charge_current
+from app.main import _compute_target_charge_current, _min_current_for_surplus, SolarWindow
 
 
 def _cfg(**overrides):
@@ -101,6 +101,71 @@ def main():
     check("fría + poco tiempo → 66", comp(cfg3, _state(30, 28), 12.0, None, 40, 5.0, 17.0), 66, "rampa")
     # sin forecast tampoco fuerza máx con gate OFF → rampa 27
     check("fría + sin forecast → rampa 27", comp(cfg3, _state(70, 28), 12.0, None, 40, None, 17.0), 27, "rampa")
+
+    # ------------------------------------------------------------------
+    # Simulación franja a franja del excedente solar (v1.72)
+    # ------------------------------------------------------------------
+    print("=== _min_current_for_surplus (corriente mínima sobre el perfil de excedente) ===")
+    cc = ChargeCurrentConfig()   # floor 15, max 66, margin 1.2
+
+    def check_raw(desc, got, exp_amps, exp_reached):
+        nonlocal passed, failed
+        amps, reached = got
+        if amps == exp_amps and reached == exp_reached:
+            passed += 1
+            print(f"  ✓  {desc} → {amps}A (objetivo_alcanzable={reached})")
+        else:
+            failed += 1
+            print(f"  ✗  {desc} → {amps}A (alcanzable={reached})  "
+                  f"(esperado {exp_amps}A / alcanzable={exp_reached})")
+
+    # Excedente muy holgado (4 kWh por franja): nada limita salvo la energía pedida.
+    # Coincide con la fórmula plana E*1000/(V*H)*margin salvo redondeo hacia arriba:
+    # 6 kWh en 10 franjas (5 h) → 6000/(50*5)*1.2 = 28.8 → 29A.
+    holgado = [4.0] * 10
+    check_raw("excedente holgado, 6 kWh en 5h", _min_current_for_surplus(holgado, 6.0, 50.0, cc), 29, True)
+
+    # Mismo excedente TOTAL pero concentrado en 2 franjas: es justo lo que el reparto
+    # lineal no veía. Capturar 7.2 kWh (6·margin) en 1 h exige 7.2 kW = 144A, muy por
+    # encima del tope → devuelve el pico (4 kWh/0.5h = 8 kW = 160A) y no alcanzable.
+    # Acotado da 66A: aquí el límite REAL es la corriente, no el sol.
+    concentrado = [0.0] * 4 + [4.0, 4.0] + [0.0] * 4
+    check_raw("mismo excedente concentrado en 1h → tope", _min_current_for_surplus(concentrado, 6.0, 50.0, cc), 160, False)
+
+    # Excedente total insuficiente: ni con 66A se llena. NO debe devolver max_a a
+    # ciegas, sino el pico de excedente (0.9 kWh/franja = 1.8 kW → 36A): por encima
+    # de eso no se captura ni un vatio más. Es el acantilado que se evita.
+    escaso = [0.9] * 6
+    check_raw("excedente insuficiente → techo = pico, no 66", _min_current_for_surplus(escaso, 15.0, 50.0, cc), 36, False)
+
+    # Sin excedente en absoluto (la casa se lo come todo) → 1A crudo, no alcanzable.
+    check_raw("excedente nulo", _min_current_for_surplus([0.0] * 6, 5.0, 50.0, cc), 1, False)
+
+    print("=== SOLAR con perfil de excedente (window) ===")
+
+    def comp_win(cfg, state, hour, current, window):
+        return _compute_target_charge_current(cfg, state, hour, None, current, window.end_hour, window)
+
+    def win(surplus, end_hour=17.0):
+        return SolarWindow(surplus, end_hour, sum(surplus), 0.5, "medido")
+
+    # SOC70→95 = 5.625 kWh con excedente holgado → 5625/(50*5)*1.2 = 27 → 27A,
+    # el mismo resultado que la rampa plana cuando el sol no limita.
+    check("holgado, mismo que rampa plana", comp_win(cfg, _state(70, 32), 12.0, 40, win([4.0] * 10)), 27, "excedente previsto")
+    # Excedente escaso: se queda en el pico útil (36A) en vez de saltar a 66A.
+    check("escaso → limitada por sol, no 66", comp_win(cfg, _state(30, 32), 12.0, 40, win([0.9] * 6)), 36, "limitada por sol")
+    # Excedente concentrado al mediodía: aquí sí manda el tope de corriente.
+    check("concentrado → máx por tope de corriente",
+          comp_win(cfg, _state(70, 32), 12.0, 40, win([0.0] * 4 + [4.0, 4.0] + [0.0] * 4)), 66, "supera el tope")
+    # Excedente nulo → cae al suelo configurado (15A), no al máximo.
+    check("nulo → suelo, no máximo", comp_win(cfg, _state(30, 32), 12.0, 40, win([0.0] * 6)), 15, "limitada por sol")
+    # Batería llena manda sobre la simulación.
+    check("llena con window → no tocar", comp_win(cfg, _state(96, 32), 12.0, 40, win([4.0] * 10)), 40, "sin cambios")
+    # La puerta de temperatura sigue teniendo prioridad sobre la simulación:
+    # el forecast p50 no ve los claros intermitentes que justifican captar a tope.
+    check("fría con window → máx (gate manda)", comp_win(cfg, _state(70, 28), 12.0, 40, win([4.0] * 10)), 66, "máx")
+    # Window vacía (forecast dice que ya no queda sol) → end_hour 0 → IDLE.
+    check("sin sol restante → IDLE", comp_win(cfg, _state(70, 32), 12.0, 33, win([], 0.0)), 33, "sin cambios")
 
     print()
     if failed:
