@@ -33,6 +33,7 @@ import os
 import socket
 
 from app.config import AppConfig
+from app.logger_reader import house_power_w
 from app.version import VERSION
 
 _HOSTNAME = os.environ.get("HOST_HOSTNAME") or socket.gethostname()
@@ -547,7 +548,10 @@ def create_app(cfg: AppConfig) -> FastAPI:
         last = records[-1]
         current_solar_w = round(last.get("Pdc1", 0) + last.get("Pdc2", 0))
         current_grid_w = round(last.get("PacMeter", 0))
-        current_house_w = round(last.get("PacGrid", 0))
+        # casa = PacGrid + PacMeter, no PacGrid a secas: ese es la salida AC del
+        # inversor e incluye lo exportado (a mediodía marcaba 1468 W con la casa
+        # consumiendo 434 W). Ver `house_power_w`.
+        current_house_w = round(house_power_w(last))
 
         total_solar_kwh = round(
             sum(r.get("Pdc1", 0) + r.get("Pdc2", 0) for r in records) / 1000 / 60, 2
