@@ -81,6 +81,8 @@ _EDITABLE_FIELDS: dict[str, dict[str, tuple[str, str | None]]] = {
         "solar_bias_factor":                   ("float", "SOLAR_BIAS_FACTOR"),
         "solar_bias_min_days_in_window":       ("int",   None),
         "solar_bias_window_days":              ("int",   None),
+        "daily_consumption_min_days_in_window": ("int",  None),
+        "daily_consumption_window_days":        ("int",  None),
     },
     "system": {
         "log_level":   ("str",  "LOG_LEVEL"),

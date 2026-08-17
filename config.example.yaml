@@ -127,6 +127,13 @@ charging:
   solar_bias_factor: 1.0
   solar_bias_window_days: 30
   solar_bias_min_days_in_window: 14
+  # Consumo diario dinámico: media de stats_diarias.consumption_kwh (24 h).
+  # Calibra installation.average_daily_consumption_kwh, que pasa a ser solo el
+  # fallback mientras no haya suficientes días. La ventana deslizante hace que el
+  # valor siga la estación (verano con aire acondicionado vs invierno), en vez de
+  # quedarse clavado en una media anual que no representa a ningún mes.
+  daily_consumption_window_days: 30
+  daily_consumption_min_days_in_window: 14
 
 # -----------------------------------------------------------------------------
 # Corriente máxima de carga (control dinámico para reducir calor)

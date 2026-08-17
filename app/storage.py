@@ -319,6 +319,66 @@ from(bucket: "{cfg.bucket}")
         return None
 
 
+def get_avg_daily_consumption(
+    cfg: InfluxDBConfig,
+    window_days: int = 30,
+    min_days: int = 14,
+) -> float | None:
+    """
+    Devuelve el consumo diario medio (kWh, 00:00–24:00) de los últimos
+    window_days días almacenados en InfluxDB.
+
+    Calibra `installation.average_daily_consumption_kwh`, que hasta v1.74 era el
+    único parámetro de `decide_charge` SIN ruta dinámica: se usaba el valor de
+    config con cualquier cantidad de histórico. Como el consumo diurno se calcula
+    restando (`daily − night`) y `night` sí era dinámico, el diurno absorbía el
+    error de ambos: con 16.0 en config frente a 19.84 kWh medidos en verano, se
+    subestimaba el déficit en ~3.8 kWh/día (17 puntos de SOC).
+
+    ⚠️ Solo es fiable desde v1.73. Antes, `consumption_kwh` se calculaba con
+    ∫`PacGrid` e inflaba el consumo un +39% (ver `logger_reader.house_power_w`);
+    conectarlo entonces habría propagado ese error a la única decisión que estaba
+    a salvo de él. La ventana deslizante hace además que el valor se adapte solo a
+    la estación, que es la razón de ser del parámetro.
+
+    Devuelve None si:
+    - InfluxDB no está habilitado
+    - Hay menos de min_days registros válidos en la ventana
+    - La consulta falla (se loguea como warning)
+    """
+    if not cfg.enabled:
+        return None
+
+    query = f"""
+from(bucket: "{cfg.bucket}")
+  |> range(start: -{window_days}d)
+  |> filter(fn: (r) => r._measurement == "stats_diarias" and r._field == "consumption_kwh")
+  |> filter(fn: (r) => r._value > 0.5)
+"""
+    try:
+        from influxdb_client import InfluxDBClient
+        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
+            tables = client.query_api().query(query, org=cfg.org)
+            values = [rec.get_value() for table in tables for rec in table.records]
+
+        if len(values) < min_days:
+            logger.debug(
+                f"Consumo diario dinámico: solo {len(values)} días válidos "
+                f"(mínimo {min_days}) — usando fallback"
+            )
+            return None
+
+        avg = sum(values) / len(values)
+        logger.debug(f"Consumo diario dinámico: {len(values)} días, media={avg:.3f} kWh")
+        return round(avg, 3)
+
+    except ImportError:
+        raise StorageError("influxdb-client no está instalado.")
+    except Exception as e:
+        logger.warning(f"No se pudo consultar consumo diario dinámico en InfluxDB: {e}")
+        return None
+
+
 def get_avg_post_valley_consumption(
     cfg: InfluxDBConfig,
     window_days: int = 30,

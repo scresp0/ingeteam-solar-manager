@@ -45,7 +45,7 @@ from app.logger_reader import (
 from app.storage import (
     write_cycle, write_daily_stats, write_half_hour_stats, write_half_hour_forecast,
     write_charge_current,
-    get_avg_night_consumption, get_avg_post_valley_consumption,
+    get_avg_night_consumption, get_avg_post_valley_consumption, get_avg_daily_consumption,
     get_dynamic_risk_factor, get_dynamic_solar_bias,
     get_last_real_solar_date, get_production_window_end_hour, StorageError,
 )
@@ -146,6 +146,41 @@ def _collect_decision_inputs(
             f"(config — menos de {cfg.charging.night_consumption_min_days_in_window} días en InfluxDB)"
         )
 
+    # 3b. Consumo diario dinámico. Es el fallback `average_daily_consumption_kwh`
+    # el que se calibra aquí; `decide_charge` deriva el consumo diurno restando
+    # (`daily − night`), así que dejar este fijo mientras el nocturno se movía
+    # solo hacía que el diurno absorbiera el error de ambos.
+    daily_consumption_kwh = cfg.installation.average_daily_consumption_kwh
+    avg_daily = get_avg_daily_consumption(
+        cfg.influxdb,
+        window_days=cfg.charging.daily_consumption_window_days,
+        min_days=cfg.charging.daily_consumption_min_days_in_window,
+    )
+    if avg_daily is not None:
+        logger.info(
+            f"Consumo diario dinámico: {avg_daily} kWh "
+            f"(media {cfg.charging.daily_consumption_window_days}d · "
+            f"fallback config: {cfg.installation.average_daily_consumption_kwh} kWh)"
+        )
+        daily_consumption_kwh = avg_daily
+    else:
+        logger.info(
+            f"Consumo diario: {daily_consumption_kwh} kWh "
+            f"(config — menos de {cfg.charging.daily_consumption_min_days_in_window} días en InfluxDB)"
+        )
+
+    # Coherencia: el nocturno es un subconjunto del diario. Si la media dinámica
+    # del nocturno supera al diario (ventanas distintas, o un diario que cayó al
+    # fallback de config), `daytime = daily − night` se iría a 0 y el déficit
+    # colapsaría en silencio. Preferimos avisar y recortar.
+    if night_consumption_kwh > daily_consumption_kwh:
+        logger.warning(
+            f"Consumo nocturno ({night_consumption_kwh} kWh) supera al diario "
+            f"({daily_consumption_kwh} kWh) — se recorta al diario. Revisa "
+            f"average_daily_consumption_kwh o las ventanas de calibración."
+        )
+        night_consumption_kwh = daily_consumption_kwh
+
     # 4. Risk factor dinámico
     risk_factor = cfg.charging.risk_factor
     dynamic_rf = get_dynamic_risk_factor(
@@ -192,7 +227,7 @@ def _collect_decision_inputs(
         forecast_day2=forecast_day2,
         soc_actual_pct=soc_actual,
         battery_capacity_kwh=cfg.installation.battery_capacity_kwh,
-        daily_consumption_kwh=cfg.installation.average_daily_consumption_kwh,
+        daily_consumption_kwh=daily_consumption_kwh,
         night_consumption_kwh=night_consumption_kwh,
         risk_factor=risk_factor,
         solar_bias_factor=solar_bias,
