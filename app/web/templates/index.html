@@ -1653,13 +1653,15 @@ const CONFIG_SCHEMA = [
       { key: 'risk_factor_min_days_in_window',       label: 'Risk factor · días válidos mín. en ventana', type: 'number', min: 1, step: 1 },
       { key: 'solar_bias_window_days',              label: 'Solar bias · ventana (días)',              type: 'number', min: 7, step: 1 },
       { key: 'solar_bias_min_days_in_window',        label: 'Solar bias · días válidos mín. en ventana', type: 'number', min: 1, step: 1 },
+      { key: 'daily_consumption_window_days',       label: 'Cons. diario · ventana (días)',            type: 'number', min: 7, step: 1 },
+      { key: 'daily_consumption_min_days_in_window', label: 'Cons. diario · días válidos mín. en ventana', type: 'number', min: 1, step: 1 },
     ],
   },
   {
     section: 'installation', title: 'Instalación',
     fields: [
       { key: 'battery_capacity_kwh',          label: 'Capacidad batería (kWh)',       type: 'number', min: 0, step: 0.01 },
-      { key: 'average_daily_consumption_kwh', label: 'Consumo medio diario (kWh)',    type: 'number', min: 0, step: 0.1 },
+      { key: 'average_daily_consumption_kwh', label: 'Consumo medio diario (kWh) · fallback', type: 'number', min: 0, step: 0.1 },
       { key: 'peak_power_kwp',                label: 'Potencia pico paneles (kWp)',   type: 'number', min: 0, step: 0.1 },
     ],
   },

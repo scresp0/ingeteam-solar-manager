@@ -170,6 +170,11 @@ class ChargingConfig(BaseModel):
             "solar_bias_min_days_in_window", "solar_bias_min_days"),
     )
     solar_bias_window_days: int = Field(default=30, ge=7)
+    # Consumo diario dinámico: media de stats_diarias.consumption_kwh. Calibra
+    # installation.average_daily_consumption_kwh, que es el fallback. La ventana
+    # deslizante hace que el valor siga la estación (verano con AC vs invierno).
+    daily_consumption_min_days_in_window: int = Field(default=14, ge=1)
+    daily_consumption_window_days: int = Field(default=30, ge=7)
 
     @field_validator("max_soc_pct")
     @classmethod
@@ -191,6 +196,7 @@ class ChargingConfig(BaseModel):
             (self.night_consumption_window_days, self.night_consumption_min_days_in_window, "night_consumption"),
             (self.risk_factor_window_days,       self.risk_factor_min_days_in_window,       "risk_factor"),
             (self.solar_bias_window_days,        self.solar_bias_min_days_in_window,        "solar_bias"),
+            (self.daily_consumption_window_days, self.daily_consumption_min_days_in_window, "daily_consumption"),
         ):
             if win < mn:
                 raise ValueError(

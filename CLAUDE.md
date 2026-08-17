@@ -158,6 +158,23 @@ Tres parámetros se calculan automáticamente a partir del histórico almacenado
 
 > **Invariante `window_days >= min_days_in_window` (v1.49, renombrado v1.50):** cada parámetro consulta solo los últimos `*_window_days` días (el periodo que se promedia), así que si la ventana es menor que `*_min_days_in_window` (días con dato que debe haber DENTRO de la ventana para fiarse) el contador **nunca** alcanza el mínimo y el valor dinámico queda clavado en el fallback de forma silenciosa (footgun real: `window_days: 10` con `min_days_in_window: 15` → siempre 9/15). Un `model_validator` en `ChargingConfig` (`windows_must_cover_min_days`) rechaza el arranque y el `POST /api/config` si algún par incumple la regla. El campo se llamaba `*_min_days` hasta v1.49; el modelo acepta ese nombre antiguo vía `AliasChoices` para no romper configs previas. El alias **no es silencioso**: `find_deprecated_config_keys()` detecta las claves obsoletas presentes en el YAML → `main.py` emite un `WARNING` por cada una al arrancar, y `GET /api/config` las devuelve en `legacy_keys` para que la pestaña Configuración muestre el valor en **rojo con un badge «O»**. Al guardar desde la web, `POST /api/config` escribe el nombre canónico y **elimina la clave obsoleta** (migración automática). Para migrar por CLI sin pasar por la web: `make migrate-config` (o `python scripts/migrate_config.py [ruta] [--dry-run]`) — renombra solo la clave conservando valor, comentario en línea y formato (regex anclada a inicio de línea, stdlib pura, hace `.bak`, idempotente).
 
+### Consumo diario dinámico (`storage.get_avg_daily_consumption`, v1.75)
+- Fuente: campo `consumption_kwh` de `stats_diarias` (24 h). Filtro `> 0.5`.
+- Parámetros `daily_consumption_window_days` (30) / `daily_consumption_min_days_in_window` (14).
+- Calibra `installation.average_daily_consumption_kwh`, que pasa a ser **solo el fallback**. Hasta v1.74 era el **único** parámetro de `decide_charge` sin ruta dinámica: se usaba el valor de config con cualquier cantidad de histórico, cosa que confundía porque los otros tres sí se calibran.
+- **Por qué importaba:** `decide_charge` deriva el consumo diurno restando (`daily − night`). Con `daily` fijo y `night` dinámico, el diurno absorbía el error de ambos. Con 16.0 en config frente a 19.84 kWh/día medidos en verano, se subestimaba el déficit en ~3.8 kWh (17 puntos de SOC sobre 22.55 kWh).
+- **No se pudo hacer antes de v1.73:** `consumption_kwh` venía de ∫`PacGrid` e inflaba el consumo un +39%; conectarlo habría propagado ese error a la única decisión que estaba a salvo de él.
+- **Efecto medido** (SOC 40% al entrar al valle, night 4.81, bias 0.81, rf 0.7). El cambio muerde con forecast bajo o medio y desaparece con sol de sobra:
+
+  | forecast p50 | target antes | target ahora | red antes | red ahora |
+  |---|---|---|---|---|
+  | 4–16 kWh | 54%→23% | 71%→40% | 7.9→0.9 kWh | 11.7→4.7 kWh |
+  | 20 kWh | no cargar | 29% | 0.0 kWh | 2.4 kWh |
+  | 28 kWh | no cargar | no cargar | 0.0 kWh | 0.0 kWh |
+
+- ⚠️ **`to_charge_kwh` engaña cuando `target_soc < SOC actual`**: se calcula como `target_kwh − energy_stored` y no descuenta el consumo nocturno, así que marca 0 aunque sí entre energía de red. La decisión es correcta — el inversor mantiene el SOC en el objetivo durante el valle en vez de dejarlo caer — pero para medir el impacto real hay que mirar `target_soc_pct`, no `to_charge_kwh`.
+- Guardia de coherencia en `_collect_decision_inputs`: si el nocturno dinámico supera al diario (ventanas distintas, o un diario caído al fallback), `daytime` se iría a 0 y el déficit colapsaría en silencio → se emite WARNING y se recorta el nocturno al diario.
+
 ### Consumo nocturno dinámico (`storage.get_avg_night_consumption`)
 - Fuente: campo `night_consumption_kwh` de `stats_diarias` (primeros 480 min del día = 00:00–07:59)
 - Ventana deslizante configurable (`night_consumption_window_days`, default 30d)
@@ -182,7 +199,7 @@ Tres parámetros se calculan automáticamente a partir del histórico almacenado
 - Clamp defensivo [0.5, 1.5] sobre la media. Parámetros `solar_bias_*_days` (mismo patrón).
 - En v1.42 se midió para esta instalación: factor ≈ 0.81 (Solcast sobreestima un 19%).
 
-Los tres parámetros se registran en el log (`INFO`) y aparecen en el email con badge **dinámico**/**config**.
+Los cuatro parámetros se registran en el log (`INFO`); los tres primeros aparecen además en el email con badge **dinámico**/**config** (el consumo diario aún no tiene badge en el email).
 
 ## Lógica de decisión (resumen)
 

@@ -68,6 +68,27 @@ def test_validation():
     except Exception as e:
         print(f"  Validación funciona correctamente ✓")
 
+def test_daily_consumption_window():
+    """El par daily_consumption_* debe respetar window_days >= min_days_in_window.
+
+    Sin esta comprobación, el contador de días válidos nunca alcanzaría el mínimo
+    y el consumo diario quedaría clavado en el fallback de config en silencio —
+    el mismo footgun documentado para los otros tres pares.
+    """
+    from app.config import ChargingConfig
+    cfg = ChargingConfig()
+    assert cfg.daily_consumption_window_days == 30
+    assert cfg.daily_consumption_min_days_in_window == 14
+    print(f"  Defaults consumo diario: ventana {cfg.daily_consumption_window_days}d, "
+          f"mín {cfg.daily_consumption_min_days_in_window}d ✓")
+    try:
+        ChargingConfig(daily_consumption_window_days=10,
+                       daily_consumption_min_days_in_window=15)
+        print("  ERROR: debería haber rechazado ventana < mínimo")
+        raise SystemExit(1)
+    except ValueError:
+        print("  Ventana menor que el mínimo rechazada ✓")
+
 
 if __name__ == "__main__":
     test_load()
@@ -77,3 +98,5 @@ if __name__ == "__main__":
     test_holidays_loaded()
     print()
     test_validation()
+    print()
+    test_daily_consumption_window()
