@@ -59,11 +59,14 @@ class DailyStats:
     grid_consumed_kwh: float
     grid_exported_kwh: float
     consumption_kwh: float
-    night_consumption_kwh: float  # consumo 00:00–07:59 (PacGrid)
+    night_consumption_kwh: float  # consumo 00:00–07:59 de la vivienda
     soc_start_pct: float
     soc_end_pct: float
-    records: int                      # número de registros del día (max 1440)
-    half_hour_solar_kwh: list[float]  # 48 slots × 30 min, kWh por slot
+    records: int                            # número de registros del día (max 1440)
+    half_hour_solar_kwh: list[float]        # 48 slots × 30 min, kWh por slot
+    half_hour_house_kwh: list[float]        # consumo de la vivienda por slot
+    half_hour_grid_import_kwh: list[float]  # energía tomada de red por slot
+    half_hour_grid_export_kwh: list[float]  # energía vertida a red por slot
 
 
 class LoggerReaderError(Exception):
@@ -226,17 +229,19 @@ def _calculate_stats(records: list[dict], target_date: date, device_id: str) -> 
     epv_end   = records[-1].get("EPvToGrid", 0)
     grid_exported_kwh = max(0, epv_end - epv_start) / 1000
 
-    # Consumo total estimado (PacGrid = potencia hacia cargas + red)
-    consumption_kwh = sum(
-        r.get("PacGrid", 0) * INTERVAL_H
-        for r in records
-    ) / 1000
+    # Consumo total de la vivienda. Ver `house_power_w`: NO es ∫PacGrid — eso es la
+    # salida AC del inversor e incluye lo exportado a la red (medido +39% sobre 14
+    # días). Corregido en v1.73.
+    consumption_kwh = sum(house_power_w(r) * INTERVAL_H for r in records) / 1000
 
-    # Consumo nocturno 00:00–07:59: primeros _NIGHT_MINUTES registros
-    # PacGrid a esa hora ≈ potencia a cargas (sin producción solar)
+    # Consumo nocturno 00:00–07:59: primeros _NIGHT_MINUTES registros.
+    # Con ∫PacGrid esto daba ~0 (o negativo) las noches en que la batería estaba en
+    # min_soc y la casa tiraba directamente de red: el inversor no entregaba nada y
+    # toda la energía venía por PacMeter. Medido el 2026-08-16: 0.00 frente a 3.19
+    # kWh reales. Esas noches las descartaba el filtro `> 0.5` de la media dinámica.
     night_recs = records[:_NIGHT_MINUTES]
     if night_recs:
-        raw_night = sum(r.get("PacGrid", 0) * INTERVAL_H for r in night_recs) / 1000
+        raw_night = sum(house_power_w(r) * INTERVAL_H for r in night_recs) / 1000
         # Prorratear si el día tiene menos registros de los esperados
         if len(night_recs) < _NIGHT_MINUTES:
             raw_night *= _NIGHT_MINUTES / len(night_recs)
@@ -248,12 +253,23 @@ def _calculate_stats(records: list[dict], target_date: date, device_id: str) -> 
     soc_start = records[0].get("Sbatt", 0)
     soc_end   = records[-1].get("Sbatt", 0)
 
-    # Producción solar por slot de 30 min (48 slots, "local labeled UTC")
+    # Perfil por slot de 30 min (48 slots, "local labeled UTC"). El flujo de red se
+    # integra de PacMeter (+ importando, − exportando), coherente con el balance
+    # verificado; NO del contador EPvToGrid que usa `grid_exported_kwh` diario.
     half_hour: list[float] = []
+    half_hour_house: list[float] = []
+    half_hour_import: list[float] = []
+    half_hour_export: list[float] = []
     for slot in range(48):
         slot_recs = records[slot * SLOT_MINUTES : (slot + 1) * SLOT_MINUTES]
-        kwh = sum((r.get("Pdc1", 0) + r.get("Pdc2", 0)) * INTERVAL_H for r in slot_recs) / 1000
-        half_hour.append(round(kwh, 4))
+        half_hour.append(round(sum(
+            (r.get("Pdc1", 0) + r.get("Pdc2", 0)) * INTERVAL_H for r in slot_recs) / 1000, 4))
+        half_hour_house.append(round(sum(
+            house_power_w(r) * INTERVAL_H for r in slot_recs) / 1000, 4))
+        half_hour_import.append(round(sum(
+            max(0, r.get("PacMeter", 0)) * INTERVAL_H for r in slot_recs) / 1000, 4))
+        half_hour_export.append(round(sum(
+            max(0, -r.get("PacMeter", 0)) * INTERVAL_H for r in slot_recs) / 1000, 4))
 
     return DailyStats(
         date=target_date,
@@ -267,4 +283,7 @@ def _calculate_stats(records: list[dict], target_date: date, device_id: str) -> 
         soc_end_pct=soc_end,
         records=len(records),
         half_hour_solar_kwh=half_hour,
+        half_hour_house_kwh=half_hour_house,
+        half_hour_grid_import_kwh=half_hour_import,
+        half_hour_grid_export_kwh=half_hour_export,
     )

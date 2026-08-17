@@ -43,16 +43,19 @@ from app.logger_reader import (
     get_yesterday_stats, get_daily_stats, get_recent_house_power, LoggerReaderError,
 )
 from app.storage import (
-    write_cycle, write_daily_stats, write_half_hour_solar, write_half_hour_forecast,
+    write_cycle, write_daily_stats, write_half_hour_stats, write_half_hour_forecast,
     write_charge_current,
     get_avg_night_consumption, get_avg_post_valley_consumption,
     get_dynamic_risk_factor, get_dynamic_solar_bias,
     get_last_real_solar_date, get_production_window_end_hour, StorageError,
 )
 
-# Máximo de días que el backfill rellena de una vez: cubre la vista "mes" del
-# gráfico y evita martillear el datalogger en un arranque con InfluxDB casi vacío.
-MAX_BACKFILL_DAYS = 35
+# Máximo de días que el backfill rellena de una vez. El datalogger del inversor es
+# una ventana RODANTE de ~59 días (verificado por búsqueda binaria el 2026-08-17):
+# lo que no se copie a InfluxDB antes de que salga de esa ventana se pierde para
+# siempre. 59 aprovecha el histórico entero; el coste medido es ~17 s y 54 MB por
+# LAN para los 59 días, así que no hay razón para quedarse corto.
+MAX_BACKFILL_DAYS = 59
 
 
 def setup_logging(cfg: AppConfig) -> None:
@@ -341,7 +344,7 @@ def run(cfg: AppConfig) -> bool:
     try:
         stats = get_yesterday_stats(cfg.inverter)
         write_daily_stats(cfg.influxdb, stats)
-        write_half_hour_solar(cfg.influxdb, stats)
+        write_half_hour_stats(cfg.influxdb, stats)
     except (LoggerReaderError, StorageError) as e:
         logger.warning(f"No se pudieron guardar stats diarias: {e}")
 
@@ -445,7 +448,15 @@ def backfill_solar_history(cfg: AppConfig) -> None:
     yesterday = date.today() - timedelta(days=1)
     floor_day = yesterday - timedelta(days=MAX_BACKFILL_DAYS - 1)
 
-    last_stored = get_last_real_solar_date(cfg.influxdb)
+    # Un día está completo solo si tiene TODOS los campos de media hora. Los campos
+    # se han ido añadiendo en momentos distintos (house/grid en v1.73), así que hay
+    # que arrancar desde el más atrasado: mirando solo `real_kwh` los días antiguos
+    # se darían por hechos y los campos nuevos no se rellenarían nunca.
+    last_by_field = [
+        get_last_real_solar_date(cfg.influxdb, field=f)
+        for f in ("real_kwh", "house_kwh", "grid_import_kwh", "grid_export_kwh")
+    ]
+    last_stored = None if any(d is None for d in last_by_field) else min(last_by_field)
     start_day = (last_stored + timedelta(days=1)) if last_stored else floor_day
     if start_day < floor_day:   # hueco enorme → no retroceder más allá del límite
         start_day = floor_day
@@ -462,7 +473,7 @@ def backfill_solar_history(cfg: AppConfig) -> None:
         try:
             stats = get_daily_stats(cfg.inverter, day)
             write_daily_stats(cfg.influxdb, stats)
-            write_half_hour_solar(cfg.influxdb, stats)
+            write_half_hour_stats(cfg.influxdb, stats)
             filled += 1
         except (LoggerReaderError, StorageError) as e:
             logger.warning(f"Backfill solar: no se pudo rellenar {day}: {e}")

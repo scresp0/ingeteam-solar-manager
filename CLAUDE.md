@@ -97,17 +97,17 @@ casa = PacGrid + PacMeter          (PacMeter: + importando, − exportando)
 
 Usar siempre el helper `logger_reader.house_power_w(record)`, que aplica la fórmula con suelo en 0 (cubre desincronizaciones puntuales entre las dos medidas).
 
-**Impacto medido sobre 14 días (2026-08-03..16), aún NO corregido en `stats_diarias`:**
+**Corregido en v1.73** (`_calculate_stats` usa `house_power_w`). Impacto que tenía, medido sobre 14 días (2026-08-03..16):
 
-| Campo | Cómo se calcula hoy | Media actual | Media real | Sesgo |
+| Campo | Cómo se calculaba (≤v1.72) | Media entonces | Media real | Sesgo |
 |---|---|---|---|---|
 | `night_consumption_kwh` | ∫`PacGrid` 00:00–07:59 | 4.58 kWh | 4.81 kWh | ≈OK |
 | `consumption_kwh` − night (post-valle) | ∫`PacGrid` 24 h − night | 21.09 kWh | 15.19 kWh | **+39%** |
 
-- **El nocturno se salva casi siempre** porque de noche `PacMeter` ≈ 0 mientras la batería alimenta la casa. Falla solo cuando la batería está agotada y la casa tira de red (el 16-ago dio **0.00** frente a 3.19 kWh reales) — y esos días los descarta el filtro `> 0.5` de `get_avg_night_consumption`, así que el efecto es un sesgo de selección leve, no ceros envenenando la media.
-- **El post-valle está inflado un 39%** porque en días soleados el inversor saca 25+ kWh por AC de los que varios se exportan, y se contabilizan como consumo de la casa. Esto explica el `post_valley ≈ 22 kWh/día` que se midió el 2026-07-12 y se atribuyó solo al prorrateo plano: eran **dos** errores acumulados.
-- El controlador de corriente ya no depende de esto (v1.72 mide el consumo directamente con `house_power_w`); queda como fallback. **`decide_charge` no se ve afectado**: usa `installation.average_daily_consumption_kwh` de config, no el medido.
-- Pendiente: corregir `_calculate_stats` y hacer backfill de `stats_diarias`. No hecho — cambia el histórico del que se derivan los parámetros dinámicos, así que merece su propia iteración.
+- **El nocturno se salvaba casi siempre** porque de noche `PacMeter` ≈ 0 mientras la batería alimenta la casa. Fallaba solo cuando la batería estaba agotada y la casa tiraba de red (el 16-ago daba **0.00** frente a 3.19 kWh reales) — y esos días los descartaba el filtro `> 0.5` de `get_avg_night_consumption`, así que el efecto era un sesgo de selección leve, no ceros envenenando la media. Tras el arreglo la media sube de 4.58 a 4.81 kWh (+5%): `decide_charge` tiende ligeramente más a cargar.
+- **El post-valle estaba inflado un 39%** porque en días soleados el inversor saca 25+ kWh por AC de los que varios se exportan, y se contabilizaban como consumo de la casa. Esto explica el `post_valley ≈ 22 kWh/día` que se midió el 2026-07-12 y se atribuyó solo al prorrateo plano: eran **dos** errores acumulados.
+- **`decide_charge` nunca se vio afectado**: usa `installation.average_daily_consumption_kwh` de config, no el medido.
+- ⚠️ **Sigue pendiente**: el tile "Consumo casa" del dashboard (`server.py`, `current_house_w`) muestra `PacGrid` crudo. Y `grid_exported_kwh` diario se calcula del contador `EPvToGrid`, que no cuadra con ∫`PacMeter` (19.64 vs 3.88 kWh el 16-ago) — probablemente mide "PV entregado a AC", no lo vertido a red. Los campos de media hora `grid_export_kwh` usan ∫`PacMeter`, que sí cuadra con el balance.
 
 ### InfluxDB (storage.py / logger_reader.py)
 - Nunca leer el día actual del datalogger **para stats diarias** (datos incompletos) — siempre ayer o antes
@@ -117,7 +117,11 @@ Usar siempre el helper `logger_reader.house_power_w(record)`, que aplica la fór
 - `ciclo_carga`: sin tags; timestamp = hora de ejecución UTC (~22-23h UTC)
 - `stats_diarias`: tag `device_id`; timestamp = medianoche UTC del día de datos
 - JOIN ciclo↔stats: `forecast_date = ciclo_UTC.date() + timedelta(days=1)` — no requiere columna extra
-- **Backfill automático de producción histórica** (`main.backfill_solar_history`): rellena los días sin `real_kwh` en `solar_media_hora` desde el datalogger. Se ejecuta al arrancar (hilo daemon) y con job APScheduler a las 00:30. `get_last_real_solar_date()` detecta el hueco. Acotado a `MAX_BACKFILL_DAYS=35`. No toca `ciclo_carga` ni el día en curso.
+- **`solar_media_hora` guarda el perfil real del día en franjas de 30 min** (48 puntos, `write_half_hour_stats`): `real_kwh` (producción), y desde **v1.73** `house_kwh` (consumo de la vivienda), `grid_import_kwh` y `grid_export_kwh`. Comparten measurement con el forecast (`forecast_p50/p10/p90_kwh`) a propósito: mismo timestamp de franja, así que el cruce más útil —el excedente disponible para la batería, `real_kwh − house_kwh`— sale de una sola consulta sin JOIN en Python. El precio asumido es que el nombre `solar_media_hora` se queda corto. Añadir campos no rompe `_solar_history`: pivota y lee por nombre con `.get()`.
+- **⚠️ El datalogger es una ventana RODANTE de ~59 días** (verificado por búsqueda binaria el 2026-08-17). Lo que no se copie a InfluxDB antes de que un día salga de esa ventana **se pierde para siempre** — por eso conviene capturar campos nuevos cuanto antes y por eso `MAX_BACKFILL_DAYS = 59` (coste medido del backfill completo: ~17 s y 54 MB por LAN, 2832 puntos).
+- **Backfill automático de producción histórica** (`main.backfill_solar_history`): rellena los días incompletos en `solar_media_hora` desde el datalogger. Se ejecuta al arrancar (hilo daemon) y con job APScheduler a las 00:30. No toca `ciclo_carga` ni el día en curso.
+  - **Detección del hueco:** `get_last_real_solar_date(cfg, field=...)` se consulta para **cada** campo y se arranca desde el más atrasado. Los campos se han ido añadiendo en momentos distintos, así que mirando solo `real_kwh` los días antiguos se darían por completos y los campos nuevos **no se rellenarían nunca** — hueco silencioso. Si algún campo no existe en ningún día, el backfill retrocede hasta `MAX_BACKFILL_DAYS`.
+  - Reescribir un día ya presente es idempotente (mismo measurement + mismo timestamp → InfluxDB sobrescribe), así que ampliar campos o corregir el cálculo solo requiere volver a pasar el backfill.
 - **Almacenamiento en bind mount**: en producción InfluxDB usa `./influxdb/data` y `./influxdb/config` (bind mounts, gitignoreados). El contenedor corre como uid 1000 — no hacer `chown` a otro usuario o arrancará con error de permisos. Para migrar entre máquinas: `tar czf influxdb-prod.tgz influxdb/` + `scp` + `tar xzf`.
 
 ### SMTP (notifier.py)

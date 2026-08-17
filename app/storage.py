@@ -538,11 +538,21 @@ def get_dynamic_solar_bias(
         return None
 
 
-def write_half_hour_solar(cfg: InfluxDBConfig, stats: DailyStats) -> None:
+def write_half_hour_stats(cfg: InfluxDBConfig, stats: DailyStats) -> None:
     """
-    Guarda la producción solar real (ayer) en resolución de 30 min.
+    Guarda el perfil real de un día en resolución de 30 min (48 puntos).
 
-    Escribe 48 puntos en solar_media_hora con el campo real_kwh.
+    Campos en `solar_media_hora`:
+      - real_kwh         : producción solar (existe desde v1.x)
+      - house_kwh        : consumo de la vivienda        (v1.73)
+      - grid_import_kwh  : energía tomada de red         (v1.73)
+      - grid_export_kwh  : energía vertida a red         (v1.73)
+
+    Van al MISMO measurement que la producción y el forecast, a propósito: comparten
+    el timestamp de franja, así que el cruce más útil —el excedente disponible para la
+    batería, `real_kwh − house_kwh`— sale de una sola consulta sin JOIN en Python. El
+    precio es que el nombre `solar_media_hora` se queda corto; se asume.
+
     Timestamps en "hora local española etiquetada como UTC" (igual que stats_diarias).
     """
     if not cfg.enabled:
@@ -553,12 +563,17 @@ def write_half_hour_solar(cfg: InfluxDBConfig, stats: DailyStats) -> None:
         {
             "measurement": "solar_media_hora",
             "time": (midnight_utc + timedelta(minutes=slot * 30)).isoformat(),
-            "fields": {"real_kwh": kwh},
+            "fields": {
+                "real_kwh":        stats.half_hour_solar_kwh[slot],
+                "house_kwh":       stats.half_hour_house_kwh[slot],
+                "grid_import_kwh": stats.half_hour_grid_import_kwh[slot],
+                "grid_export_kwh": stats.half_hour_grid_export_kwh[slot],
+            },
         }
-        for slot, kwh in enumerate(stats.half_hour_solar_kwh)
+        for slot in range(len(stats.half_hour_solar_kwh))
     ]
     _write_points(cfg, points)
-    logger.info(f"Solar media hora {stats.date} guardado en InfluxDB ({len(points)} slots)")
+    logger.info(f"Perfil media hora {stats.date} guardado en InfluxDB ({len(points)} slots)")
 
 
 def write_half_hour_forecast(
@@ -653,14 +668,19 @@ def get_solar_history_range(cfg: InfluxDBConfig, start_str: str, end_str: str) -
     return result
 
 
-def get_last_real_solar_date(cfg: InfluxDBConfig) -> date | None:
+def get_last_real_solar_date(cfg: InfluxDBConfig, field: str = "real_kwh") -> date | None:
     """
-    Día más reciente con producción real (real_kwh) en solar_media_hora.
+    Día más reciente con dato en `solar_media_hora` para el campo indicado.
 
     Lo usa el backfill para saber desde qué día rellenar el hueco hasta ayer.
     Los timestamps son "hora local etiquetada como UTC", así que `.date()` da
     directamente el día local. Devuelve None si InfluxDB está deshabilitado, no
     hay datos en la ventana de búsqueda o la consulta falla.
+
+    El parámetro `field` existe porque los campos se han ido añadiendo en momentos
+    distintos: un día puede tener `real_kwh` desde hace meses y no tener `house_kwh`
+    (añadido en v1.73). Preguntando solo por `real_kwh`, el backfill daría ese día
+    por completo y no rellenaría nunca los campos nuevos — un hueco silencioso.
     """
     if not cfg.enabled:
         return None
@@ -668,7 +688,7 @@ def get_last_real_solar_date(cfg: InfluxDBConfig) -> date | None:
     query = f"""
 from(bucket: "{cfg.bucket}")
   |> range(start: -120d)
-  |> filter(fn: (r) => r._measurement == "solar_media_hora" and r._field == "real_kwh")
+  |> filter(fn: (r) => r._measurement == "solar_media_hora" and r._field == "{field}")
   |> sort(columns: ["_time"], desc: true)
   |> limit(n: 1)
 """
@@ -685,7 +705,7 @@ from(bucket: "{cfg.bucket}")
     except ImportError:
         raise StorageError("influxdb-client no está instalado.")
     except Exception as e:
-        logger.warning(f"No se pudo consultar el último día con real en solar_media_hora: {e}")
+        logger.warning(f"No se pudo consultar el último día con {field} en solar_media_hora: {e}")
         return None
 
 
