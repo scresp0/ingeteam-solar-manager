@@ -1,0 +1,10 @@
+[Unit]
+Description=Ejecuta el backup diario de InfluxDB (solar-manager) a las 23:57
+
+[Timer]
+OnCalendar=*-*-* 23:57:00
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

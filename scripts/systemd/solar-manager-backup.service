@@ -1,0 +1,17 @@
+[Unit]
+Description=Backup diario de InfluxDB (solar-manager) a NAS via NFS
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=scresp0
+Group=scresp0
+ExecStart=/home/scresp0/solar-manager/scripts/backup_influxdb.sh
+# Sin acceso a red no tiene sentido reintentar indefinidamente en el mismo minuto;
+# el propio timer con Persistent=true se encarga de recuperar la ejecución perdida.
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target
