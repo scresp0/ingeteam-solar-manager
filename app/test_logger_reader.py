@@ -16,9 +16,9 @@ from datetime import date
 from app.logger_reader import house_power_w, _calculate_stats
 
 
-def _rec(pacgrid=0, pacmeter=0, pdc1=0, pdc2=0, sbatt=50):
+def _rec(pacgrid=0, pacmeter=0, pdc1=0, pdc2=0, sbatt=50, pbatt=0):
     return {"PacGrid": pacgrid, "PacMeter": pacmeter, "Pdc1": pdc1, "Pdc2": pdc2,
-            "Sbatt": sbatt, "EPvToGrid": 0}
+            "Sbatt": sbatt, "EPvToGrid": 0, "Pbatt": pbatt}
 
 
 def main():
@@ -49,8 +49,8 @@ def main():
     print("=== _calculate_stats: acumulados y perfil de 30 min ===")
     # Día sintético de 1440 min: 8 h de noche importando 600 W, luego 16 h
     # produciendo 3000 W con la casa a 1200 W y el resto exportado.
-    night = [_rec(pacgrid=0, pacmeter=600)] * 480
-    day = [_rec(pacgrid=3000, pacmeter=-1800, pdc1=1500, pdc2=1500)] * 960
+    night = [_rec(pacgrid=0, pacmeter=600, sbatt=40, pbatt=0)] * 480
+    day = [_rec(pacgrid=3000, pacmeter=-1800, pdc1=1500, pdc2=1500, sbatt=90, pbatt=-1000)] * 960
     stats = _calculate_stats(night + day, date(2026, 8, 16), "TEST")
 
     # Noche: 600 W × 8 h = 4.8 kWh. Con ∫PacGrid daría 0.0 (el bug corregido).
@@ -60,6 +60,13 @@ def main():
     # Solar: 3000 W × 16 h = 48 kWh.
     check("solar_kwh", stats.solar_kwh, 48.0)
     check("grid_consumed_kwh", stats.grid_consumed_kwh, 4.8)
+    # SOC: noche plana a 40%, día salta a 90% (sin variar minuto a minuto en este
+    # sintético) → el pico del día es 90, no el último valor si hubiera bajado luego.
+    check("soc_start_pct", stats.soc_start_pct, 40)
+    check("soc_end_pct", stats.soc_end_pct, 90)
+    check("peak_soc_pct", stats.peak_soc_pct, 90)
+    # Carga: noche sin cargar (Pbatt=0), día a 1000 W × 16 h = 16 kWh.
+    check("battery_charged_kwh", stats.battery_charged_kwh, 16.0)
 
     # Los perfiles de 30 min deben sumar exactamente los agregados diarios.
     check("48 slots de casa", len(stats.half_hour_house_kwh), 48)
