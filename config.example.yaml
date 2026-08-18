@@ -177,11 +177,21 @@ charge_current:
                                 # estimación de la próxima (el AC tiene inercia de horas). Mediana y no
                                 # media para que un horno de 20 min no dispare la estimación. Si el
                                 # datalogger no responde, cae a la media post-valle prorrateada.
+                                # Para las franjas SOLAR alejadas de ahora (más de 2h), la persistencia
+                                # se mezcla con el perfil histórico por franja de solar_media_hora.house_kwh
+                                # (ver house_profile_*): la persistencia sola no anticipa que la tarde
+                                # consume más que la mañana (AC), solo lo que ya ha pasado hoy.
+  house_profile_window_days: 30          # días de histórico para el perfil de consumo por franja horaria
+  house_profile_min_days_in_window: 14   # mínimo de días (en la franja peor cubierta) para fiarse del perfil
   productive_window_pct: 90     # % del total diario real (fallback de fin de ventana si no hay forecast)
   productive_window_end_hour: 17.0  # fallback de fin de producción si no hay forecast ni histórico
   floor_a: 22                   # corriente mínima (para que la carga termine a tiempo)
   max_a: 66                     # tope máximo (66 = máximo del inversor)
-  margin: 1.2                   # margen sobre el mínimo teórico
+  margin: 1.33                  # margen sobre el mínimo teórico. Subido de 1.2 a 1.33 (2026-08-18)
+                                # tras backtest sobre un día real en el que 1.2 se quedó al 89% de SOC
+                                # (consumo de tarde por AC no cubierto a tiempo): con 1.33 el mismo día
+                                # llega al 100%, y el coste en A·h totales es prácticamente neutro —
+                                # termina antes y ya no necesita el tramo final de BALANCE/rampa tardía.
   battery_balance: false        # true: cerca del tope, carga muy suave para balancear celdas del stack
   balance_soc_pct: 97           # SOC a partir del cual entra el modo BALANCE (debe ser < charging.max_soc_pct)
   balance_soc_pct_2: 99         # 2ª etapa: SOC a partir del cual la corriente de balanceo baja a la mitad (>= balance_soc_pct)

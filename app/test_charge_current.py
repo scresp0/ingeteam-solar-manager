@@ -11,10 +11,14 @@ Ejecutar:
   o en el contenedor:  docker exec -i solar-manager python -m app.test_charge_current
 """
 import sys
+from datetime import datetime
 from types import SimpleNamespace as NS
 
 from app.config import ChargeCurrentConfig
-from app.main import _compute_target_charge_current, _min_current_for_surplus, SolarWindow
+from app.main import (
+    _compute_target_charge_current, _min_current_for_surplus, SolarWindow,
+    _house_consumption_for_slot,
+)
 
 
 def _cfg(**overrides):
@@ -166,6 +170,42 @@ def main():
     check("fría con window → máx (gate manda)", comp_win(cfg, _state(70, 28), 12.0, 40, win([4.0] * 10)), 66, "máx")
     # Window vacía (forecast dice que ya no queda sol) → end_hour 0 → IDLE.
     check("sin sol restante → IDLE", comp_win(cfg, _state(70, 32), 12.0, 33, win([], 0.0)), 33, "sin cambios")
+
+    print("=== Perfil histórico de consumo (_house_consumption_for_slot) ===")
+
+    def check_val(desc, got, exp, tol=0.001):
+        nonlocal passed, failed
+        ok = abs(got - exp) < tol
+        if ok:
+            passed += 1
+            print(f"  ✓  {desc} → {got:.3f} kWh")
+        else:
+            failed += 1
+            print(f"  ✗  {desc} → {got:.3f} kWh (esperado {exp:.3f})")
+
+    now = datetime(2026, 8, 18, 16, 0)
+    profile = {"16:00": 1.6, "18:00": 0.3}   # kWh/franja: tarde alta, noche baja
+
+    # Sin perfil (pocos días en InfluxDB) → pura persistencia, aunque la franja
+    # coincida con una hora "conocida".
+    check_val("sin perfil → persistencia", _house_consumption_for_slot(now, now, 0.3, None), 0.3)
+
+    # Franja ACTUAL (peso persistencia = 1) → ignora el histórico aunque exista.
+    check_val("franja actual → pura persistencia", _house_consumption_for_slot(now, now, 0.3, profile), 0.3)
+
+    # Franja a 2h o más (fuera del plazo de mezcla) → puro histórico.
+    check_val("franja a 2h → puro histórico",
+              _house_consumption_for_slot(datetime(2026, 8, 18, 18, 0), now, 0.9, profile), 0.3)
+
+    # Franja a 1h (mitad del plazo de 2h) → mezcla 50/50 entre persistencia (0.3)
+    # e histórico de esa franja (1.6, la de las 16:00 reutilizada para el ejemplo).
+    media = _house_consumption_for_slot(datetime(2026, 8, 18, 17, 0), now, 0.3, {"17:00": 1.6})
+    check_val("franja a 1h → mezcla 50/50", media, (0.3 + 1.6) / 2)
+
+    # Franja sin entrada en el perfil (hueco de datos en esa franja concreta) →
+    # cae a persistencia, no a 0.
+    check_val("franja sin dato en el perfil → persistencia",
+              _house_consumption_for_slot(datetime(2026, 8, 18, 20, 0), now, 0.3, profile), 0.3)
 
     print()
     if failed:
