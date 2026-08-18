@@ -11,6 +11,8 @@ Calcula acumulados diarios a partir de los datos minuto a minuto:
   - grid_exported_kwh: energía exportada a red (EPvToGrid delta)
   - soc_start_pct    : SOC al inicio del día (00:00)
   - soc_end_pct      : SOC al final del día (23:59)
+  - peak_soc_pct     : SOC máximo alcanzado en el día (pico tras la carga)
+  - battery_charged_kwh : energía neta cargada en la batería en el día (∫Pbatt < 0)
   - consumption_kwh  : consumo total estimado (Pac integral)
 """
 
@@ -69,6 +71,8 @@ class DailyStats:
     night_consumption_kwh: float  # consumo 00:00–07:59 de la vivienda
     soc_start_pct: float
     soc_end_pct: float
+    peak_soc_pct: float          # SOC máximo del día — cuánto se acercó al objetivo de carga
+    battery_charged_kwh: float   # kWh netos cargados en la batería (valle + solar, ∫Pbatt < 0)
     records: int                            # número de registros del día (max 1440)
     half_hour_solar_kwh: list[float]        # 48 slots × 30 min, kWh por slot
     half_hour_house_kwh: list[float]        # consumo de la vivienda por slot
@@ -200,7 +204,8 @@ def get_daily_stats(cfg: InverterConfig, target_date: date) -> DailyStats:
         f"Solar={stats.solar_kwh:.2f} kWh | "
         f"Red consumida={stats.grid_consumed_kwh:.2f} kWh | "
         f"Red exportada={stats.grid_exported_kwh:.2f} kWh | "
-        f"SOC {stats.soc_start_pct}% → {stats.soc_end_pct}%"
+        f"SOC {stats.soc_start_pct}% → {stats.soc_end_pct}% (pico {stats.peak_soc_pct}%) | "
+        f"Cargado en batería={stats.battery_charged_kwh:.2f} kWh"
     )
     return stats
 
@@ -289,6 +294,19 @@ def _calculate_stats(records: list[dict], target_date: date, device_id: str) -> 
     # SOC inicio y fin
     soc_start = records[0].get("Sbatt", 0)
     soc_end   = records[-1].get("Sbatt", 0)
+    # SOC máximo del día: de noche el SOC solo baja (descarga), así que el pico
+    # coincide con el momento justo tras la carga de valle+solar — sirve para medir
+    # cuánto se acercó al objetivo (`charging.max_soc_pct`) sin necesidad de acotar
+    # una ventana horaria. Pensado como base para calibrar `charge_current.margin`
+    # más adelante (ver CLAUDE.md, backtest del 2026-08-18).
+    peak_soc_pct = max((r.get("Sbatt", 0) for r in records), default=0.0)
+
+    # Energía neta cargada en la batería: Pbatt negativo = cargando (ver gotcha
+    # MODBUS en CLAUDE.md — mismo convenio en el datalogger). Incluye valle Y solar;
+    # no se separan porque ambas cuentan para el mismo objetivo (`max_soc_pct`).
+    battery_charged_kwh = sum(
+        max(0, -r.get("Pbatt", 0)) * INTERVAL_H for r in records
+    ) / 1000
 
     # Perfil por slot de 30 min (48 slots, "local labeled UTC"). El flujo de red se
     # integra de PacMeter (+ importando, − exportando), coherente con el balance
@@ -318,6 +336,8 @@ def _calculate_stats(records: list[dict], target_date: date, device_id: str) -> 
         night_consumption_kwh=round(night_consumption_kwh, 3),
         soc_start_pct=soc_start,
         soc_end_pct=soc_end,
+        peak_soc_pct=peak_soc_pct,
+        battery_charged_kwh=round(battery_charged_kwh, 3),
         records=len(records),
         half_hour_solar_kwh=half_hour,
         half_hour_house_kwh=half_hour_house,
