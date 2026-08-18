@@ -46,7 +46,7 @@ from app.storage import (
     write_cycle, write_daily_stats, write_half_hour_stats, write_half_hour_forecast,
     write_charge_current,
     get_avg_night_consumption, get_avg_post_valley_consumption, get_avg_daily_consumption,
-    get_dynamic_risk_factor, get_dynamic_solar_bias,
+    get_dynamic_risk_factor, get_dynamic_solar_bias, get_house_power_profile,
     get_last_real_solar_date, get_production_window_end_hour, StorageError,
 )
 
@@ -526,6 +526,13 @@ def backfill_solar_history(cfg: AppConfig) -> None:
 _VALLE_START_HOUR = 0.0
 _VALLE_END_HOUR   = 8.0
 
+# Plazo en el que el consumo de casa por franja pasa de estimarse por persistencia
+# (mediana de la última hora — capta si hoy hace más/menos calor de lo normal) a
+# estimarse por el perfil histórico de esa franja (sabe que la tarde consume más
+# que la mañana aunque la mañana de hoy haya sido tranquila). Ver
+# `_house_consumption_for_slot`.
+_HOUSE_PROFILE_BLEND_HOURS = 2.0
+
 
 def _productive_window_end(cfg: AppConfig) -> float:
     """Fallback de la hora local de fin de producción solar (cuando no hay forecast).
@@ -606,6 +613,32 @@ def _house_power_estimate(cfg: AppConfig) -> tuple[float, str]:
     return post_valley / 16.0, "media"
 
 
+def _house_consumption_for_slot(
+    slot_start, now, persistence_kwh: float, profile: dict[str, float] | None,
+) -> float:
+    """kWh que se asume consumirá la vivienda en una franja de 30 min, mezclando
+    la persistencia (mediana de la última hora) con el perfil histórico de esa
+    franja horaria.
+
+    Peso de la persistencia = 1 en la franja actual, decae linealmente a 0 en
+    `_HOUSE_PROFILE_BLEND_HOURS`. Cerca de ahora manda la persistencia (capta si
+    hoy hace más o menos calor de lo normal); más allá manda el histórico, que
+    sabe que la tarde consume más que la mañana aunque la mañana de hoy haya sido
+    tranquila — es lo que la persistencia sola no puede anticipar (gotcha real
+    del 2026-08-18: consumo de casa 0,5 kW por la mañana → controlador a 33A todo
+    el día → aire acondicionado sube el consumo de tarde a 1,1-2,3 kW → batería se
+    queda al 89%). Sin perfil (pocos días en InfluxDB), pura persistencia.
+    """
+    if not profile:
+        return persistence_kwh
+    profile_kwh = profile.get(f"{slot_start.hour:02d}:{slot_start.minute:02d}")
+    if profile_kwh is None:
+        return persistence_kwh
+    hours_ahead = max(0.0, (slot_start - now).total_seconds() / 3600.0)
+    w = max(0.0, 1.0 - hours_ahead / _HOUSE_PROFILE_BLEND_HOURS)
+    return w * persistence_kwh + (1 - w) * profile_kwh
+
+
 def _solar_surplus_window(cfg: AppConfig, now) -> SolarWindow | None:
     """Construye el perfil de excedente solar restante de HOY por franjas de 30 min.
 
@@ -622,10 +655,16 @@ def _solar_surplus_window(cfg: AppConfig, now) -> SolarWindow | None:
     sobre la resta del consumo fue lo que disparó el acantilado a 66 A de v1.68. El
     único margen deliberado vive en `charge_current.margin`.
 
+    **Consumo de casa por franja: persistencia cerca de ahora, perfil histórico
+    lejos** (`_house_consumption_for_slot`). Restar la misma mediana de la última
+    hora en las 26 franjas del día (hasta v1.7x) asumía que el consumo de la
+    mañana representa el de toda la jornada — falso en verano, cuando el AC dispara
+    el consumo de tarde muy por encima del de la mañana.
+
     El fin de producción se calcula con la producción BRUTA: una franja sigue
     produciendo aunque la casa se coma todo lo que da.
     """
-    from datetime import datetime
+    from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
     logger = logging.getLogger(__name__)
 
@@ -646,6 +685,13 @@ def _solar_surplus_window(cfg: AppConfig, now) -> SolarWindow | None:
     house_kw, house_source = _house_power_estimate(cfg)
     house_per_interval = house_kw * 0.5   # kWh que la casa consume en una franja de 30 min
 
+    try:
+        house_profile = get_house_power_profile(
+            cfg.influxdb, cfg.charge_current.house_profile_window_days,
+            cfg.charge_current.house_profile_min_days_in_window)
+    except StorageError:
+        house_profile = None
+
     tz = ZoneInfo(cfg.system.timezone)
     surplus: list[float] = []
     gross = 0.0
@@ -661,7 +707,10 @@ def _solar_surplus_window(cfg: AppConfig, now) -> SolarWindow | None:
         eff = it.get("pv_estimate", 0.0) * bias * 0.5   # kWh de la franja (p50 calibrado)
         if eff > 0.02:
             gross += eff
-            surplus.append(max(0.0, eff - house_per_interval))
+            slot_start = end_local - timedelta(minutes=30)
+            house_kwh_slot = _house_consumption_for_slot(
+                slot_start, now, house_per_interval, house_profile)
+            surplus.append(max(0.0, eff - house_kwh_slot))
             end_hour = end_local.hour + end_local.minute / 60.0
 
     if end_hour is None:
@@ -670,8 +719,9 @@ def _solar_surplus_window(cfg: AppConfig, now) -> SolarWindow | None:
     win = SolarWindow(surplus, end_hour, round(gross, 2), house_kw, house_source)
     logger.debug(
         f"Excedente solar: bruto {win.gross_kwh:.2f} kWh − casa "
-        f"{house_kw:.2f} kW ({house_source}) → neto {win.surplus_kwh:.2f} kWh "
-        f"en {len(surplus)} franjas hasta las {end_hour:.1f}h"
+        f"{house_kw:.2f} kW ({house_source}, perfil histórico "
+        f"{'disponible' if house_profile else 'no disponible'}) → neto "
+        f"{win.surplus_kwh:.2f} kWh en {len(surplus)} franjas hasta las {end_hour:.1f}h"
     )
     return win
 

@@ -441,6 +441,78 @@ from(bucket: "{cfg.bucket}")
         return None
 
 
+def get_house_power_profile(
+    cfg: InfluxDBConfig,
+    window_days: int = 30,
+    min_days_in_window: int = 14,
+) -> dict[str, float] | None:
+    """
+    Perfil histórico de consumo de la vivienda por franja de 30 min: mediana de
+    `house_kwh` (measurement `solar_media_hora`, campo disponible desde v1.73) en
+    cada franja sobre los últimos `window_days` días. Devuelve
+    `{"HH:MM": kWh_de_la_franja}`, con "HH:MM" la hora de INICIO de la franja
+    (mismo convenio que `write_half_hour_stats`: timestamp = inicio, "hora local
+    etiquetada como UTC" — se lee `.hour`/`.minute` del timestamp tal cual, sin
+    conversión de zona horaria).
+
+    Se usa como ancla de largo plazo en `_solar_surplus_window` (main.py) para las
+    franjas alejadas del momento actual, donde la persistencia (mediana de la
+    última hora) no tiene base real para extrapolar — el consumo sube por la
+    tarde (aire acondicionado) aunque la mañana de hoy haya sido tranquila.
+
+    Devuelve None si:
+    - InfluxDB no está habilitado
+    - La franja peor cubierta tiene menos de min_days_in_window registros
+      (criterio conservador: basta con que UNA franja esté infra-muestreada para
+      desconfiar del perfil completo — mismo espíritu que el resto de parámetros
+      dinámicos)
+    - La consulta falla (se loguea como warning)
+    """
+    if not cfg.enabled:
+        return None
+
+    query = f"""
+from(bucket: "{cfg.bucket}")
+  |> range(start: -{window_days}d)
+  |> filter(fn: (r) => r._measurement == "solar_media_hora" and r._field == "house_kwh")
+"""
+    try:
+        from influxdb_client import InfluxDBClient
+        from statistics import median
+
+        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
+            tables = client.query_api().query(query, org=cfg.org)
+            by_slot: dict[str, list[float]] = {}
+            for table in tables:
+                for rec in table.records:
+                    t = rec.get_time()
+                    by_slot.setdefault(f"{t.hour:02d}:{t.minute:02d}", []).append(rec.get_value())
+
+        if not by_slot:
+            return None
+
+        min_samples = min(len(v) for v in by_slot.values())
+        if min_samples < min_days_in_window:
+            logger.debug(
+                f"Perfil de consumo de casa: la franja peor cubierta tiene solo "
+                f"{min_samples} días (mínimo {min_days_in_window}) — usando fallback"
+            )
+            return None
+
+        profile = {slot: round(median(vals), 3) for slot, vals in by_slot.items()}
+        logger.debug(
+            f"Perfil de consumo de casa: {len(profile)} franjas, "
+            f"{min_samples}-{max(len(v) for v in by_slot.values())} días/franja"
+        )
+        return profile
+
+    except ImportError:
+        raise StorageError("influxdb-client no está instalado.")
+    except Exception as e:
+        logger.warning(f"No se pudo consultar el perfil de consumo de casa en InfluxDB: {e}")
+        return None
+
+
 def _forecast_real_pairs(cfg: InfluxDBConfig, fetch_days: int) -> list[tuple[float, float, float]]:
     """
     Cruza el forecast histórico (ciclo_carga) con la producción solar real

@@ -223,6 +223,8 @@ class ChargeCurrentConfig(BaseModel):
     hot_threshold_c: float = Field(default=30.0)                     # temp batería > umbral → carga suave; si no → max_a (solo si temp_gate_enabled)
     house_power_window_min: int = Field(default=60, ge=5, le=240)    # minutos de datalogger para estimar el consumo de casa (mediana)
     house_power_cache_min: int = Field(default=15, ge=0, le=120)     # minutos que se reutiliza esa lectura (0 = sin caché); cada lectura descarga el día completo del datalogger
+    house_profile_window_days: int = Field(default=30, ge=7)         # días de solar_media_hora.house_kwh para el perfil histórico por franja
+    house_profile_min_days_in_window: int = Field(default=14, ge=1)  # mínimo de días (en la franja peor cubierta) para fiarse del perfil
     productive_window_pct: int = Field(default=90, ge=10, le=100)    # % del total diario real (fallback de fin de ventana)
     productive_window_end_hour: float = Field(default=17.0, ge=0.0, le=24.0)  # fallback si no hay forecast ni histórico
     floor_a: int = Field(default=15, ge=1, le=66)                    # corriente mínima (para que la carga termine)
@@ -247,6 +249,13 @@ class ChargeCurrentConfig(BaseModel):
             raise ValueError(
                 f"charge_current.balance_soc_pct_2 ({self.balance_soc_pct_2}) no puede ser menor "
                 f"que balance_soc_pct ({self.balance_soc_pct})"
+            )
+        if self.house_profile_window_days < self.house_profile_min_days_in_window:
+            raise ValueError(
+                f"charge_current.house_profile_window_days ({self.house_profile_window_days}) "
+                f"debe ser >= house_profile_min_days_in_window "
+                f"({self.house_profile_min_days_in_window}): con una ventana menor que el "
+                f"mínimo el perfil histórico nunca se activaría."
             )
         return self
 

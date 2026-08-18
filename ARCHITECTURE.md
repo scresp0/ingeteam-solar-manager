@@ -546,13 +546,16 @@ forecast):
 intervals = solcast.get_today_intervals()          # franjas de 30 min de HOY (de la caché)
 bias      = get_dynamic_solar_bias(...) o charging.solar_bias_factor
 house_kw, house_source = _house_power_estimate()
-house_per_interval = house_kw · 0.5                # kWh que consume la casa en 30 min
+house_per_interval = house_kw · 0.5                # kWh que consume la casa en 30 min (persistencia)
+house_profile = get_house_power_profile(...)       # {"HH:MM": kWh/franja} o None
 
 para cada franja con period_end > ahora:
     eff = pv_estimate · bias · 0.5                 # kWh de la franja, p50 CALIBRADO
     si eff > 0.02:
         gross   += eff
-        surplus.append(max(0, eff − house_per_interval))
+        house_kwh_slot = _house_consumption_for_slot(slot_start, ahora,
+                                                       house_per_interval, house_profile)
+        surplus.append(max(0, eff − house_kwh_slot))
         end_hour = hora local del fin de esa franja
 ```
 
@@ -581,6 +584,34 @@ Dos decisiones explícitas en los comentarios:
   hay, `(average_daily_consumption_kwh − night_consumption_kwh) / 16.0`. El propio
   docstring advierte de que **sobreestima**: reparte sobre las horas de sol un total que
   incluye la tarde-noche.
+
+**Mezcla con el perfil histórico por franja — `_house_consumption_for_slot` (v1.77):**
+
+La persistencia (mediana de la última hora) solo sabe lo que la casa ha consumido
+**hoy hasta ahora**; aplicada de forma plana a las franjas de toda la tarde asume que
+el ritmo de la mañana se mantiene, lo cual es falso en verano (el aire acondicionado
+dispara el consumo de tarde muy por encima del de la mañana — caso real del
+2026-08-18: persistencia matutina 0,5-0,6 kW → controlador a 33A (suelo) toda la
+mañana con 21,5 kWh de excedente previsto → consumo real de tarde 1,1-2,3 kW →
+batería se queda al 89%, nunca llega al 100%).
+
+```
+house_kwh_slot(slot_start, ahora, persistencia_kwh, profile):
+    si profile es None o no tiene la franja "HH:MM" de slot_start:
+        return persistencia_kwh
+    horas_por_delante = max(0, (slot_start − ahora) en horas)
+    w = max(0, 1 − horas_por_delante / 2.0)        # _HOUSE_PROFILE_BLEND_HOURS
+    return w · persistencia_kwh + (1−w) · profile["HH:MM"]
+```
+
+Peso 1 (pura persistencia) en la franja actual — capta si hoy hace más o menos calor
+de lo normal —, decayendo linealmente a peso 0 (puro histórico) a partir de 2 horas
+vista. `get_house_power_profile` (storage.py) calcula ese histórico como la
+**mediana** de `solar_media_hora.house_kwh` en cada franja de 30 min sobre los
+últimos `house_profile_window_days` días (30 por defecto); devuelve `None` si la
+franja peor cubierta tiene menos de `house_profile_min_days_in_window` (14) días —
+mismo criterio conservador que el resto de parámetros dinámicos — y entonces el
+controlador se comporta exactamente como antes de v1.77 (pura persistencia).
 
 ### 5.5 Las dos fórmulas de corriente
 
@@ -786,11 +817,13 @@ Ver sección 5 para el detalle funcional.
 | `hot_threshold_c` | float | 30.0 | 30.0 |
 | `house_power_window_min` | int `[5, 240]` | 60 | 60 |
 | `house_power_cache_min` | int `[0, 120]` | 15 | 15 |
+| `house_profile_window_days` | int `≥ 7`, `≥ house_profile_min_days_in_window` | 30 | 30 |
+| `house_profile_min_days_in_window` | int `≥ 1` | 14 | 14 |
 | `productive_window_pct` | int `[10, 100]` | 90 | 90 |
 | `productive_window_end_hour` | float `[0, 24]` | 17.0 | 17.0 |
 | `floor_a` | int `[1, 66]`, `≤ max_a` | 15 | 22 |
 | `max_a` | int `[1, 66]` | 66 | 66 |
-| `margin` | float `[1.0, 3.0]` | 1.2 | 1.2 |
+| `margin` | float `[1.0, 3.0]` | 1.2 | 1.33 |
 | `battery_balance` | bool | `false` | `false` |
 | `balance_soc_pct` | float `[0,100]`, `< charging.max_soc_pct` si `battery_balance` | 98.0 | 97 |
 | `balance_soc_pct_2` | float `[0,100]`, `≥ balance_soc_pct` | 99.0 | 99 |
@@ -1085,7 +1118,7 @@ risk factor usa `solar_kwh`, que es un campo original y acumula datos antes.
 ```
 1. load_config()            → error de config = sys.exit(1)
 2. setup_logging()          → StreamHandler(stdout) + FileHandler(log_file)
-3. log de arranque:  "solar-manager v1.76 arrancando en <host> (dry_run=…)"
+3. log de arranque:  "solar-manager v1.77 arrancando en <host> (dry_run=…)"
 4. WARNING por cada clave de config obsoleta encontrada
 5. si system.web_enabled → hilo daemon con uvicorn en 0.0.0.0:web_port
 6. hilo daemon "firmware-profile-startup"  → lee firmware y fija el perfil de etiquetas
