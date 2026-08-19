@@ -663,6 +663,17 @@ def _solar_surplus_window(cfg: AppConfig, now) -> SolarWindow | None:
 
     El fin de producción se calcula con la producción BRUTA: una franja sigue
     produciendo aunque la casa se coma todo lo que da.
+
+    **Pre-check barato antes de bias/consumo (v1.79):** `intervals` es lo primero
+    que se pide, y ya trae `pv_estimate` crudo de Solcast. Si NINGUNA franja futura
+    de hoy tiene `pv_estimate > 0` (exacto 0.0 en Solcast de noche — no hay
+    ambigüedad de `bias` que valga: bias solo escala un valor que ya es cero), el
+    resultado va a ser una ventana vacía de todos modos, así que se corta ahí sin
+    pagar `get_dynamic_solar_bias` (InfluxDB), `_house_power_estimate` (datalogger,
+    el caro) ni `get_house_power_profile` (InfluxDB). Cubre la tarde-noche tras el
+    fin de producción; el valle (00:00–08:00) se corta un nivel más arriba, en
+    `run_charge_current_controller`, porque ahí SÍ hay producción prevista más
+    tarde ese mismo día — este pre-check no serviría para distinguirlo.
     """
     from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
@@ -673,6 +684,21 @@ def _solar_surplus_window(cfg: AppConfig, now) -> SolarWindow | None:
     except SolcastError as e:
         logger.warning(f"Controlador corriente: forecast de hoy no disponible — {e}")
         return None
+
+    tz = ZoneInfo(cfg.system.timezone)
+    parsed: list[tuple] = []
+    for it in intervals:
+        try:
+            end_str = it["period_end"].rstrip("Z").split(".")[0] + "+00:00"
+            end_local = datetime.fromisoformat(end_str).astimezone(tz)
+        except (KeyError, ValueError):
+            continue
+        if end_local <= now:
+            continue
+        parsed.append((end_local, it.get("pv_estimate", 0.0)))
+
+    if not any(pv > 0 for _, pv in parsed):
+        return SolarWindow([], 0.0, 0.0, 0.0, "sin sol restante")
 
     try:
         bias = get_dynamic_solar_bias(
@@ -692,19 +718,11 @@ def _solar_surplus_window(cfg: AppConfig, now) -> SolarWindow | None:
     except StorageError:
         house_profile = None
 
-    tz = ZoneInfo(cfg.system.timezone)
     surplus: list[float] = []
     gross = 0.0
     end_hour = None
-    for it in intervals:
-        try:
-            end_str = it["period_end"].rstrip("Z").split(".")[0] + "+00:00"
-            end_local = datetime.fromisoformat(end_str).astimezone(tz)
-        except (KeyError, ValueError):
-            continue
-        if end_local <= now:
-            continue
-        eff = it.get("pv_estimate", 0.0) * bias * 0.5   # kWh de la franja (p50 calibrado)
+    for end_local, pv_estimate in parsed:
+        eff = pv_estimate * bias * 0.5   # kWh de la franja (p50 calibrado)
         if eff > 0.02:
             gross += eff
             slot_start = end_local - timedelta(minutes=30)
@@ -901,8 +919,19 @@ def run_charge_current_controller(cfg: AppConfig, simulate: bool = False) -> Non
     hour = now.hour + now.minute / 60.0
     current = int(round(state.charge_current_max_a))
 
-    window = _solar_surplus_window(cfg, now)
-    solar_end = window.end_hour if window is not None else _productive_window_end(cfg)
+    if hour < _VALLE_END_HOUR:
+        # En valle la decisión (VALLE/BALANCE-en-valle) nunca consulta el excedente
+        # solar — usa el reloj fijo 00:00–08:00 y el objetivo ya decidido a las
+        # 23:55 (`schedule_state`). Construir la ventana aquí sería tirar siempre
+        # el resultado: verificado ejecutando `_compute_target_charge_current` con
+        # windows contradictorios y comprobando que el resultado no cambia (ver
+        # CLAUDE.md). No se llama ni siquiera al fallback barato
+        # `_productive_window_end` (también hace una query a InfluxDB) — es tan
+        # inútil en valle como la ventana completa.
+        window, solar_end = None, cfg.charge_current.productive_window_end_hour
+    else:
+        window = _solar_surplus_window(cfg, now)
+        solar_end = window.end_hour if window is not None else _productive_window_end(cfg)
     schedule_state = _load_schedule_state()
     target, calculated, mode = _compute_target_charge_current(
         cfg, state, hour, schedule_state, current, solar_end, window)

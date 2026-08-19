@@ -13,7 +13,9 @@ Ejecutar:
 import sys
 from datetime import datetime
 from types import SimpleNamespace as NS
+from zoneinfo import ZoneInfo
 
+import app.main as m
 from app.config import ChargeCurrentConfig
 from app.main import (
     _compute_target_charge_current, _min_current_for_surplus, SolarWindow,
@@ -206,6 +208,89 @@ def main():
     # cae a persistencia, no a 0.
     check_val("franja sin dato en el perfil → persistencia",
               _house_consumption_for_slot(datetime(2026, 8, 18, 20, 0), now, 0.3, profile), 0.3)
+
+    print("=== _solar_surplus_window: pre-check barato (v1.79) ===")
+
+    def check_eq(desc, got, exp):
+        nonlocal passed, failed
+        if got == exp:
+            passed += 1
+            print(f"  ✓  {desc} → {got}")
+        else:
+            failed += 1
+            print(f"  ✗  {desc} → {got}  (esperado {exp})")
+
+    def _patch(intervals_fn):
+        calls = {"bias": 0, "house": 0, "profile": 0}
+        real = (m.get_today_intervals, m.get_dynamic_solar_bias,
+                m._house_power_estimate, m.get_house_power_profile)
+
+        def fake_bias(*a, **k):
+            calls["bias"] += 1
+            return 0.8
+
+        def fake_house(*a, **k):
+            calls["house"] += 1
+            return 0.5, "medido"
+
+        def fake_profile(*a, **k):
+            calls["profile"] += 1
+            return None
+
+        m.get_today_intervals = intervals_fn
+        m.get_dynamic_solar_bias = fake_bias
+        m._house_power_estimate = fake_house
+        m.get_house_power_profile = fake_profile
+        return calls, real
+
+    def _unpatch(real):
+        (m.get_today_intervals, m.get_dynamic_solar_bias,
+         m._house_power_estimate, m.get_house_power_profile) = real
+
+    solcast_cfg = NS(
+        solcast=NS(), system=NS(timezone="Europe/Madrid"), influxdb=NS(),
+        charging=NS(solar_bias_window_days=30, solar_bias_min_days_in_window=14),
+        charge_current=NS(house_profile_window_days=30, house_profile_min_days_in_window=14),
+    )
+    now = datetime(2026, 8, 19, 20, 0, tzinfo=ZoneInfo("Europe/Madrid"))
+
+    # Todas las franjas restantes con pv_estimate=0.0 (como de noche en Solcast) →
+    # debe cortar ANTES de pedir bias/consumo/perfil: 0 llamadas a cada uno.
+    def intervals_sin_sol(*a, **k):
+        return [
+            {"period_end": "2026-08-19T20:00:00.0000000Z", "pv_estimate": 0.0},
+            {"period_end": "2026-08-19T20:30:00.0000000Z", "pv_estimate": 0.0},
+        ]
+
+    calls, real = _patch(intervals_sin_sol)
+    try:
+        window = m._solar_surplus_window(solcast_cfg, now)
+    finally:
+        _unpatch(real)
+    check_eq("sin sol restante → surplus vacío", len(window.surplus), 0)
+    check_eq("sin sol restante → end_hour 0", window.end_hour, 0.0)
+    check_eq("sin sol restante → NO llama a bias", calls["bias"], 0)
+    check_eq("sin sol restante → NO llama a consumo medido", calls["house"], 0)
+    check_eq("sin sol restante → NO llama a perfil histórico", calls["profile"], 0)
+
+    # Con al menos una franja con pv_estimate > 0 → SÍ debe seguir el camino normal
+    # (bias/consumo/perfil se llaman una vez cada uno) — confirma que el pre-check
+    # no rompe el caso real.
+    def intervals_con_sol(*a, **k):
+        return [
+            {"period_end": "2026-08-19T20:00:00.0000000Z", "pv_estimate": 0.0},
+            {"period_end": "2026-08-19T20:30:00.0000000Z", "pv_estimate": 1.5},
+        ]
+
+    calls, real = _patch(intervals_con_sol)
+    try:
+        window = m._solar_surplus_window(solcast_cfg, now)
+    finally:
+        _unpatch(real)
+    check_eq("con sol restante → SÍ llama a bias", calls["bias"], 1)
+    check_eq("con sol restante → SÍ llama a consumo medido", calls["house"], 1)
+    check_eq("con sol restante → SÍ llama a perfil histórico", calls["profile"], 1)
+    check_eq("con sol restante → una franja de excedente", len(window.surplus), 1)
 
     print()
     if failed:
