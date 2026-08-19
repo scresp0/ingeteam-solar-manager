@@ -439,8 +439,11 @@ si state.charge_current_max_a < 1 → WARNING "tope ilegible" y return   # no es
 now  = ahora (tz de config);  hour = now.hour + now.minute/60
 current = round(state.charge_current_max_a)
 
-window    = _solar_surplus_window(cfg, now)       # perfil de excedente, o None
-solar_end = window.end_hour  si window else  _productive_window_end(cfg)
+si hour < _VALLE_END_HOUR:                        # v1.79: en valle la decisión nunca
+    window, solar_end = None, cc.productive_window_end_hour   # consulta el excedente solar
+si no:
+    window    = _solar_surplus_window(cfg, now)   # perfil de excedente, o None
+    solar_end = window.end_hour  si window else  _productive_window_end(cfg)
 schedule_state = _load_schedule_state()           # /app/logs/inverter_schedule_state.json
 
 target, calculated, mode = _compute_target_charge_current(...)
@@ -612,6 +615,36 @@ vista. `get_house_power_profile` (storage.py) calcula ese histórico como la
 franja peor cubierta tiene menos de `house_profile_min_days_in_window` (14) días —
 mismo criterio conservador que el resto de parámetros dinámicos — y entonces el
 controlador se comporta exactamente como antes de v1.77 (pura persistencia).
+
+**Dos guards para no calcular la ventana cuando el resultado se va a tirar (v1.79):**
+antes de v1.79 el tick construía la ventana solar completa (Solcast + `solar_bias`
+de InfluxDB + lectura del datalogger + perfil histórico de InfluxDB) **en cada
+ejecución, 24 h/día** — incluidas las ~13 h/día (valle + tarde-noche) en las que el
+resultado nunca llega a usarse en la decisión. Verificado ejecutando
+`_compute_target_charge_current` con `window`/`solar_end` contradictorios durante
+el valle y comprobando que el resultado no cambia (mismo (amperios, modo) con
+`window=None` que con una ventana disparatada — la rama VALLE usa `_VALLE_END_HOUR`
+fijo, y `window_end` de BALANCE-en-valle también, nunca el `solar_end` real).
+
+- **Valle (`hour < _VALLE_END_HOUR`):** guard por reloj en `run_charge_current_controller`,
+  antes de llamar a `_solar_surplus_window` — cero riesgo, la decisión de esa franja
+  horaria nunca consulta el excedente solar. No se llama ni siquiera al fallback
+  barato `_productive_window_end` (también hace una query a InfluxDB): tan inútil en
+  valle como la ventana completa. `solar_end` se deja en
+  `cc.productive_window_end_hour` (constante de config, sin I/O) — valor sin uso real,
+  solo para no dejar la variable sin definir.
+- **Tarde-noche (tras el fin de producción):** el forecast en sí no basta para
+  distinguir esto del valle — a las 02:00 el forecast de HOY sigue teniendo horas de
+  sol por delante más tarde ese mismo día, así que "¿queda forecast > 0 hoy?" daría
+  que sí. Por eso el guard vive DENTRO de `_solar_surplus_window`: tras pedir
+  `intervals` (el primer paso, ya necesario), si **ninguna** franja futura tiene
+  `pv_estimate > 0` — exacto `0.0` en Solcast de noche, sin ambigüedad de `bias` que
+  valga — se corta ahí, antes de `get_dynamic_solar_bias`, `_house_power_estimate`
+  (la lectura del datalogger, la costosa) y `get_house_power_profile`.
+
+Los dos guards se probaron con `_solar_surplus_window` real, monkeypatcheando las
+cuatro funciones que llama, para confirmar que con forecast todo a cero NO se llaman
+(`app/test_charge_current.py`).
 
 ### 5.5 Las dos fórmulas de corriente
 
@@ -1118,7 +1151,7 @@ risk factor usa `solar_kwh`, que es un campo original y acumula datos antes.
 ```
 1. load_config()            → error de config = sys.exit(1)
 2. setup_logging()          → StreamHandler(stdout) + FileHandler(log_file)
-3. log de arranque:  "solar-manager v1.78 arrancando en <host> (dry_run=…)"
+3. log de arranque:  "solar-manager v1.79 arrancando en <host> (dry_run=…)"
 4. WARNING por cada clave de config obsoleta encontrada
 5. si system.web_enabled → hilo daemon con uvicorn en 0.0.0.0:web_port
 6. hilo daemon "firmware-profile-startup"  → lee firmware y fija el perfil de etiquetas
