@@ -1,9 +1,11 @@
 """
 test_logger_reader.py — pruebas del cálculo de acumulados del datalogger.
 
-Cubre sobre todo la distinción que costó un bug real (v1.73): `PacGrid` es la salida
-AC del inversor (exportación incluida), NO el consumo de la vivienda. El consumo es
-`PacGrid + PacMeter`.
+Cubre sobre todo la distinción que costó dos bugs reales: `PacGrid` NO es el consumo
+de la vivienda. Hasta v1.72 se usaba `PacGrid` a secas (corregido en v1.73 sumando
+`PacMeter`); desde v1.80 se sabe que `PacGrid` y `PacMeter` son dos medidas
+redundantes del MISMO flujo de red con signos opuestos (`PacGrid + PacMeter ≈ 0`
+siempre), y que el campo correcto es `Pac`: `casa = Pac + PacMeter`.
 
 Ejecutar:
   PYTHONPATH=. python app/test_logger_reader.py
@@ -16,8 +18,8 @@ from datetime import date
 from app.logger_reader import house_power_w, _calculate_stats
 
 
-def _rec(pacgrid=0, pacmeter=0, pdc1=0, pdc2=0, sbatt=50, pbatt=0):
-    return {"PacGrid": pacgrid, "PacMeter": pacmeter, "Pdc1": pdc1, "Pdc2": pdc2,
+def _rec(pac=0, pacmeter=0, pdc1=0, pdc2=0, sbatt=50, pbatt=0):
+    return {"Pac": pac, "PacMeter": pacmeter, "Pdc1": pdc1, "Pdc2": pdc2,
             "Sbatt": sbatt, "EPvToGrid": 0, "Pbatt": pbatt}
 
 
@@ -34,26 +36,27 @@ def main():
             failed += 1
             print(f"  ✗  {desc} → {got}  (esperado {exp})")
 
-    print("=== house_power_w: casa = PacGrid + PacMeter ===")
-    # Caso real medido 2026-08-16 12:00 — mediodía exportando.
-    # Con PacGrid a secas daría 1468 W: 3.4x el consumo real.
-    check("mediodía exportando", house_power_w(_rec(1467.6, -1033.8)), 433.8)
-    # Caso real medido 2026-08-16 00:00 — batería en min_soc, la casa tira de red.
-    # El inversor no entrega nada; con PacGrid a secas el consumo sale NEGATIVO.
-    check("noche, casa desde red", house_power_w(_rec(-23.0, 538.0)), 515.0)
-    # Sin flujo de red: la casa consume justo lo que entrega el inversor.
-    check("sin flujo de red", house_power_w(_rec(1483.0, 0.0)), 1483.0)
+    print("=== house_power_w: casa = Pac + PacMeter ===")
+    # Caso real medido 2026-08-22 10:12 — sin flujo de red significativo.
+    # Con PacGrid+PacMeter (fórmula ≤v1.79) daría ≈0 W: así se detectó el fallo.
+    check("sin flujo de red", house_power_w(_rec(332.9, 1.2)), 334.1)
+    # Caso real medido 2026-08-21 13:01 — mediodía exportando.
+    check("mediodía exportando", house_power_w(_rec(4011.7, -3744.9)), 266.8)
+    # Caso real medido 2026-08-21 00:00 — batería cubriendo la casa, sin apenas red.
+    check("noche, batería cubre la casa", house_power_w(_rec(347.4, -0.5)), 346.9)
+    # Casa consume justo lo que entrega el inversor cuando no hay flujo de red.
+    check("Pac puro sin PacMeter", house_power_w(_rec(1483.0, 0.0)), 1483.0)
     # Suelo en 0: desincronización puntual entre las dos medidas.
     check("suelo en 0 ante lectura incoherente", house_power_w(_rec(-100.0, 20.0)), 0.0)
 
     print("=== _calculate_stats: acumulados y perfil de 30 min ===")
     # Día sintético de 1440 min: 8 h de noche importando 600 W, luego 16 h
     # produciendo 3000 W con la casa a 1200 W y el resto exportado.
-    night = [_rec(pacgrid=0, pacmeter=600, sbatt=40, pbatt=0)] * 480
-    day = [_rec(pacgrid=3000, pacmeter=-1800, pdc1=1500, pdc2=1500, sbatt=90, pbatt=-1000)] * 960
+    night = [_rec(pac=0, pacmeter=600, sbatt=40, pbatt=0)] * 480
+    day = [_rec(pac=3000, pacmeter=-1800, pdc1=1500, pdc2=1500, sbatt=90, pbatt=-1000)] * 960
     stats = _calculate_stats(night + day, date(2026, 8, 16), "TEST")
 
-    # Noche: 600 W × 8 h = 4.8 kWh. Con ∫PacGrid daría 0.0 (el bug corregido).
+    # Noche: 600 W × 8 h = 4.8 kWh. Con PacGrid+PacMeter (≤v1.79) daría 0.0.
     check("night_consumption_kwh", stats.night_consumption_kwh, 4.8)
     # Día: 1200 W × 16 h = 19.2 kWh, más los 4.8 de la noche.
     check("consumption_kwh", stats.consumption_kwh, 24.0)
@@ -87,7 +90,7 @@ def main():
     import app.logger_reader as lr
 
     calls = {"n": 0}
-    fake = [_rec(pacgrid=1000, pacmeter=200)] * 60
+    fake = [_rec(pac=1000, pacmeter=200)] * 60
 
     def fake_fetch(cfg, target_date):
         calls["n"] += 1

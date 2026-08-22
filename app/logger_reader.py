@@ -35,20 +35,30 @@ LOGGER_PATH = "/inverter/log"
 def house_power_w(record: dict) -> float:
     """Potencia instantánea de la vivienda (W) a partir de un registro del datalogger.
 
-    ⚠️ NO es `PacGrid`. `PacGrid` ≈ `Pac` = potencia de SALIDA AC del inversor, que
-    incluye lo que se está exportando a la red. El consumo real de la casa es lo que
-    sale del inversor MÁS lo que entra de la red:
+    ⚠️ NO es `PacGrid`. `PacGrid` y `PacMeter` son dos medidas redundantes del MISMO
+    flujo de red (una interna del inversor, otra del contador), con signos opuestos:
+    `PacGrid + PacMeter ≈ 0` casi siempre, sea cual sea el consumo real de la casa —
+    la fórmula `PacGrid + PacMeter` (usada hasta v1.79) daba ≈0 W de casa en cualquier
+    momento sin flujo de red significativo (de noche con la batería cubriendo la casa,
+    o justo ahora con "Red: 0W"). `Pac` sí es la salida AC real del inversor hacia la
+    vivienda/red:
 
-        casa = PacGrid + PacMeter        (PacMeter: + importando, − exportando)
+        casa = Pac + PacMeter        (PacMeter: + importando, − exportando)
 
-    Verificado contra el balance energético del datalogger (2026-08-17):
-      · mediodía exportando → PacGrid 1468 W, PacMeter −1034 W → casa 434 W
-      · noche con batería a min_soc → PacGrid −23 W, PacMeter +538 W → casa 515 W
-    Con `PacGrid` a secas, ese segundo caso da un consumo NEGATIVO.
+    Corregido en v1.80. Verificado contra el datalogger real (2026-08-22), comparando
+    tres regímenes del mismo día/día anterior:
+      · ahora mismo, sin flujo de red: Pac 332.9 W, PacMeter 1.2 W → casa 334 W
+        (≈ 337 W del monitor del inversor; con PacGrid+PacMeter salía **0 W**)
+      · mediodía exportando (21-ago 13:01): Pac 4011.7 W, PacMeter −3744.9 W → casa 267 W
+      · madrugada, batería cubriendo la casa (21-ago 00:00): Pac 347.4 W, PacMeter −0.5 W
+        → casa 347 W (≈ los 366.8 W que entregaba la batería esa hora)
+    El ejemplo con `PacGrid` de la versión anterior (verificado el 2026-08-17) no se
+    ha podido reproducir: en los tres regímenes de arriba `PacGrid` no se parece a
+    `Pac`, se parece a `−PacMeter`.
 
     El suelo en 0 cubre desincronizaciones puntuales entre las dos medidas.
     """
-    return max(0.0, record.get("PacGrid", 0) + record.get("PacMeter", 0))
+    return max(0.0, record.get("Pac", 0) + record.get("PacMeter", 0))
 
 
 _NIGHT_MINUTES = 480  # 00:00–07:59 (8 h × 60 min)
@@ -271,16 +281,12 @@ def _calculate_stats(records: list[dict], target_date: date, device_id: str) -> 
     epv_end   = records[-1].get("EPvToGrid", 0)
     grid_exported_kwh = max(0, epv_end - epv_start) / 1000
 
-    # Consumo total de la vivienda. Ver `house_power_w`: NO es ∫PacGrid — eso es la
-    # salida AC del inversor e incluye lo exportado a la red (medido +39% sobre 14
-    # días). Corregido en v1.73.
+    # Consumo total de la vivienda. Ver `house_power_w`: la fórmula PacGrid+PacMeter
+    # usada hasta v1.79 daba ≈0 siempre que no había flujo de red significativo
+    # (corregido en v1.80, ver docstring de `house_power_w`).
     consumption_kwh = sum(house_power_w(r) * INTERVAL_H for r in records) / 1000
 
     # Consumo nocturno 00:00–07:59: primeros _NIGHT_MINUTES registros.
-    # Con ∫PacGrid esto daba ~0 (o negativo) las noches en que la batería estaba en
-    # min_soc y la casa tiraba directamente de red: el inversor no entregaba nada y
-    # toda la energía venía por PacMeter. Medido el 2026-08-16: 0.00 frente a 3.19
-    # kWh reales. Esas noches las descartaba el filtro `> 0.5` de la media dinámica.
     night_recs = records[:_NIGHT_MINUTES]
     if night_recs:
         raw_night = sum(house_power_w(r) * INTERVAL_H for r in night_recs) / 1000

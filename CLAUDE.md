@@ -87,31 +87,26 @@ La versión se muestra en el log de arranque, en el header de la web (`/`) y en 
 ### Solcast (solcast.py)
 - `api_key` va como **parámetro de URL** (`?api_key=...`), no como Bearer token
 
-### ⚠️ `PacGrid` NO es el consumo de la vivienda (logger_reader.py)
+### ⚠️ El consumo de la vivienda NO es `PacGrid + PacMeter` (logger_reader.py)
 
-**Verificado contra el balance energético del datalogger el 2026-08-17.** `PacGrid` ≈ `Pac` = potencia de **salida AC del inversor**, que incluye lo que se está **exportando a la red**. El consumo real de la casa es lo que sale del inversor MÁS lo que entra de la red:
+**Corregido en v1.80 (2026-08-22).** La fórmula `casa = PacGrid + PacMeter`, que se dio por verificada el 2026-08-17, resultó estar mal fundamentada: `PacGrid` y `PacMeter` son dos medidas redundantes del **mismo** flujo de red (una interna del inversor, otra del contador) con signos opuestos, así que `PacGrid + PacMeter ≈ 0` casi siempre — sea cual sea el consumo real de la casa. La fórmula solo "funcionaba" en el ejemplo original porque en aquel caso concreto `PacGrid` coincidía por casualidad con `Pac`; no se sostuvo al comprobarlo de nuevo con datos frescos.
+
+La fórmula correcta usa `Pac` (salida AC real del inversor hacia la vivienda/red):
 
 ```
-casa = PacGrid + PacMeter          (PacMeter: + importando, − exportando)
+casa = Pac + PacMeter          (PacMeter: + importando, − exportando)
 ```
 
-- Mediodía exportando: `PacGrid` 1468 W, `PacMeter` −1034 W → casa **434 W** (con `PacGrid` a secas: 1468 W, 3,4× de más).
-- Noche con la batería en `min_soc` y la casa tirando de red: `PacGrid` −23 W, `PacMeter` +538 W → casa **515 W**. Con `PacGrid` a secas el consumo sale **negativo**.
+Verificado el 2026-08-22 contra el datalogger real en tres regímenes distintos:
+- Sin flujo de red (justo entonces): `Pac` 332.9 W, `PacMeter` 1.2 W → casa **334 W** (≈ 337 W del monitor del inversor). Con la fórmula vieja salía **0 W** — así se detectó el fallo.
+- Mediodía exportando (21-ago 13:01): `Pac` 4011.7 W, `PacMeter` −3744.9 W → casa **267 W**.
+- Madrugada, batería cubriendo la casa (21-ago 00:00): `Pac` 347.4 W, `PacMeter` −0.5 W → casa **347 W** (≈ los 366.8 W que entregaba la batería esa hora).
 
 Usar siempre el helper `logger_reader.house_power_w(record)`, que aplica la fórmula con suelo en 0 (cubre desincronizaciones puntuales entre las dos medidas).
 
-**Corregido en v1.73** (`_calculate_stats` usa `house_power_w`). Impacto que tenía, medido sobre 14 días (2026-08-03..16):
-
-| Campo | Cómo se calculaba (≤v1.72) | Media entonces | Media real | Sesgo |
-|---|---|---|---|---|
-| `night_consumption_kwh` | ∫`PacGrid` 00:00–07:59 | 4.58 kWh | 4.81 kWh | ≈OK |
-| `consumption_kwh` − night (post-valle) | ∫`PacGrid` 24 h − night | 21.09 kWh | 15.19 kWh | **+39%** |
-
-- **El nocturno se salvaba casi siempre** porque de noche `PacMeter` ≈ 0 mientras la batería alimenta la casa. Fallaba solo cuando la batería estaba agotada y la casa tiraba de red (el 16-ago daba **0.00** frente a 3.19 kWh reales) — y esos días los descartaba el filtro `> 0.5` de `get_avg_night_consumption`, así que el efecto era un sesgo de selección leve, no ceros envenenando la media. Tras el arreglo la media sube de 4.58 a 4.81 kWh (+5%): `decide_charge` tiende ligeramente más a cargar.
-- **El post-valle estaba inflado un 39%** porque en días soleados el inversor saca 25+ kWh por AC de los que varios se exportan, y se contabilizaban como consumo de la casa. Esto explica el `post_valley ≈ 22 kWh/día` que se midió el 2026-07-12 y se atribuyó solo al prorrateo plano: eran **dos** errores acumulados.
-- **`decide_charge` nunca se vio afectado**: usa `installation.average_daily_consumption_kwh` de config, no el medido.
-- El tile "Consumo casa" del dashboard (`server.py`, `current_house_w`) también usaba `PacGrid` crudo — **corregido en v1.74**; marcaba 2409 W con la casa consumiendo 1383 W (el error era exactamente los 1026 W que se estaban exportando).
-- ⚠️ **Sigue pendiente**: `grid_exported_kwh` diario se calcula del contador `EPvToGrid`, que no cuadra con ∫`PacMeter` (19.64 vs 3.88 kWh el 16-ago) — probablemente mide "PV entregado a AC", no lo vertido a red. Los campos de media hora `grid_export_kwh` usan ∫`PacMeter`, que sí cuadra con el balance.
+- **Impacto:** el bug afectaba a `consumption_kwh`, `night_consumption_kwh` (`stats_diarias`) y `house_kwh` (`solar_media_hora`) desde que existen esos campos (v1.25/v1.73), además del tile "Consumo casa" del dashboard y `current_house_w`/`current_grid_w` en `/api/today_solar` — cualquier momento sin flujo de red significativo (la mayoría de las noches con batería sana, y buena parte del día) se contabilizaba como consumo **≈0**, sesgando a la baja `get_avg_night_consumption`/`get_avg_daily_consumption` y por tanto `decide_charge`.
+- **Histórico recalculado el 2026-08-22**: se relanzó el backfill contra los ~59 días disponibles en el datalogger para sobrescribir `stats_diarias` y `solar_media_hora` con la fórmula corregida (reescribir un día ya presente es idempotente — mismo measurement + timestamp). Ver `scripts/recompute_daily_stats.py`.
+- ⚠️ **Sigue pendiente**: `grid_exported_kwh` diario se calcula del contador `EPvToGrid`, que no cuadra con ∫`PacMeter` — probablemente mide "PV entregado a AC", no lo vertido a red. Los campos de media hora `grid_export_kwh` usan ∫`PacMeter`, que sí cuadra con el balance. Sin relación con el bug de arriba.
 
 ### InfluxDB (storage.py / logger_reader.py)
 - Nunca leer el día actual del datalogger **para stats diarias** (datos incompletos) — siempre ayer o antes

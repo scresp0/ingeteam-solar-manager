@@ -960,9 +960,10 @@ una conexión recibe el frame de la otra y se lee un snapshot caducado.
 día completo minuto a minuto (hasta 1440 registros). No admite rangos: **siempre se
 descarga el día entero**.
 
-Campos usados de cada registro: `Pdc1`, `Pdc2` (producción DC), `PacGrid` (salida AC del
-inversor), `PacMeter` (contador de red: + importando, − exportando), `EPvToGrid`
-(contador acumulado) y `Sbatt` (SOC).
+Campos usados de cada registro: `Pdc1`, `Pdc2` (producción DC), `Pac` (salida AC del
+inversor hacia vivienda/red), `PacMeter` (contador de red: + importando, − exportando),
+`EPvToGrid` (contador acumulado), `Pbatt` (potencia batería, − cargando) y `Sbatt` (SOC).
+`PacGrid` se lee pero no se usa en ningún cálculo — ver [8.1](#81-el-consumo-de-la-vivienda-no-es-pacgrid--pacmeter).
 
 De aquí salen `DailyStats` (acumulados diarios + 4 perfiles de 48 franjas) y la lectura
 en tiempo real del consumo de la vivienda.
@@ -1027,25 +1028,38 @@ interpretaba como "ya correcto", omitiendo la reconfiguración. La excepción su
 
 ## 8. Gotchas técnicos
 
-### 8.1 `PacGrid` NO es el consumo de la vivienda
+### 8.1 El consumo de la vivienda NO es `PacGrid + PacMeter`
 
-El más importante del proyecto. `PacGrid` ≈ `Pac` = potencia de **salida AC del
-inversor**, que incluye lo que se está exportando. El consumo real es:
+El más importante del proyecto — y el que más ha costado fijar bien. `PacGrid` y
+`PacMeter` son dos medidas redundantes del **mismo** flujo de red, con signos
+opuestos: `PacGrid + PacMeter ≈ 0` casi siempre, sea cual sea el consumo real. La
+fórmula que se dio por verificada el 2026-08-17 (`casa = PacGrid + PacMeter`) resultó
+estar mal fundamentada — coincidencia en el ejemplo original, no relación real — y se
+corrigió en v1.80 (2026-08-22). El consumo real es:
 
 ```
-casa = max(0, PacGrid + PacMeter)        # PacMeter: + importando, − exportando
+casa = max(0, Pac + PacMeter)        # PacMeter: + importando, − exportando
 ```
 
-Ejemplos verificados que aparecen en el docstring de `house_power_w` (2026-08-17):
+Ejemplos verificados contra el datalogger real (2026-08-22, docstring de `house_power_w`):
 
-- Mediodía exportando: `PacGrid` 1468 W, `PacMeter` −1034 W → casa **434 W**
-  (con `PacGrid` a secas, 3,4× de más).
-- Noche con la batería en `min_soc`: `PacGrid` −23 W, `PacMeter` +538 W → casa **515 W**
-  (con `PacGrid` a secas, el consumo sale **negativo**).
+- Sin flujo de red: `Pac` 332.9 W, `PacMeter` 1.2 W → casa **334 W** (≈ 337 W del
+  monitor del inversor; con la fórmula vieja salía **0 W** — así se detectó el fallo).
+- Mediodía exportando: `Pac` 4011.7 W, `PacMeter` −3744.9 W → casa **267 W**.
+- Madrugada, batería cubriendo la casa: `Pac` 347.4 W, `PacMeter` −0.5 W → casa
+  **347 W** (≈ los 366.8 W que entregaba la batería esa hora).
 
 Siempre hay que usar el helper `logger_reader.house_power_w(record)`. Lo usan
 `_calculate_stats` (diario, nocturno y perfil de 30 min), `get_recent_house_power`
-(controlador de corriente) y `GET /api/today_solar` (tile del dashboard).
+(controlador de corriente) y `GET /api/today_solar` (tile del dashboard). El bug
+afectaba a todos estos consumidores desde que existen (`consumption_kwh`/
+`night_consumption_kwh` desde v1.25, `house_kwh` desde v1.73): en cualquier momento
+sin flujo de red significativo — la mayoría de las noches con batería sana, y buena
+parte del día — el consumo se contabilizaba como ≈0, sesgando a la baja
+`get_avg_night_consumption`/`get_avg_daily_consumption` y por tanto `decide_charge`.
+Histórico recalculado el 2026-08-22 sobre los ~59 días disponibles en el datalogger
+(`scripts/recompute_daily_stats.py`, reescritura idempotente de `stats_diarias` y
+`solar_media_hora`).
 
 **Pendiente en el código:** `grid_exported_kwh` diario se calcula del contador
 `EPvToGrid` (`epv_end − epv_start`), no de `∫PacMeter`. El comentario de
