@@ -831,7 +831,7 @@ obsoleto. Migración por CLI: `make migrate-config`.
 
 | Clave | Tipo / rango | Defecto | Significado |
 |---|---|---|---|
-| `schedule_at` | `"HH:MM"` | `"23:30"` (plantilla: `23:55`) | Hora del ciclo nocturno canónico. |
+| `schedule_at` | `"HH:MM"` | `"23:30"` (plantilla: `23:55`) | Hora del ciclo nocturno canónico. Formato inválido no aborta el arranque (v1.82): se registra `ERROR` + email de aviso (mismo mecanismo que el email del ciclo) y el job simplemente no se programa; el resto del scheduler (recheck/backfill/corriente/backup) sigue operativo. |
 | `schedule_recheck_at` | `"HH:MM"`, lista o CSV | `[]` (plantilla: `"19:00, 03:00"`) | Horas de re-evaluación. Se normaliza a lista ordenada sin duplicados. Formato inválido → **el arranque falla**. |
 | `weekend_days` | lista de int `0..6` | `[5, 6]` | 0 = lunes. Días con tarifa valle 24 h. |
 | `holidays` | lista `"YYYY-MM-DD"` | `[]` | Festivos: valle 24 h. Las fechas parseadas por YAML como `date` se convierten a string. |
@@ -901,7 +901,7 @@ Ver sección 5 para el detalle funcional.
 | Clave | Tipo / rango | Defecto | Significado |
 |---|---|---|---|
 | `enabled` | bool | `false` | Con `true`, `host`, `user` y `remote_dir` pasan a ser obligatorios (validador `required_when_enabled`). |
-| `schedule_at` | `"HH:MM"` | `04:00` | Hora del job diario. Un formato inválido registra `ERROR` y desactiva el job (no aborta el arranque, a diferencia de `schedule_recheck_at`). |
+| `schedule_at` | `"HH:MM"` | `04:00` | Hora del job diario. Un formato inválido registra `ERROR` + email de aviso (v1.82, mismo mecanismo que `tariff.schedule_at`) y desactiva el job (no aborta el arranque, a diferencia de `schedule_recheck_at`). |
 | `host` / `port` / `user` / `remote_dir` | str / int `[1,65535]` / str / str | `""` / 22 / `""` / `""` | Destino SCP. |
 | `ssh_key_path` | str | `/root/.ssh/id_backup` | Clave privada montada en el contenedor. `scp -i … -o BatchMode=yes` (nunca prompt interactivo). |
 | `strict_host_key_checking` | bool | `true` | `false` desactiva la comprobación del host (inseguro; solo primer arranque). |

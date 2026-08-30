@@ -22,31 +22,68 @@ from app.config import AppConfig
 logger = logging.getLogger(__name__)
 
 
+def _parse_hhmm(value: str) -> tuple[int, int] | None:
+    """Parsea 'HH:MM' → (hour, minute). None si el formato es inválido."""
+    try:
+        h_str, m_str = value.split(":")
+        h, m = int(h_str), int(m_str)
+    except (ValueError, AttributeError):
+        return None
+    if not (0 <= h <= 23 and 0 <= m <= 59):
+        return None
+    return h, m
+
+
+def _notify_config_error(cfg: AppConfig, message: str) -> None:
+    """
+    Loguea un error de configuración y avisa por email — mismo mecanismo y
+    destinatario que el email del ciclo nocturno (`CycleEmailNotifier`). Un
+    horario mal formado en config.yaml no debe pasar desapercibido en un
+    contenedor que sigue "up" pero con ese job sin programar.
+    """
+    from app.notifier import CycleEmailNotifier
+    notifier = CycleEmailNotifier(cfg.system.email)
+    notifier.attach()
+    logger.error(message)
+    notifier.send(success=False)
+
+
 def start_scheduler(cfg: AppConfig) -> None:
     """
     Arranca el scheduler bloqueante.
     El proceso vive indefinidamente hasta recibir SIGTERM o SIGINT.
     """
-    schedule_at = cfg.tariff.schedule_at   # "HH:MM"
-    hour, minute = schedule_at.split(":")
     timezone = cfg.system.timezone
-
     scheduler = BlockingScheduler(timezone=timezone)
 
-    scheduler.add_job(
-        func=_run_job,
-        trigger=CronTrigger(hour=int(hour), minute=int(minute), timezone=timezone),
-        args=[cfg],
-        id="charge_schedule",
-        name=f"Programación de carga nocturna ({schedule_at})",
-        misfire_grace_time=300,   # tolera hasta 5 min de retraso
-        replace_existing=True,
-    )
-
-    logger.info(
-        f"Scheduler iniciado — próxima ejecución programada a las {schedule_at} "
-        f"({timezone})"
-    )
+    # Ciclo nocturno. Un schedule_at inválido no aborta el arranque (a
+    # diferencia de schedule_recheck_at, que ya lo valida Pydantic al cargar
+    # la config): se avisa por log+email y se sigue sin programar este job,
+    # dejando el resto (recheck/backfill/corriente/backup) operativo.
+    schedule_at = cfg.tariff.schedule_at   # "HH:MM"
+    parsed_schedule_at = _parse_hhmm(schedule_at)
+    if parsed_schedule_at is None:
+        _notify_config_error(
+            cfg,
+            f"tariff.schedule_at={schedule_at!r} no es un horario HH:MM válido — "
+            "el ciclo nocturno de carga NO se ha programado. Corrige config.yaml "
+            "y reinicia el contenedor (make restart)."
+        )
+    else:
+        hour, minute = parsed_schedule_at
+        scheduler.add_job(
+            func=_run_job,
+            trigger=CronTrigger(hour=hour, minute=minute, timezone=timezone),
+            args=[cfg],
+            id="charge_schedule",
+            name=f"Programación de carga nocturna ({schedule_at})",
+            misfire_grace_time=300,   # tolera hasta 5 min de retraso
+            replace_existing=True,
+        )
+        logger.info(
+            f"Scheduler iniciado — próxima ejecución programada a las {schedule_at} "
+            f"({timezone})"
+        )
 
     # Re-evaluaciones: una por cada hora de tariff.schedule_recheck_at. El formato
     # ya lo validó TariffConfig al cargar la config, así que aquí no puede fallar.
@@ -113,11 +150,18 @@ def start_scheduler(cfg: AppConfig) -> None:
     # Copia de seguridad externa por SCP: empaqueta DB + logs + config y la sube
     # a un servidor remoto, rotando los backups antiguos.
     if cfg.backup.enabled:
-        try:
-            bh, bm = cfg.backup.schedule_at.split(":")
+        parsed_backup_at = _parse_hhmm(cfg.backup.schedule_at)
+        if parsed_backup_at is None:
+            _notify_config_error(
+                cfg,
+                f"backup.schedule_at={cfg.backup.schedule_at!r} no es un horario "
+                "HH:MM válido — el backup externo NO se ha programado."
+            )
+        else:
+            bh, bm = parsed_backup_at
             scheduler.add_job(
                 func=_run_backup_job,
-                trigger=CronTrigger(hour=int(bh), minute=int(bm), timezone=timezone),
+                trigger=CronTrigger(hour=bh, minute=bm, timezone=timezone),
                 args=[cfg],
                 id="external_backup",
                 name=f"Backup externo por SCP ({cfg.backup.schedule_at})",
@@ -127,11 +171,6 @@ def start_scheduler(cfg: AppConfig) -> None:
             logger.info(
                 f"Backup externo programado a las {cfg.backup.schedule_at} ({timezone}) "
                 f"→ {cfg.backup.user}@{cfg.backup.host}:{cfg.backup.remote_dir}"
-            )
-        except ValueError:
-            logger.error(
-                f"backup.schedule_at inválido ({cfg.backup.schedule_at!r}); "
-                f"se esperaba formato HH:MM. Backup externo desactivado."
             )
 
     # Ejecutar inmediatamente si se pide (útil para pruebas)
