@@ -30,13 +30,12 @@ from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 import os
-import socket
 
-from app.config import AppConfig
+from app.config import AppConfig, get_host_hostname
 from app.logger_reader import house_power_w
 from app.version import VERSION
 
-_HOSTNAME = os.environ.get("HOST_HOSTNAME") or socket.gethostname()
+_HOSTNAME = get_host_hostname()
 
 logger = logging.getLogger(__name__)
 

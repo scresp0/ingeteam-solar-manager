@@ -17,13 +17,12 @@ endpoint manual POST /api/backup/run.
 import logging
 import os
 import shutil
-import socket
 import subprocess
 import tarfile
 import tempfile
 from datetime import datetime
 
-from app.config import AppConfig
+from app.config import AppConfig, get_host_hostname
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +33,6 @@ _ARCHIVE_PREFIX = "solar-backup"
 
 class BackupError(Exception):
     """Fallo durante la creación o subida del backup."""
-
-
-def _get_hostname() -> str:
-    return os.environ.get("HOST_HOSTNAME") or socket.gethostname() or "host"
 
 
 def _dump_influxdb(cfg: AppConfig, dest_dir: str) -> None:
@@ -71,7 +66,7 @@ def create_backup_archive(cfg: AppConfig) -> tuple[str, str, str]:
             logger.warning("InfluxDB no habilitado — el backup no incluirá la BD")
 
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-        fname = f"{_ARCHIVE_PREFIX}-{_get_hostname()}-{ts}.tar.gz"
+        fname = f"{_ARCHIVE_PREFIX}-{get_host_hostname()}-{ts}.tar.gz"
         archive = os.path.join(tmp, fname)
 
         with tarfile.open(archive, "w:gz") as tar:

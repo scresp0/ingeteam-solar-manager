@@ -288,13 +288,12 @@ def _apply_inverter_decisions(
     charge: ChargeDecision, discharge: DischargeDecision,
     charge_needs_update: bool, discharge_needs_update: bool,
     charge_soc_target: int,
-    *, force_all: bool = False,
 ) -> bool:
-    """Aplica carga (6.3.1) y descarga (6.3.2) al inversor. En dry_run o si
-    force_all=True escribe siempre; si no, solo cuando *_needs_update.
-    Loguea estado DESPUÉS. Devuelve False si alguna escritura falla."""
-    write_charge = force_all or cfg.system.dry_run or charge_needs_update
-    write_discharge = force_all or cfg.system.dry_run or discharge_needs_update
+    """Aplica carga (6.3.1) y descarga (6.3.2) al inversor. En dry_run escribe
+    siempre; si no, solo cuando *_needs_update. Loguea estado DESPUÉS. Devuelve
+    False si alguna escritura falla."""
+    write_charge = cfg.system.dry_run or charge_needs_update
+    write_discharge = cfg.system.dry_run or discharge_needs_update
 
     if write_charge:
         try:

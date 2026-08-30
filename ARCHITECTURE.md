@@ -353,9 +353,9 @@ discharge_needs_update = schedule_before is None
                        or schedule_before.discharge_blocked != discharge.discharge_blocked
 ```
 
-Se escribe si `force_all` **o** `dry_run` **o** el flag correspondiente. Es decir:
-**en `dry_run` siempre se recorre el flujo de escritura** (navega y rellena, pero
-`set_*` no pulsa "Escribir").
+Se escribe si `dry_run` **o** el flag correspondiente. Es decir: **en `dry_run`
+siempre se recorre el flujo de escritura** (navega y rellena, pero `set_*` no
+pulsa "Escribir").
 
 Que `schedule_before is None` fuerce la escritura es deliberado: si la lectura falla,
 se reescribe (fail-safe). El fallo de lectura llega como `None` porque
