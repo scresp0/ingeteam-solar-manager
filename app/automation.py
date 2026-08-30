@@ -46,6 +46,7 @@ import functools
 import json
 import logging
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -236,6 +237,41 @@ class AutomationError(Exception):
     """Error durante la automatización de la interfaz web."""
 
 
+@contextmanager
+def _browser_page(cfg: InverterConfig):
+    """
+    Abre navegador/contexto/página de Playwright con la configuración estándar
+    (flags headless para Linux sin entorno gráfico, locale/timezone españoles,
+    timeout de `cfg.browser_timeout_seconds`) y cierra context/browser al salir,
+    incluso si el bloque `with` lanza una excepción.
+    """
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--no-first-run",
+                "--no-zygote",
+                "--single-process",
+            ],
+        )
+        context = browser.new_context(
+            ignore_https_errors=True,
+            locale="es-ES",
+            timezone_id="Europe/Madrid",
+        )
+        page = context.new_page()
+        page.set_default_timeout(cfg.browser_timeout_seconds * 1000)
+        try:
+            yield page
+        finally:
+            context.close()
+            browser.close()
+
+
 @_serialize_web
 def set_charge_schedule(
     cfg: InverterConfig,
@@ -267,27 +303,7 @@ def set_charge_schedule(
     action = f"SOC objetivo = {soc}%" if charge_needed else "DESACTIVAR carga de red"
     logger.info(f"{'[DRY RUN] ' if dry_run else ''}Configurando carga horaria: {action}")
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--no-first-run",
-                "--no-zygote",
-                "--single-process",
-            ]
-        )
-        context = browser.new_context(
-            ignore_https_errors=True,
-            locale="es-ES",
-            timezone_id="Europe/Madrid",
-        )
-        page = context.new_page()
-        page.set_default_timeout(cfg.browser_timeout_seconds * 1000)
-
+    with _browser_page(cfg) as page:
         try:
             _login(page, cfg)
             _navigate_to_charge_schedule(page)
@@ -330,9 +346,6 @@ def set_charge_schedule(
             raise
         except Exception as e:
             raise AutomationError(f"Error inesperado en la automatización: {e}") from e
-        finally:
-            context.close()
-            browser.close()
 
 
 # ---------------------------------------------------------------------------
@@ -365,14 +378,12 @@ def _login(page: Page, cfg: InverterConfig) -> None:
     logger.debug("Login completado")
 
 
-def _navigate_to_charge_schedule(page: Page) -> None:
-    """Navega a Configuración → Ajustes avanzados → 6.3.1."""
-    logger.debug("Navegando a Configuración")
-
-    # Captura para diagnóstico del idioma/estado de la página
-    page.screenshot(path="/app/logs/screenshot_after_login.png")
-    logger.debug("Captura guardada en /app/logs/screenshot_after_login.png")
-
+def _open_ajustes_avanzados(page: Page) -> None:
+    """
+    Clic en "Configuración" (menú lateral) y luego en "Ajustes avanzados" (vía
+    JavaScript, independiente del idioma). Punto de entrada común a toda
+    navegación 6.3.1/6.3.2/1.2 — cada caller hace su propio clic final de sección.
+    """
     # Navegación por clics secuenciales — Vue necesita los clics para montar componentes
     logger.debug("Clic en Configuración (menú lateral)")
     page.wait_for_selector("text=Configuración", timeout=15000)
@@ -391,6 +402,17 @@ def _navigate_to_charge_schedule(page: Page) -> None:
     """)
     page.wait_for_load_state("networkidle")
     page.wait_for_timeout(3000)
+
+
+def _navigate_to_charge_schedule(page: Page) -> None:
+    """Navega a Configuración → Ajustes avanzados → 6.3.1."""
+    logger.debug("Navegando a Configuración")
+
+    # Captura para diagnóstico del idioma/estado de la página
+    page.screenshot(path="/app/logs/screenshot_after_login.png")
+    logger.debug("Captura guardada en /app/logs/screenshot_after_login.png")
+
+    _open_ajustes_avanzados(page)
 
     # Clic en 6.3.1
     page.locator("text=6.3.1").first.click()
@@ -534,27 +556,7 @@ def set_discharge_schedule(
     action = "BLOQUEAR descarga valle (L-V 00:01–07:59 · S-D 00:01–23:59)" if discharge_blocked else "Descarga libre"
     logger.info(f"{'[DRY RUN] ' if dry_run else ''}Configurando descarga horaria: {action}")
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--no-first-run",
-                "--no-zygote",
-                "--single-process",
-            ]
-        )
-        context = browser.new_context(
-            ignore_https_errors=True,
-            locale="es-ES",
-            timezone_id="Europe/Madrid",
-        )
-        page = context.new_page()
-        page.set_default_timeout(cfg.browser_timeout_seconds * 1000)
-
+    with _browser_page(cfg) as page:
         try:
             _login(page, cfg)
             _navigate_to_discharge_schedule(page)
@@ -595,9 +597,6 @@ def set_discharge_schedule(
             raise
         except Exception as e:
             raise AutomationError(f"Error inesperado en automatización descarga: {e}") from e
-        finally:
-            context.close()
-            browser.close()
 
 
 # ---------------------------------------------------------------------------
@@ -749,21 +748,7 @@ LABEL_CHARGE_CURRENT_MAX = "Corriente Máxima de Carga"
 def _navigate_to_battery_params(page: Page) -> None:
     """Navega a Configuración → Ajustes avanzados → 1.2 Parámetros Batería con BMS."""
     logger.debug("Navegando a Configuración (1.2 Parámetros Batería con BMS)")
-    page.wait_for_selector("text=Configuración", timeout=15000)
-    page.locator("text=Configuración").first.click()
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(3000)
-
-    page.evaluate("""
-        () => {
-            const btns = Array.from(document.querySelectorAll('.inv-sett-top-cont button'));
-            const btn = btns.find(b => b.innerText.includes('Ajustes') || b.innerText.includes('Advanced'));
-            if (btn) btn.click();
-            else throw new Error('Botón Ajustes avanzados no encontrado');
-        }
-    """)
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(3000)
+    _open_ajustes_avanzados(page)
 
     page.locator("text=Parámetros Batería con BMS").first.click()
     page.wait_for_load_state("networkidle")
@@ -791,27 +776,7 @@ def set_charge_current(cfg: InverterConfig, amps: int, dry_run: bool = False) ->
     amps = max(1, min(66, int(round(amps))))
     logger.info(f"{'[DRY RUN] ' if dry_run else ''}Configurando corriente máxima de carga: {amps} A")
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--no-first-run",
-                "--no-zygote",
-                "--single-process",
-            ],
-        )
-        context = browser.new_context(
-            ignore_https_errors=True,
-            locale="es-ES",
-            timezone_id="Europe/Madrid",
-        )
-        page = context.new_page()
-        page.set_default_timeout(cfg.browser_timeout_seconds * 1000)
-
+    with _browser_page(cfg) as page:
         try:
             _login(page, cfg)
             _navigate_to_battery_params(page)
@@ -830,9 +795,6 @@ def set_charge_current(cfg: InverterConfig, amps: int, dry_run: bool = False) ->
             raise
         except Exception as e:
             raise AutomationError(f"Error inesperado configurando corriente de carga: {e}") from e
-        finally:
-            context.close()
-            browser.close()
 
 
 # ---------------------------------------------------------------------------
@@ -857,26 +819,7 @@ def read_inverter_schedule(
     """
     prof = _profile(profile)
     logger.info("Leyendo programación del inversor vía web (6.3.1 y 6.3.2)...")
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--no-first-run",
-                "--no-zygote",
-                "--single-process",
-            ],
-        )
-        context = browser.new_context(
-            ignore_https_errors=True,
-            locale="es-ES",
-            timezone_id="Europe/Madrid",
-        )
-        page = context.new_page()
-        page.set_default_timeout(cfg.browser_timeout_seconds * 1000)
+    with _browser_page(cfg) as page:
         try:
             _login(page, cfg)
 
@@ -902,9 +845,6 @@ def read_inverter_schedule(
         except Exception as e:
             logger.warning(f"No se pudo leer la programación del inversor: {e}")
             return None
-        finally:
-            context.close()
-            browser.close()
 
 
 # ---------------------------------------------------------------------------
@@ -941,26 +881,7 @@ def read_firmware_version(cfg: InverterConfig) -> Optional[str]:
     web. NO escribe nada en el inversor.
     """
     logger.debug("Leyendo versión de firmware vía web (menú Actualización)...")
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-gpu",
-                "--no-first-run",
-                "--no-zygote",
-                "--single-process",
-            ],
-        )
-        context = browser.new_context(
-            ignore_https_errors=True,
-            locale="es-ES",
-            timezone_id="Europe/Madrid",
-        )
-        page = context.new_page()
-        page.set_default_timeout(cfg.browser_timeout_seconds * 1000)
+    with _browser_page(cfg) as page:
         try:
             _login(page, cfg)
             page.wait_for_selector(f"text={LABEL_MENU_UPDATE}", timeout=15000)
@@ -976,9 +897,6 @@ def read_firmware_version(cfg: InverterConfig) -> Optional[str]:
         except Exception as e:
             logger.warning(f"No se pudo leer la versión de firmware: {e}")
             return None
-        finally:
-            context.close()
-            browser.close()
 
 
 def _navigate_to_discharge_schedule(page: Page) -> None:
@@ -988,22 +906,7 @@ def _navigate_to_discharge_schedule(page: Page) -> None:
     page.screenshot(path="/app/logs/screenshot_after_login.png")
     logger.debug("Captura guardada en /app/logs/screenshot_after_login.png")
 
-    logger.debug("Clic en Configuración (menú lateral)")
-    page.wait_for_selector("text=Configuración", timeout=15000)
-    page.locator("text=Configuración").first.click()
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(3000)
-
-    page.evaluate("""
-        () => {
-            const btns = Array.from(document.querySelectorAll('.inv-sett-top-cont button'));
-            const btn = btns.find(b => b.innerText.includes('Ajustes') || b.innerText.includes('Advanced'));
-            if (btn) btn.click();
-            else throw new Error('Botón Ajustes avanzados no encontrado');
-        }
-    """)
-    page.wait_for_load_state("networkidle")
-    page.wait_for_timeout(3000)
+    _open_ajustes_avanzados(page)
 
     # Clic en 6.3.2
     page.locator("text=6.3.2").first.click()

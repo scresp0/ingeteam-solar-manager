@@ -24,21 +24,15 @@ Configuración en config.yaml bajo system.email:
 
 import logging
 import logging.handlers
-import os
 import re
 import smtplib
-import socket
 import ssl
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from io import StringIO
 
-from app.config import EmailConfig
-
-
-def _get_hostname() -> str:
-    return os.environ.get("HOST_HOSTNAME") or socket.gethostname()
+from app.config import EmailConfig, get_host_hostname
 
 logger = logging.getLogger(__name__)
 
@@ -509,7 +503,7 @@ class CycleEmailNotifier:
         self._buffer = StringIO()
         self._handler: logging.Handler | None = None
         self._start_time = datetime.now()
-        self._hostname = _get_hostname()
+        self._hostname = get_host_hostname()
 
     def attach(self) -> None:
         """Conecta el notifier al root logger para capturar todos los mensajes."""

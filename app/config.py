@@ -8,6 +8,7 @@ Jerarquía de valores (mayor prioridad gana):
 """
 
 import os
+import socket
 from datetime import date
 from pathlib import Path
 from typing import List, Optional
@@ -369,6 +370,19 @@ class AppConfig(BaseModel):
     @property
     def email(self) -> EmailConfig:
         return self.system.email
+
+
+def get_host_hostname() -> str:
+    """
+    Hostname del servidor donde corre la app: `HOST_HOSTNAME` (env var inyectada
+    por Docker/Makefile) o `socket.gethostname()` como fallback.
+
+    Usado por notifier.py (asunto/cabecera del email), backup.py (nombre del
+    fichero de backup) y web/server.py (cabecera del dashboard) — antes cada uno
+    lo reimplementaba por separado y habían divergido en el manejo de cadena
+    vacía/None.
+    """
+    return os.environ.get("HOST_HOSTNAME") or socket.gethostname() or "host"
 
 
 # ---------------------------------------------------------------------------

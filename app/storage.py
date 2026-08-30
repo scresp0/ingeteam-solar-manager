@@ -37,6 +37,19 @@ class StorageError(Exception):
     pass
 
 
+def _query(cfg: InfluxDBConfig, flux: str):
+    """
+    Ejecuta una consulta Flux y devuelve las tablas resultado.
+
+    Encapsula solo la apertura del cliente + la consulta — no envuelve excepciones,
+    para que cada caller conserve su propio manejo (ImportError → StorageError,
+    Exception genérica → warning/fallback), que ya difiere ligeramente entre ellos.
+    """
+    from influxdb_client import InfluxDBClient
+    with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
+        return client.query_api().query(flux, org=cfg.org)
+
+
 def write_cycle(
     cfg: InfluxDBConfig,
     inp: DecisionInput,
@@ -231,9 +244,7 @@ from(bucket: "{cfg.bucket}")
 """
     try:
         from collections import defaultdict
-        from influxdb_client import InfluxDBClient
-        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
-            tables = client.query_api().query(query, org=cfg.org)
+        tables = _query(cfg, query)
 
         slot_sum: dict[int, float] = defaultdict(float)
         dates: set = set()
@@ -274,19 +285,20 @@ from(bucket: "{cfg.bucket}")
         return None
 
 
-def get_avg_night_consumption(
+def _avg_field(
     cfg: InfluxDBConfig,
-    window_days: int = 30,
-    min_days: int = 14,
+    field: str,
+    window_days: int,
+    min_days: int,
+    label: str,
 ) -> float | None:
     """
-    Devuelve el consumo nocturno medio (kWh, 00:00–07:59) de los últimos
-    window_days días almacenados en InfluxDB.
+    Media de `field` (> 0.5) en stats_diarias sobre los últimos window_days días.
+    Compartido por get_avg_night_consumption y get_avg_daily_consumption — solo
+    difieren en el campo consultado y en el texto de log.
 
-    Devuelve None si:
-    - InfluxDB no está habilitado
-    - Hay menos de min_days registros válidos en la ventana
-    - La consulta falla (se loguea como warning)
+    Devuelve None si InfluxDB no está habilitado, hay menos de min_days registros
+    válidos en la ventana, o la consulta falla (se loguea como warning).
     """
     if not cfg.enabled:
         return None
@@ -294,31 +306,39 @@ def get_avg_night_consumption(
     query = f"""
 from(bucket: "{cfg.bucket}")
   |> range(start: -{window_days}d)
-  |> filter(fn: (r) => r._measurement == "stats_diarias" and r._field == "night_consumption_kwh")
+  |> filter(fn: (r) => r._measurement == "stats_diarias" and r._field == "{field}")
   |> filter(fn: (r) => r._value > 0.5)
 """
     try:
-        from influxdb_client import InfluxDBClient
-        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
-            tables = client.query_api().query(query, org=cfg.org)
-            values = [rec.get_value() for table in tables for rec in table.records]
+        tables = _query(cfg, query)
+        values = [rec.get_value() for table in tables for rec in table.records]
 
         if len(values) < min_days:
             logger.debug(
-                f"Consumo nocturno dinámico: solo {len(values)} días válidos "
+                f"{label} dinámico: solo {len(values)} días válidos "
                 f"(mínimo {min_days}) — usando fallback"
             )
             return None
 
         avg = sum(values) / len(values)
-        logger.debug(f"Consumo nocturno dinámico: {len(values)} días, media={avg:.3f} kWh")
+        logger.debug(f"{label} dinámico: {len(values)} días, media={avg:.3f} kWh")
         return round(avg, 3)
 
     except ImportError:
         raise StorageError("influxdb-client no está instalado.")
     except Exception as e:
-        logger.warning(f"No se pudo consultar consumo nocturno dinámico en InfluxDB: {e}")
+        logger.warning(f"No se pudo consultar {label.lower()} dinámico en InfluxDB: {e}")
         return None
+
+
+def get_avg_night_consumption(
+    cfg: InfluxDBConfig,
+    window_days: int = 30,
+    min_days: int = 14,
+) -> float | None:
+    """Devuelve el consumo nocturno medio (kWh, 00:00–07:59) de los últimos
+    window_days días almacenados en InfluxDB. Ver `_avg_field`."""
+    return _avg_field(cfg, "night_consumption_kwh", window_days, min_days, "Consumo nocturno")
 
 
 def get_avg_daily_consumption(
@@ -328,7 +348,7 @@ def get_avg_daily_consumption(
 ) -> float | None:
     """
     Devuelve el consumo diario medio (kWh, 00:00–24:00) de los últimos
-    window_days días almacenados en InfluxDB.
+    window_days días almacenados en InfluxDB. Ver `_avg_field`.
 
     Calibra `installation.average_daily_consumption_kwh`, que hasta v1.74 era el
     único parámetro de `decide_charge` SIN ruta dinámica: se usaba el valor de
@@ -342,43 +362,8 @@ def get_avg_daily_consumption(
     conectarlo entonces habría propagado ese error a la única decisión que estaba
     a salvo de él. La ventana deslizante hace además que el valor se adapte solo a
     la estación, que es la razón de ser del parámetro.
-
-    Devuelve None si:
-    - InfluxDB no está habilitado
-    - Hay menos de min_days registros válidos en la ventana
-    - La consulta falla (se loguea como warning)
     """
-    if not cfg.enabled:
-        return None
-
-    query = f"""
-from(bucket: "{cfg.bucket}")
-  |> range(start: -{window_days}d)
-  |> filter(fn: (r) => r._measurement == "stats_diarias" and r._field == "consumption_kwh")
-  |> filter(fn: (r) => r._value > 0.5)
-"""
-    try:
-        from influxdb_client import InfluxDBClient
-        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
-            tables = client.query_api().query(query, org=cfg.org)
-            values = [rec.get_value() for table in tables for rec in table.records]
-
-        if len(values) < min_days:
-            logger.debug(
-                f"Consumo diario dinámico: solo {len(values)} días válidos "
-                f"(mínimo {min_days}) — usando fallback"
-            )
-            return None
-
-        avg = sum(values) / len(values)
-        logger.debug(f"Consumo diario dinámico: {len(values)} días, media={avg:.3f} kWh")
-        return round(avg, 3)
-
-    except ImportError:
-        raise StorageError("influxdb-client no está instalado.")
-    except Exception as e:
-        logger.warning(f"No se pudo consultar consumo diario dinámico en InfluxDB: {e}")
-        return None
+    return _avg_field(cfg, "consumption_kwh", window_days, min_days, "Consumo diario")
 
 
 def get_avg_post_valley_consumption(
@@ -411,19 +396,17 @@ from(bucket: "{cfg.bucket}")
   |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
 """
     try:
-        from influxdb_client import InfluxDBClient
-        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
-            tables = client.query_api().query(query, org=cfg.org)
-            values = []
-            for table in tables:
-                for rec in table.records:
-                    daily = rec.values.get("consumption_kwh")
-                    night = rec.values.get("night_consumption_kwh")
-                    if daily is None or night is None:
-                        continue
-                    post = daily - night
-                    if post > 0.5:   # descarta días con datos erróneos
-                        values.append(post)
+        tables = _query(cfg, query)
+        values = []
+        for table in tables:
+            for rec in table.records:
+                daily = rec.values.get("consumption_kwh")
+                night = rec.values.get("night_consumption_kwh")
+                if daily is None or night is None:
+                    continue
+                post = daily - night
+                if post > 0.5:   # descarta días con datos erróneos
+                    values.append(post)
 
         if len(values) < min_days:
             logger.debug(
@@ -479,16 +462,14 @@ from(bucket: "{cfg.bucket}")
   |> filter(fn: (r) => r._measurement == "solar_media_hora" and r._field == "house_kwh")
 """
     try:
-        from influxdb_client import InfluxDBClient
         from statistics import median
 
-        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
-            tables = client.query_api().query(query, org=cfg.org)
-            by_slot: dict[str, list[float]] = {}
-            for table in tables:
-                for rec in table.records:
-                    t = rec.get_time()
-                    by_slot.setdefault(f"{t.hour:02d}:{t.minute:02d}", []).append(rec.get_value())
+        tables = _query(cfg, query)
+        by_slot: dict[str, list[float]] = {}
+        for table in tables:
+            for rec in table.records:
+                t = rec.get_time()
+                by_slot.setdefault(f"{t.hour:02d}:{t.minute:02d}", []).append(rec.get_value())
 
         if not by_slot:
             return None
@@ -773,10 +754,8 @@ from(bucket: "{cfg.bucket}")
   |> filter(fn: (r) => r._value > 0)
 """
     try:
-        from influxdb_client import InfluxDBClient
-        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
-            tables = client.query_api().query(query, org=cfg.org)
-            vals = [rec.get_value() for t in tables for rec in t.records if rec.get_value() is not None]
+        tables = _query(cfg, query)
+        vals = [rec.get_value() for t in tables for rec in t.records if rec.get_value() is not None]
         return round(sum(vals) / len(vals), 3) if vals else None
     except Exception as e:
         logger.debug(f"No se pudo consultar night_consumption_kwh [{start_str}→{stop_str}]: {e}")
@@ -827,14 +806,12 @@ from(bucket: "{cfg.bucket}")
   |> limit(n: 1)
 """
     try:
-        from influxdb_client import InfluxDBClient
-        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
-            tables = client.query_api().query(query, org=cfg.org)
-            for table in tables:
-                for rec in table.records:
-                    ts = rec.get_time()
-                    if ts is not None:
-                        return ts.date()
+        tables = _query(cfg, query)
+        for table in tables:
+            for rec in table.records:
+                ts = rec.get_time()
+                if ts is not None:
+                    return ts.date()
         return None
     except ImportError:
         raise StorageError("influxdb-client no está instalado.")
@@ -868,10 +845,8 @@ from(bucket: "{cfg.bucket}")
   |> sort(columns: ["_time"])
 """
     try:
-        from influxdb_client import InfluxDBClient
-        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
-            tables = client.query_api().query(query, org=cfg.org)
-            recs = [rec.values for table in tables for rec in table.records]
+        tables = _query(cfg, query)
+        recs = [rec.values for table in tables for rec in table.records]
     except ImportError:
         raise StorageError("influxdb-client no está instalado.")
     except Exception as e:
@@ -917,10 +892,8 @@ from(bucket: "{cfg.bucket}")
   |> sort(columns: ["_time"])
 """
     try:
-        from influxdb_client import InfluxDBClient
-        with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
-            tables = client.query_api().query(query, org=cfg.org)
-            recs = [rec.values for table in tables for rec in table.records]
+        tables = _query(cfg, query)
+        recs = [rec.values for table in tables for rec in table.records]
     except Exception as e:
         logger.warning(f"Error consultando solar_media_hora {start_str}→{end_str}: {e}")
         return {
