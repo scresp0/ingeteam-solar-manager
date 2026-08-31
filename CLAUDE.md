@@ -460,7 +460,7 @@ El campo `night_consumption_kwh` en `stats_diarias` se añadió en v1.25. Regist
 
 Dos familias con propósitos distintos; el prefijo lo dice:
 
-- **`test_*`** — deterministas: no tocan inversor, Solcast ni InfluxDB. **Un fallo es siempre una regresión del código.** Son `decision`, `charge_current`, `charge_current_scenarios`, `logger_reader`, `config`, `config_web`.
+- **`test_*`** — deterministas: no tocan inversor, Solcast ni InfluxDB. **Un fallo es siempre una regresión del código.** Son `decision`, `charge_current`, `charge_current_scenarios`, `logger_reader`, `config`, `config_web`, `storage` y `notifier`.
 - **`diag_*`** — necesitan hardware o internet y solo imprimen lo que encuentran (`diag_inverter`, `diag_solcast`, `diag_automation`, más el ya existente `diag_forecast_bias`). No afirman nada: un fallo suyo significa que el equipo no responde. **No los uses como red de seguridad.**
 - **`run_cycle.py`** (antes `test_main.py`) — no es un test: `POST /api/cycle` lo lanza como subproceso, así que es camino de producción.
 
@@ -468,7 +468,11 @@ Dos familias con propósitos distintos; el prefijo lo dice:
 
 Las claves de `POST /api/run/{test}` se mantienen estables aunque el módulo se renombre (`inverter` → `app.diag_inverter`). La única que cambió es `main` → `cycle`.
 
-**Huecos conocidos** (ver ARCHITECTURE §9.7): `storage.py` —los cuatro dinámicos y el JOIN ciclo↔stats—, `notifier.py` —el email se monta parseando las líneas `[CARGA]`/`[ANTES]` del log, así que cambiar un prefijo en `decision.py` lo rompe en silencio—, `scheduler.py` y `backup.py` no tienen ningún test.
+**Huecos conocidos** (ver ARCHITECTURE §9.7): `scheduler.py` (incluido `_parse_hhmm`), `backup.py`, la parte pura de `automation.py` y `solcast.py` no tienen ningún test.
+
+**El email depende del FORMATO del log.** `notifier.py` monta las tarjetas parseando las líneas `[CARGA]`/`[DESCARGA]` de `decision.py` y la tabla ANTES/DESPUÉS de las de `main.py`, con expresiones regulares. No es una interfaz declarada: cambiar un prefijo, una tilde o un separador deja el email mudo sin que falle nada. `test_notifier` genera el log con los generadores reales para que ese cambio rompa el test — comprobado por mutación: `[CARGA] SÍ` → `[CARGA] SI` basta para perder la tarjeta.
+
+**`storage.py` se prueba sin InfluxDB** interceptando `_query` (lecturas) y `_write_points` (escrituras), que son los dos únicos puntos de entrada. Si añades una consulta, hazla pasar por `_query` o quedará fuera de los tests — en v1.86 hubo que unificar `_forecast_real_pairs`, que abría su propio cliente, para poder cubrir el JOIN.
 
 **Al tocar el controlador de corriente:** los escenarios de `test_charge_current_scenarios` pasan `window` (el `SolarWindow` con el excedente por franja). Si cambias la firma, actualízalos — en v1.72 se cambió y no se hizo, y hasta v1.85 los doce escenarios recorrieron el fallback lineal creyendo probar la simulación. El síntoma era invisible: el cuadro impreso seguía anunciando el excedente que ya no entraba en el cálculo.
 
