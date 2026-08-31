@@ -383,7 +383,7 @@ Ajusta la "Corriente Máxima de Carga" de la batería al **mínimo necesario** p
 | `POST /api/config` | Aplica `{values: {<seccion>: {<key>: <valor>}}}` a `config.yaml` preservando comentarios (ruamel.yaml round-trip). Valida el YAML completo contra el modelo Pydantic `AppConfig` antes de escribir. Requiere `web_api_key`. |
 | `GET /api/db/export` | Backup consistente de InfluxDB (`influx backup` online sobre el bucket configurado) empaquetado en `.tar.gz` descargable. Requiere `web_api_key`. El token se pasa por env var `INFLUX_TOKEN`, no en argv. |
 | `POST /api/backup/run` | Lanza bajo demanda la copia de seguridad externa por SCP (DB + logs + config → servidor remoto, con rotación). Requiere `web_api_key`. Ver sección "Copia de seguridad externa". |
-| `POST /api/run/{test}` | Lanza test unitario en background |
+| `POST /api/run/{test}` | Lanza en background un test determinista (`app.test_*`) o un diagnóstico (`app.diag_*`) |
 | `GET /api/stream/{job_id}` | SSE stream de logs de un job |
 
 ### Dashboard — panel de métricas
@@ -455,6 +455,20 @@ Dos breakpoints en `index.html`:
 
 ### Gotcha `night_consumption_kwh` en InfluxDB
 El campo `night_consumption_kwh` en `stats_diarias` se añadió en v1.25. Registros anteriores no lo tienen → el contador de días válidos arranca desde cero aunque haya meses de `stats_diarias`. El risk factor usa `solar_kwh` (campo original) y acumula datos más rápido.
+
+## Tests y diagnósticos (separados en v1.84)
+
+Dos familias con propósitos distintos; el prefijo lo dice:
+
+- **`test_*`** — deterministas: no tocan inversor, Solcast ni InfluxDB. **Un fallo es siempre una regresión del código.** Son `decision`, `charge_current`, `charge_current_scenarios`, `logger_reader`, `config`, `config_web`.
+- **`diag_*`** — necesitan hardware o internet y solo imprimen lo que encuentran (`diag_inverter`, `diag_solcast`, `diag_automation`, más el ya existente `diag_forecast_bias`). No afirman nada: un fallo suyo significa que el equipo no responde. **No los uses como red de seguridad.**
+- **`run_cycle.py`** (antes `test_main.py`) — no es un test: `POST /api/cycle` lo lanza como subproceso, así que es camino de producción.
+
+**`make test`** ejecuta la batería determinista en un solo contenedor y devuelve código de salida agregado. No hay CI: si tocas lógica, pásalo antes de commitear.
+
+Las claves de `POST /api/run/{test}` se mantienen estables aunque el módulo se renombre (`inverter` → `app.diag_inverter`). La única que cambió es `main` → `cycle`.
+
+**Huecos conocidos** (ver ARCHITECTURE §9.7): `storage.py` —los cuatro dinámicos y el JOIN ciclo↔stats—, `notifier.py` —el email se monta parseando las líneas `[CARGA]`/`[ANTES]` del log, así que cambiar un prefijo en `decision.py` lo rompe en silencio—, `scheduler.py` y `backup.py` no tienen ningún test. Y los 12 escenarios de `test_charge_current_scenarios` recorren el fallback lineal, no la simulación franja a franja de v1.72.
 
 ## Repositorio y git
 - **origin** (principal): `git@git.metafrase.net:scresp0/recarga-bateria-ingeteam.git` (Gitea autohospedado)

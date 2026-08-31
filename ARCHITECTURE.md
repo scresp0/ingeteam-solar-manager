@@ -73,7 +73,9 @@ un `None` que fuerce la ruta segura, nunca un valor por defecto plausible. Ver
 | `web/templates/index-v1.html` | Versión antigua del dashboard, no referenciada por `server.py`. Código muerto. |
 | `simulate_charge_current.py` | Ejecuta el controlador de corriente con `simulate=True` (lee y calcula, no escribe). Se lanza como subproceso desde la web. |
 | `diag_forecast_bias.py` | Script de diagnóstico del sesgo del forecast. No lo invoca ningún job ni endpoint. |
-| `test_*.py` | Scripts de prueba manuales ejecutables con `python -m app.test_X`. No son tests de pytest: imprimen y devuelven código de salida. `server.py` los expone en `POST /api/run/{test}`. `test_config_web.py` verifica que modelo, lista blanca y formulario siguen describiendo los mismos campos. |
+| `test_*.py` | **Tests deterministas**: no tocan inversor, Solcast ni InfluxDB, así que un fallo siempre es una regresión. No son pytest: imprimen y devuelven código de salida. `make test` los ejecuta todos de una vez. |
+| `diag_*.py` | **Diagnósticos**: necesitan el inversor o internet y solo informan de lo que encuentran (`diag_inverter`, `diag_solcast`, `diag_automation`, `diag_forecast_bias`). No afirman nada, así que un fallo suyo no es una regresión. Se separaron de `test_*` en v1.84. |
+| `run_cycle.py` | Ejecuta el ciclo nocturno una vez (`--write` para el ciclo real). No es un test: `POST /api/cycle` lo lanza como subproceso, así que es camino de producción. Se llamaba `test_main.py` hasta v1.84. |
 
 ### 2.2 Fuera de `app/`
 
@@ -1245,8 +1247,8 @@ measurement se queda corto.
 | `GET /api/logs` | — | Últimas N líneas del fichero de log. |
 | `GET /api/config` | — | Config editable + `env_overrides` + `legacy_keys` + `default_keys` (claves ausentes del YAML, devueltas con el default del modelo). No expone secretos. |
 | `POST /api/config` | ✔ | Aplica cambios con `ruamel.yaml` (round-trip: preserva comentarios y orden), valida el YAML completo contra `AppConfig` antes de escribir; si falla, 400 sin tocar el fichero. |
-| `POST /api/cycle` | ✔ | Lanza `python -m app.test_main` como subproceso (`--write` si no es dry_run) y devuelve un `job_id`. |
-| `POST /api/run/{test}` | ✔ | Lanza uno de los 11 scripts `app.test_*` / `app.simulate_charge_current` permitidos. |
+| `POST /api/cycle` | ✔ | Lanza `python -m app.run_cycle` como subproceso (`--write` si no es dry_run) y devuelve un `job_id`. |
+| `POST /api/run/{test}` | ✔ | Lanza uno de los 11 módulos permitidos (`app.test_*`, `app.diag_*`, `app.run_cycle`, `app.simulate_charge_current`). Las claves de la API son estables aunque el módulo detrás se renombre; `main` pasó a `cycle` en v1.84. |
 | `GET /api/stream/{job_id}` | — | SSE con la salida del job. |
 | `GET /api/db/export` | ✔ | `influx backup` online del bucket, empaquetado en `.tar.gz`. El token va por env var, no en argv. |
 | `POST /api/backup/run` | ✔ | Dispara el backup SCP bajo demanda. |
@@ -1434,6 +1436,52 @@ Destino en la NAS:
 - **Mejora no implementada**: notificar por email (reutilizando `notifier.py`/SMTP) si el
   timer falla una noche. Hoy el único rastro de un fallo es el journal de systemd.
 
+### 9.7 Batería de pruebas
+
+Hasta v1.83 todo se llamaba `test_*`, mezclando dos cosas que no se parecen: la mitad
+necesitaba el inversor o internet y no afirmaba nada. Eso hacía parecer que había once
+tests cuando la red de seguridad real eran seis. v1.84 los separa por prefijo:
+
+| Prefijo | Qué es | Un fallo significa |
+|---|---|---|
+| `test_*` | Determinista, sin dependencias externas | El código está roto |
+| `diag_*` | Necesita inversor o internet; imprime, no afirma | El equipo no responde |
+| `run_cycle` | Camino de producción (`POST /api/cycle`) | Depende de qué falle |
+
+`make test` ejecuta los seis deterministas en un solo contenedor (`--no-deps`: ninguno
+necesita InfluxDB) y devuelve código de salida agregado. No hay CI.
+
+**Qué está cubierto** (152 casos con valor esperado):
+
+| Test | Cubre |
+|---|---|
+| `test_decision` | `decide_charge`, `decide_discharge`, `reference_date`, `is_valley_day`, resúmenes |
+| `test_charge_current` | `_compute_target_charge_current` (con y sin ventana), `_min_current_for_surplus`, perfil histórico, guards de v1.79 |
+| `test_logger_reader` | `house_power_w`, `_calculate_stats`, caché de consumo |
+| `test_config_web` | Modelo ↔ `_EDITABLE_FIELDS` ↔ `CONFIG_SCHEMA`, casteos |
+| `test_config` | Modelo Pydantic, tarifas, validadores cruzados |
+| `test_charge_current_scenarios` | Informe narrado del controlador |
+
+**Qué NO está cubierto** — ningún test importa estos módulos:
+
+- **`storage.py`**: los cuatro parámetros dinámicos y el JOIN `forecast_date =
+  ciclo_UTC.date()+1`, que alimentan `decide_charge`. Es el hueco más caro.
+- **`notifier.py`**: el email se monta parseando las líneas `[CARGA]`/`[DESCARGA]`/
+  `[ANTES]`/`[DESPUÉS]` del log. Cambiar un prefijo en `decision.py` lo rompe en silencio.
+- **`scheduler.py`**: incluido `_parse_hhmm` y el fail-safe de v1.82.
+- **`backup.py`** y la parte pura de `automation.py` (perfiles de etiquetas por firmware),
+  que sería testeable sin inversor.
+
+La incoherencia **I-5** (el `NameError` del timeout de Solcast) ilustra el patrón: un test
+unitario trivial la habría cazado, pero `diag_solcast` llama a la API real y solo recorre
+el camino feliz.
+
+> **Deuda conocida en `test_charge_current_scenarios`**: sus 12 escenarios llaman al
+> controlador sin `window`, así que recorren el fallback lineal y no la simulación franja
+> a franja que corre en producción desde v1.72 — mientras el cuadro que imprimen sigue
+> anunciando "solar restante calibrada". El `remaining` de cada escenario no llega a la
+> función. Pendiente de reescribir con ventanas reales.
+
 ---
 
 ## 10. Incoherencias y defectos detectados en el código
@@ -1541,8 +1589,8 @@ sin captación, sino que simplemente no existe. El efecto es pequeño (son franj
 
 ### I-11 · Huecos funcionales (no defectos, pero conviene saberlos)
 
-- La sección `charge_current` **no es editable desde la web**: no está en
-  `_EDITABLE_FIELDS` ni en `CONFIG_SCHEMA`. Se edita a mano en el YAML + `make restart`.
+- ~~La sección `charge_current` no es editable desde la web~~ — **resuelto en v1.83**:
+  `charge_current` y `backup` están en `_EDITABLE_FIELDS` y en `CONFIG_SCHEMA`.
 - `GET /api/params` no expone el **consumo diario dinámico** (sí los otros tres), y el
   email tampoco le pone badge dinámico/config.
 - `tariff.periods` (valley/flat/peak) se valida y se carga, pero **ningún cálculo lo

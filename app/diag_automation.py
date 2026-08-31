@@ -1,13 +1,17 @@
 """
-test_automation.py — test de automation.py con acceso a la red local del inversor.
+diag_automation.py — DIAGNÓSTICO, no test: abre Playwright contra la web del
+inversor real, lee el firmware y la programación de 6.3.1/6.3.2 y lo imprime.
+Requiere acceso a la red local del inversor; un fallo aquí no es una regresión
+del código. La parte pura (perfiles de etiquetas por firmware) sí sería
+testeable sin inversor, pero hoy no lo está.
 
 Ejecutar con:
-  docker compose run --rm solar-manager python -m app.test_automation [opciones]
+  docker compose run --rm solar-manager python -m app.diag_automation [opciones]
 
 Opciones:
   (sin flags)   lee el estado actual del inversor (6.3.1 y 6.3.2) — solo lectura
-  --write       ejecuta además los tests de escritura en dry_run (navega, rellena, no guarda)
-  --write --go  ejecuta los tests de escritura aplicando cambios reales al inversor
+  --write       ejecuta además las escrituras en dry_run (navega, rellena, no guarda)
+  --write --go  ejecuta las escrituras aplicando cambios REALES al inversor
 """
 import logging
 import sys

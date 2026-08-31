@@ -488,15 +488,22 @@ def create_app(cfg: AppConfig) -> FastAPI:
 
     @app.post("/api/run/{test_name}", dependencies=[Depends(_require_api_key)])
     async def run_test(test_name: str):
-        """Lanza un test en background y devuelve un job_id para seguir el stream."""
+        """Lanza un test o diagnóstico en background y devuelve un job_id.
+
+        `app.test_*` son tests deterministas: se ejecutan sin hardware y fallan si
+        el código se rompe. `app.diag_*` necesitan el inversor o internet y solo
+        informan de lo que encuentran — no afirman nada, así que un fallo suyo no
+        es una regresión. Las claves de la API se mantienen estables aunque el
+        módulo detrás cambie de nombre.
+        """
         allowed = {
-            "inverter":   "app.test_inverter",
-            "solcast":    "app.test_solcast",
+            "inverter":   "app.diag_inverter",
+            "solcast":    "app.diag_solcast",
             "decision":   "app.test_decision",
             "config":     "app.test_config",
             "config_web": "app.test_config_web",
-            "automation": "app.test_automation",
-            "main":       "app.test_main",
+            "automation": "app.diag_automation",
+            "cycle":      "app.run_cycle",
             "logger_reader": "app.test_logger_reader",
             "charge_current": "app.test_charge_current",
             "charge_current_scenarios": "app.test_charge_current_scenarios",
@@ -540,7 +547,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
 
         def _run():
             try:
-                args = [sys.executable, "-m", "app.test_main"]
+                args = [sys.executable, "-m", "app.run_cycle"]
                 if not dry_run:
                     args.append("--write")
                 proc = subprocess.Popen(
