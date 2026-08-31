@@ -468,7 +468,9 @@ Dos familias con propósitos distintos; el prefijo lo dice:
 
 Las claves de `POST /api/run/{test}` se mantienen estables aunque el módulo se renombre (`inverter` → `app.diag_inverter`). La única que cambió es `main` → `cycle`.
 
-**Huecos conocidos** (ver ARCHITECTURE §9.7): `storage.py` —los cuatro dinámicos y el JOIN ciclo↔stats—, `notifier.py` —el email se monta parseando las líneas `[CARGA]`/`[ANTES]` del log, así que cambiar un prefijo en `decision.py` lo rompe en silencio—, `scheduler.py` y `backup.py` no tienen ningún test. Y los 12 escenarios de `test_charge_current_scenarios` recorren el fallback lineal, no la simulación franja a franja de v1.72.
+**Huecos conocidos** (ver ARCHITECTURE §9.7): `storage.py` —los cuatro dinámicos y el JOIN ciclo↔stats—, `notifier.py` —el email se monta parseando las líneas `[CARGA]`/`[ANTES]` del log, así que cambiar un prefijo en `decision.py` lo rompe en silencio—, `scheduler.py` y `backup.py` no tienen ningún test.
+
+**Al tocar el controlador de corriente:** los escenarios de `test_charge_current_scenarios` pasan `window` (el `SolarWindow` con el excedente por franja). Si cambias la firma, actualízalos — en v1.72 se cambió y no se hizo, y hasta v1.85 los doce escenarios recorrieron el fallback lineal creyendo probar la simulación. El síntoma era invisible: el cuadro impreso seguía anunciando el excedente que ya no entraba en el cálculo.
 
 ## Repositorio y git
 - **origin** (principal): `git@git.metafrase.net:scresp0/recarga-bateria-ingeteam.git` (Gitea autohospedado)
