@@ -228,9 +228,11 @@ class ChargeCurrentConfig(BaseModel):
     house_profile_min_days_in_window: int = Field(default=14, ge=1)  # mínimo de días (en la franja peor cubierta) para fiarse del perfil
     productive_window_pct: int = Field(default=90, ge=10, le=100)    # % del total diario real (fallback de fin de ventana)
     productive_window_end_hour: float = Field(default=17.0, ge=0.0, le=24.0)  # fallback si no hay forecast ni histórico
-    floor_a: int = Field(default=15, ge=1, le=66)                    # corriente mínima (para que la carga termine)
+    floor_a: int = Field(default=22, ge=1, le=66)                    # corriente mínima (para que la carga termine)
     max_a: int = Field(default=66, ge=1, le=66)                      # tope máximo (66 = máximo del inversor)
-    margin: float = Field(default=1.2, ge=1.0, le=3.0)              # margen sobre el mínimo teórico
+    # 1.33 desde 2026-08-18: con 1.2 un día real se quedó al 89% de SOC (el
+    # consumo de tarde por AC no se cubría a tiempo). El coste en A·h es neutro.
+    margin: float = Field(default=1.33, ge=1.0, le=3.0)              # margen sobre el mínimo teórico
     battery_balance: bool = False                                    # cerca del tope, carga muy suave para balancear celdas del stack
     balance_soc_pct: float = Field(default=98.0, ge=0.0, le=100.0)   # SOC a partir del cual entra el modo BALANCE
     balance_soc_pct_2: float = Field(default=99.0, ge=0.0, le=100.0) # 2ª etapa: SOC a partir del cual la corriente de balanceo baja a la mitad

@@ -21,7 +21,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -43,12 +43,12 @@ logger = logging.getLogger(__name__)
 # ── Edición de config.yaml desde la pestaña Configuración ─────────────────
 # Lista blanca de campos editables desde la UI. Para cada campo:
 #   (tipo destino, nombre de variable de entorno que lo sobreescribe o None)
-# Los secretos (api_key, password, smtp_password, INFLUXDB_TOKEN, etc.) NO
-# están aquí — siguen únicamente en .env. Las listas/estructuras complejas
-# (holidays, tariff.periods) tampoco; se editan a mano en el YAML.
+# Los secretos (api_key, password, smtp_password, INFLUXDB_TOKEN, web_api_key,
+# etc.) NO están aquí — siguen únicamente en .env. `tariff.periods` tampoco:
+# es la única estructura anidada del fichero y no cambia nunca.
 _EDITABLE_FIELDS: dict[str, dict[str, tuple[str, str | None]]] = {
     "solcast": {
-        "base_url":         ("str",   None),
+        "base_url":         ("str_required", None),
         "forecast_hours":   ("int",   None),
         "cache_ttl_hours":  ("int",   None),
     },
@@ -63,9 +63,11 @@ _EDITABLE_FIELDS: dict[str, dict[str, tuple[str, str | None]]] = {
         "peak_power_kwp":                ("float", None),
     },
     "tariff": {
-        "schedule_at":         ("str",          None),
+        "schedule_at":         ("time_hhmm",    None),
         "schedule_recheck_at": ("str_nullable", None),
         "night_cutoff_hour":   ("int",          None),
+        "weekend_days":        ("int_list",     None),
+        "holidays":            ("date_list",    None),
     },
     "charging": {
         "risk_factor":                   ("float", "RISK_FACTOR"),
@@ -83,11 +85,45 @@ _EDITABLE_FIELDS: dict[str, dict[str, tuple[str, str | None]]] = {
         "daily_consumption_min_days_in_window": ("int",  None),
         "daily_consumption_window_days":        ("int",  None),
     },
+    "charge_current": {
+        "enabled":                          ("bool",  None),
+        "interval_min":                     ("int",   None),
+        "floor_a":                          ("int",   None),
+        "max_a":                            ("int",   None),
+        "margin":                           ("float", None),
+        "house_power_window_min":           ("int",   None),
+        "house_power_cache_min":            ("int",   None),
+        "house_profile_window_days":        ("int",   None),
+        "house_profile_min_days_in_window": ("int",   None),
+        "temp_gate_enabled":                ("bool",  None),
+        "hot_threshold_c":                  ("float", None),
+        "productive_window_pct":            ("int",   None),
+        "productive_window_end_hour":       ("float", None),
+        "battery_balance":                  ("bool",  None),
+        "balance_soc_pct":                  ("float", None),
+        "balance_soc_pct_2":                ("float", None),
+        "balance_floor_a":                  ("int",   None),
+    },
+    # Backup externo por SCP. No hay secretos: la autenticación es por clave
+    # SSH montada como fichero, así que la sección se expone entera.
+    "backup": {
+        "enabled":                  ("bool", None),
+        "schedule_at":              ("time_hhmm", None),
+        "host":                     ("str",  None),
+        "port":                     ("int",  None),
+        "user":                     ("str",  None),
+        "remote_dir":               ("str",  None),
+        "ssh_key_path":             ("str",  None),
+        "strict_host_key_checking": ("bool", None),
+        "known_hosts_path":         ("str",  None),
+        "retention":                ("int",  None),
+        "timeout_seconds":          ("int",  None),
+    },
     "system": {
-        "log_level":   ("str",  "LOG_LEVEL"),
-        "log_file":    ("str",  None),
+        "log_level":   ("str_required", "LOG_LEVEL"),
+        "log_file":    ("str_required", None),
         "dry_run":     ("bool", "DRY_RUN"),
-        "timezone":    ("str",  None),
+        "timezone":    ("str_required", None),
         "web_port":    ("int",  None),
         "web_enabled": ("bool", None),
     },
@@ -104,21 +140,44 @@ _EDITABLE_FIELDS: dict[str, dict[str, tuple[str, str | None]]] = {
     },
     "influxdb": {
         "enabled": ("bool", None),
-        "url":     ("str",  "INFLUXDB_URL"),
-        "org":     ("str",  "INFLUXDB_ORG"),
-        "bucket":  ("str",  "INFLUXDB_BUCKET"),
+        "url":     ("str_required", "INFLUXDB_URL"),
+        "org":     ("str_required", "INFLUXDB_ORG"),
+        "bucket":  ("str_required", "INFLUXDB_BUCKET"),
     },
 }
 
 
 def _cast_value(raw, typ: str):
-    """Convierte un valor recibido por JSON al tipo destino del YAML."""
+    """Convierte un valor recibido por JSON al tipo destino del YAML.
+
+    La cadena vacía es un valor legítimo para los campos de texto: `mail_from`,
+    `mail_to` o `backup.host` están vacíos en el YAML cuando el valor real vive
+    en .env o la función no se usa. Rechazarla obligaba a que un guardado que
+    no tocaba esos campos fallara entero (el form enviaba todos los campos, no
+    solo los modificados). Sigue rechazándose en int/float/bool, donde "" no
+    significa nada.
+    """
     if typ == "str_nullable":
         if raw is None or raw == "":
             return None
         return str(raw)
+    if typ == "str":
+        return "" if raw is None else str(raw)
+    if typ in ("int_list", "date_list"):
+        return _cast_list(raw, typ)
     if raw is None or raw == "":
         raise ValueError("valor vacío")
+    if typ == "time_hhmm":
+        s = str(raw).strip()
+        try:
+            hh, mm = s.split(":")
+            if not (0 <= int(hh) <= 23 and 0 <= int(mm) <= 59):
+                raise ValueError
+        except ValueError:
+            raise ValueError(
+                f"{s!r} no es una hora válida; se esperaba HH:MM"
+            ) from None
+        return f"{int(hh):02d}:{int(mm):02d}"
     if typ == "int":
         return int(raw)
     if typ == "float":
@@ -133,6 +192,110 @@ def _cast_value(raw, typ: str):
             return False
         raise ValueError(f"no booleano: {raw!r}")
     return str(raw)
+
+
+def _yaml_list(items: list, flow: bool):
+    """Envuelve una lista en un CommentedSeq con el estilo deseado.
+
+    Sin esto ruamel escribe siempre en bloque y `weekend_days: [5, 6]` pasaría
+    a ocupar tres líneas al guardar desde la web.
+    """
+    from ruamel.yaml.comments import CommentedSeq
+
+    seq = CommentedSeq(items)
+    if flow:
+        seq.fa.set_flow_style()
+    else:
+        seq.fa.set_block_style()
+    return seq
+
+
+def _cast_list(raw, typ: str) -> list:
+    """Convierte una lista recibida por JSON (o CSV) a la lista del YAML.
+
+    `int_list`  → tariff.weekend_days: enteros 0..6 (0=lunes), ordenados y sin
+                  duplicados.
+    `date_list` → tariff.holidays: fechas "YYYY-MM-DD" ordenadas y sin
+                  duplicados. Se validan aquí para que un festivo mal escrito
+                  no llegue al YAML: Pydantic solo las coacciona a str, así que
+                  "2026-13-99" pasaría su validación y rompería is_valley_day
+                  en silencio (nunca coincidiría con ninguna fecha real).
+    """
+    from datetime import date as _date
+
+    if raw is None or raw == "":
+        return []
+    items = raw if isinstance(raw, (list, tuple)) else str(raw).split(",")
+
+    out: list = []
+    for item in items:
+        s = str(item).strip()
+        if not s:
+            continue
+        if typ == "int_list":
+            try:
+                n = int(s)
+            except ValueError:
+                raise ValueError(f"{s!r} no es un número entero") from None
+            if not 0 <= n <= 6:
+                raise ValueError(f"día de la semana fuera de rango 0-6: {n}")
+            if n not in out:
+                out.append(n)
+        else:
+            try:
+                _date.fromisoformat(s)
+            except ValueError:
+                raise ValueError(
+                    f"{s!r} no es una fecha válida; se esperaba YYYY-MM-DD"
+                ) from None
+            if s not in out:
+                out.append(s)
+    return sorted(out)
+
+
+# Modelo Pydantic que respalda cada sección de _EDITABLE_FIELDS, para poder
+# resolver el valor por defecto de una clave ausente del YAML (ver
+# _section_defaults). "email" vive anidada bajo system.email en el fichero.
+_SECTION_MODELS: dict[str, str] = {
+    "solcast":        "SolcastConfig",
+    "inverter":       "InverterConfig",
+    "installation":   "InstallationConfig",
+    "tariff":         "TariffConfig",
+    "charging":       "ChargingConfig",
+    "charge_current": "ChargeCurrentConfig",
+    "backup":         "BackupConfig",
+    "system":         "SystemConfig",
+    "email":          "EmailConfig",
+    "influxdb":       "InfluxDBConfig",
+}
+
+
+def _section_defaults(section: str) -> dict:
+    """Valores por defecto del modelo Pydantic de una sección.
+
+    Permite que GET /api/config devuelva el valor EFECTIVO de un campo ausente
+    del YAML en vez de null. Con null el form pintaba un input vacío que ni
+    mostraba lo que hace el sistema ni se podía guardar ("valor numérico
+    inválido"), y los parámetros añadidos después del último `config.yaml`
+    (charge_current.temp_gate_enabled, house_profile_*, …) quedaban invisibles
+    aunque estuvieran gobernando el comportamiento.
+    """
+    import app.config as _cfgmod
+    from pydantic_core import PydanticUndefined
+
+    model = getattr(_cfgmod, _SECTION_MODELS.get(section, ""), None)
+    if model is None:
+        return {}
+    out = {}
+    for name, field in model.model_fields.items():
+        if field.default is not PydanticUndefined:
+            out[name] = field.default
+        elif field.default_factory is not None:
+            try:
+                out[name] = field.default_factory()
+            except Exception:
+                continue
+    return out
 
 
 def _current_solar_bias(cfg: AppConfig) -> float:
@@ -331,6 +494,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
             "solcast":    "app.test_solcast",
             "decision":   "app.test_decision",
             "config":     "app.test_config",
+            "config_web": "app.test_config_web",
             "automation": "app.test_automation",
             "main":       "app.test_main",
             "logger_reader": "app.test_logger_reader",
@@ -739,11 +903,13 @@ def create_app(cfg: AppConfig) -> FastAPI:
             values: dict[str, dict] = {}
             env_overrides: list[dict] = []
             legacy_keys: list[dict] = []
+            default_keys: list[dict] = []
             for section, fields in _EDITABLE_FIELDS.items():
                 if section == "email":
                     src = (data.get("system") or {}).get("email") or {}
                 else:
                     src = data.get(section) or {}
+                defaults = _section_defaults(section)
                 values[section] = {}
                 for key, (_typ, env_var) in fields.items():
                     val = src.get(key)
@@ -753,6 +919,15 @@ def create_app(cfg: AppConfig) -> FastAPI:
                         legacy_keys.append({
                             "section": section, "key": key, "legacy_key": legacy,
                         })
+                    # Clave ausente del YAML: mostrar el valor por defecto del
+                    # modelo, que es el que el sistema está usando de verdad.
+                    if key not in src and key in defaults:
+                        val = defaults[key]
+                        default_keys.append({"section": section, "key": key})
+                    if isinstance(val, date):
+                        val = val.isoformat()
+                    elif isinstance(val, list):
+                        val = [d.isoformat() if isinstance(d, date) else d for d in val]
                     values[section][key] = val
                     if env_var and os.environ.get(env_var) is not None:
                         env_overrides.append({
@@ -766,6 +941,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
                 "values": values,
                 "env_overrides": env_overrides,
                 "legacy_keys": legacy_keys,
+                "default_keys": default_keys,
                 "path": str(path),
             }
         except Exception as e:
@@ -834,6 +1010,10 @@ def create_app(cfg: AppConfig) -> FastAPI:
                 except Exception as e:
                     errors.append(f"{section}.{key}: {e}")
                     continue
+                if isinstance(cast_val, list):
+                    # weekend_days cabe en una línea; holidays crece cada año,
+                    # así que en bloque se lee (y se diffea en git) mejor.
+                    cast_val = _yaml_list(cast_val, flow=(typ == "int_list"))
                 target[key] = cast_val
                 # Migración: si el YAML aún tenía la clave con el nombre obsoleto,
                 # eliminarla al escribir la canónica (evita dejar las dos).

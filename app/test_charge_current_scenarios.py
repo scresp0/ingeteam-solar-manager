@@ -32,9 +32,15 @@ V = 50.0        # V   — tensión de batería (lado DC; NO la red AC de 230V)
 MAX_SOC = 100   # %   — tope de carga usado en estos escenarios
 
 
+# Ver la nota de _TEST_BASE en test_charge_current.py: los escenarios se
+# escribieron sobre floor_a 15 / margin 1.2, así que se fijan explícitamente en
+# vez de heredar los defaults del modelo (cambiados en v1.83).
+_TEST_BASE = {"floor_a": 15, "margin": 1.2}
+
+
 def _cfg(**overrides):
     return NS(
-        charge_current=ChargeCurrentConfig(**overrides),
+        charge_current=ChargeCurrentConfig(**{**_TEST_BASE, **overrides}),
         installation=NS(battery_capacity_kwh=CAP),
         charging=NS(max_soc_pct=float(MAX_SOC)),
     )
