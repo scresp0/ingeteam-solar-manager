@@ -1,8 +1,12 @@
 """
-Test de inverter.py — ejecutar con acceso a la red local del inversor:
-  docker compose run --rm solar-manager python -m app.test_inverter
+diag_inverter.py — DIAGNÓSTICO, no test: lee el estado del inversor por MODBUS
+y lo imprime. No afirma nada, así que un fallo aquí significa que el inversor no
+responde, no que el código esté roto.
 
-Requiere config.yaml con inverter.web_url apuntando al inversor real.
+  docker compose run --rm solar-manager python -m app.diag_inverter
+
+Requiere acceso a la red local del inversor y config.yaml con inverter.web_url
+apuntando al inversor real.
 """
 import logging
 import sys

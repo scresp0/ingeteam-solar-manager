@@ -1,8 +1,11 @@
 """
-Test de solcast.py — ejecutar con credenciales reales:
-  docker compose run --rm solar-manager python -m app.test_solcast
+diag_solcast.py — DIAGNÓSTICO, no test: pide el forecast de mañana a la API real
+y lo imprime. Consume cuota de Solcast y depende de internet; no ejercita el
+manejo de errores del cliente, solo el camino feliz.
 
-Requiere config.yaml con solcast.api_key y solcast.resource_id reales.
+  docker compose run --rm solar-manager python -m app.diag_solcast
+
+Requiere config.yaml (o .env) con solcast.api_key y solcast.resource_id reales.
 """
 import logging
 import sys
