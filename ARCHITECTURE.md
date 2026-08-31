@@ -1451,16 +1451,16 @@ tests cuando la red de seguridad real eran seis. v1.84 los separa por prefijo:
 `make test` ejecuta los seis deterministas en un solo contenedor (`--no-deps`: ninguno
 necesita InfluxDB) y devuelve código de salida agregado. No hay CI.
 
-**Qué está cubierto** (152 casos con valor esperado):
+**Qué está cubierto:**
 
-| Test | Cubre |
-|---|---|
-| `test_decision` | `decide_charge`, `decide_discharge`, `reference_date`, `is_valley_day`, resúmenes |
-| `test_charge_current` | `_compute_target_charge_current` (con y sin ventana), `_min_current_for_surplus`, perfil histórico, guards de v1.79 |
-| `test_logger_reader` | `house_power_w`, `_calculate_stats`, caché de consumo |
-| `test_config_web` | Modelo ↔ `_EDITABLE_FIELDS` ↔ `CONFIG_SCHEMA`, casteos |
-| `test_config` | Modelo Pydantic, tarifas, validadores cruzados |
-| `test_charge_current_scenarios` | Informe narrado del controlador |
+| Test | Casos | Cubre |
+|---|---|---|
+| `test_config` | 64 | Carga, precedencia entorno > YAML > default, alias de claves renombradas, tarifas y festivos, `get_modbus_host`, todos los validadores cruzados |
+| `test_decision` | 45 | `decide_charge`, `decide_discharge`, `reference_date`, `is_valley_day`, resúmenes |
+| `test_charge_current` | 44 | `_compute_target_charge_current` (con y sin ventana), `_min_current_for_surplus`, perfil histórico, guards de v1.79 |
+| `test_logger_reader` | 30 | `house_power_w`, `_calculate_stats`, caché de consumo |
+| `test_charge_current_scenarios` | 22 | Informe narrado: excedente franja a franja, puerta de temperatura, fallback lineal, valle y BALANCE |
+| `test_config_web` | 15 | Modelo ↔ `_EDITABLE_FIELDS` ↔ `CONFIG_SCHEMA`, casteos |
 
 **Qué NO está cubierto** — ningún test importa estos módulos:
 
@@ -1476,11 +1476,26 @@ La incoherencia **I-5** (el `NameError` del timeout de Solcast) ilustra el patr�
 unitario trivial la habría cazado, pero `diag_solcast` llama a la API real y solo recorre
 el camino feliz.
 
-> **Deuda conocida en `test_charge_current_scenarios`**: sus 12 escenarios llaman al
-> controlador sin `window`, así que recorren el fallback lineal y no la simulación franja
-> a franja que corre en producción desde v1.72 — mientras el cuadro que imprimen sigue
-> anunciando "solar restante calibrada". El `remaining` de cada escenario no llega a la
-> función. Pendiente de reescribir con ventanas reales.
+**Dos ficheros reescritos en v1.85:**
+
+- `test_charge_current_scenarios` llamaba al controlador **sin `window`**: la firma cambió
+  en v1.72 (el escalar `remaining` pasó a ser un `SolarWindow`) y el parámetro se
+  descartaba en silencio, así que los doce escenarios recorrían el fallback lineal
+  mientras el cuadro anunciaba "solar restante calibrada". Documentaban un modelo que ya
+  no se ejecutaba. Ahora son 22 escenarios sobre perfiles de excedente reales —incluida
+  la campana que motivó v1.72, donde el total sobra pero las colas no dan `I·V`— y cubren
+  **BALANCE**, que estaba activo en producción sin un solo test.
+- `test_config` cargaba el `config.yaml` real y afirmaba sobre su contenido
+  (`assert len(holidays) > 0`), así que fallaba con `config.example.yaml` sin haber nada
+  roto; y su `test_validation` imprimía "ERROR: debería haber fallado" **devolviendo 0**:
+  un test que no podía fallar. Ahora monta su propio YAML temporal (64 casos) y solo
+  comprueba del config real lo que es una afirmación sobre el código: que el modelo actual
+  lo siga aceptando.
+
+Verificado por mutación: romper `get_modbus_host` o la validación de horas de
+`schedule_recheck_at` hace fallar `test_config`. Mutar solo `coerce_holidays_to_str` no
+se nota, porque `load_config` hace la misma conversión antes de Pydantic — redundancia
+defensiva, no un defecto.
 
 ---
 
