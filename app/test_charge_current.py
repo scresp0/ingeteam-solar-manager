@@ -23,9 +23,17 @@ from app.main import (
 )
 
 
+# Los casos de este fichero están escritos sobre estos valores. Fijarlos aquí
+# (en vez de heredar los defaults del modelo) aísla los tests de la calibración
+# de producción: en v1.83 los defaults pasaron a floor_a 22 y margin 1.33 para
+# alinearse con config.example.yaml, y eso no debe reescribir las expectativas
+# de la lógica que se está probando.
+_TEST_BASE = {"floor_a": 15, "margin": 1.2}
+
+
 def _cfg(**overrides):
     return NS(
-        charge_current=ChargeCurrentConfig(**overrides),
+        charge_current=ChargeCurrentConfig(**{**_TEST_BASE, **overrides}),
         installation=NS(battery_capacity_kwh=22.5),
         charging=NS(max_soc_pct=95.0),
     )
@@ -48,7 +56,7 @@ def comp(cfg, state, hour, sched, current, remaining, solar_end):
 
 
 def main():
-    cfg = _cfg()   # defaults: hot 30, floor 15, max 66, margin 1.2
+    cfg = _cfg()   # hot 30, floor 15, max 66, margin 1.2 (ver _TEST_BASE)
     passed = failed = 0
 
     def check(desc, got, exp_amps=None, mode_has=None):
@@ -112,7 +120,7 @@ def main():
     # Simulación franja a franja del excedente solar (v1.72)
     # ------------------------------------------------------------------
     print("=== _min_current_for_surplus (corriente mínima sobre el perfil de excedente) ===")
-    cc = ChargeCurrentConfig()   # floor 15, max 66, margin 1.2
+    cc = ChargeCurrentConfig(**_TEST_BASE)   # floor 15, max 66, margin 1.2
 
     def check_raw(desc, got, exp_amps, exp_reached):
         nonlocal passed, failed

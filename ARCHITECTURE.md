@@ -69,11 +69,11 @@ un `None` que fuerce la ruta segura, nunca un valor por defecto plausible. Ver
 | `notifier.py` | Handler de logging en memoria que acumula el log de un ciclo y lo envía como email HTML (+ texto plano) por SMTP al terminar. |
 | `backup.py` | Copia de seguridad por SCP a un servidor externo (DB + logs + config). **Implementado pero desactivado por defecto** (`backup.enabled: false`). |
 | `web/server.py` | Aplicación FastAPI: dashboard + API JSON (estado, forecast, parámetros, historial, logs, config, export de BD, lanzamiento de ciclos/tests por SSE). |
-| `web/templates/index.html` | Dashboard de una sola página (~1900 líneas): tiles, gráficos, tabla de corriente, visor de logs y formulario de configuración generado desde `CONFIG_SCHEMA`. |
+| `web/templates/index.html` | Dashboard de una sola página (~2350 líneas): tiles, gráficos, tabla de corriente, visor de logs y formulario de configuración generado desde `CONFIG_SCHEMA` (6 grupos colapsables, 73 campos). |
 | `web/templates/index-v1.html` | Versión antigua del dashboard, no referenciada por `server.py`. Código muerto. |
 | `simulate_charge_current.py` | Ejecuta el controlador de corriente con `simulate=True` (lee y calcula, no escribe). Se lanza como subproceso desde la web. |
 | `diag_forecast_bias.py` | Script de diagnóstico del sesgo del forecast. No lo invoca ningún job ni endpoint. |
-| `test_*.py` | Scripts de prueba manuales ejecutables con `python -m app.test_X`. No son tests de pytest: imprimen y devuelven código de salida. `server.py` los expone en `POST /api/run/{test}`. |
+| `test_*.py` | Scripts de prueba manuales ejecutables con `python -m app.test_X`. No son tests de pytest: imprimen y devuelven código de salida. `server.py` los expone en `POST /api/run/{test}`. `test_config_web.py` verifica que modelo, lista blanca y formulario siguen describiendo los mismos campos. |
 
 ### 2.2 Fuera de `app/`
 
@@ -854,17 +854,22 @@ Ver sección 5 para el detalle funcional.
 | `house_profile_min_days_in_window` | int `≥ 1` | 14 | 14 |
 | `productive_window_pct` | int `[10, 100]` | 90 | 90 |
 | `productive_window_end_hour` | float `[0, 24]` | 17.0 | 17.0 |
-| `floor_a` | int `[1, 66]`, `≤ max_a` | 15 | 22 |
+| `floor_a` | int `[1, 66]`, `≤ max_a` | 22 | 22 |
 | `max_a` | int `[1, 66]` | 66 | 66 |
-| `margin` | float `[1.0, 3.0]` | 1.2 | 1.33 |
+| `margin` | float `[1.0, 3.0]` | 1.33 | 1.33 |
 | `battery_balance` | bool | `false` | `false` |
 | `balance_soc_pct` | float `[0,100]`, `< charging.max_soc_pct` si `battery_balance` | 98.0 | 97 |
 | `balance_soc_pct_2` | float `[0,100]`, `≥ balance_soc_pct` | 99.0 | 99 |
 | `balance_floor_a` | int `[1, 66]`, `≤ max_a` | 10 | 12 |
 
-> Esta sección **no** está en la lista blanca `_EDITABLE_FIELDS` de `server.py` ni en el
-> `CONFIG_SCHEMA` del formulario: se edita a mano en el YAML y requiere reiniciar el
-> contenedor.
+> Editable desde la pestaña Configuración (grupo «Corriente máxima de carga»)
+> **desde v1.83**; hasta entonces la sección entera se editaba a mano en el YAML.
+> Como todo el formulario, los cambios requieren reiniciar el contenedor.
+>
+> Los defectos de `floor_a` y `margin` se alinearon con la plantilla en v1.83: el
+> modelo se había quedado en los valores previos a la decisión del 2026-08-18
+> (`margin` 1.2 → 1.33), así que una instalación sin esas claves en su YAML corría
+> con un margen que la documentación daba por descartado.
 
 ### 6.7 `system`
 
@@ -1238,16 +1243,63 @@ measurement se queda corto.
 | `GET /api/solar_history` | — | Historial forecast vs real (`view=day|week|month`). |
 | `GET /api/charge_current_today` | — | Cambios de corriente registrados hoy. |
 | `GET /api/logs` | — | Últimas N líneas del fichero de log. |
-| `GET /api/config` | — | Config editable + `env_overrides` + `legacy_keys`. No expone secretos. |
+| `GET /api/config` | — | Config editable + `env_overrides` + `legacy_keys` + `default_keys` (claves ausentes del YAML, devueltas con el default del modelo). No expone secretos. |
 | `POST /api/config` | ✔ | Aplica cambios con `ruamel.yaml` (round-trip: preserva comentarios y orden), valida el YAML completo contra `AppConfig` antes de escribir; si falla, 400 sin tocar el fichero. |
 | `POST /api/cycle` | ✔ | Lanza `python -m app.test_main` como subproceso (`--write` si no es dry_run) y devuelve un `job_id`. |
-| `POST /api/run/{test}` | ✔ | Lanza uno de los 10 scripts `app.test_*` / `app.simulate_charge_current` permitidos. |
+| `POST /api/run/{test}` | ✔ | Lanza uno de los 11 scripts `app.test_*` / `app.simulate_charge_current` permitidos. |
 | `GET /api/stream/{job_id}` | — | SSE con la salida del job. |
 | `GET /api/db/export` | ✔ | `influx backup` online del bucket, empaquetado en `.tar.gz`. El token va por env var, no en argv. |
 | `POST /api/backup/run` | ✔ | Dispara el backup SCP bajo demanda. |
 
 > `POST /api/cycle` con `dry_run=false` ejecuta el **ciclo completo real**, incluida la
 > escritura de `ciclo_carga`. Ver incoherencia **I-6**.
+
+#### 9.5.1 Pestaña Configuración (reescrita en v1.83)
+
+Tres capas describen el mismo conjunto de parámetros y tienen que coincidir:
+
+```
+modelo Pydantic (config.py)  ↔  _EDITABLE_FIELDS (server.py)  ↔  CONFIG_SCHEMA (index.html)
+```
+
+Nada las ataba, y divergieron: al llegar la v1.82 el formulario no exponía **ningún**
+campo de `charge_current` (17 parámetros añadidos entre v1.53 y v1.79) ni de `backup`
+(11), ni `tariff.weekend_days`/`holidays` — 31 de 73 campos editables solo existían en
+el YAML. `app/test_config_web.py` fija ahora esa correspondencia en las tres
+direcciones: un campo nuevo en cualquier modelo hace fallar el test hasta que se expone
+en la web o se declara excluido, con su motivo, en `_EXCLUDED_FIELDS` (secretos de
+`.env` y `tariff.periods`, la única estructura anidada).
+
+Decisiones de la reescritura:
+
+- **73 campos en 6 grupos colapsables** (decisión de carga · corriente de carga ·
+  planificación · integraciones · sistema · backup). La rejilla plana anterior no
+  escalaba de 44 a 73 campos.
+- **Se envía solo lo modificado.** El formulario guarda un baseline al cargar y
+  `_collectDirty()` manda únicamente el diff. Antes se enviaban los 44 campos en cada
+  guardado, y como `_cast_value` rechazaba la cadena vacía en los tipos `str`, un YAML
+  con `mail_from: ""` (el caso recomendado: el valor real vive en `.env`) hacía que
+  cambiar `dry_run` devolviera `400 email.mail_from: valor vacío` **sin escribir nada**.
+  Ahora `""` es válido en `str`; los campos donde vaciar rompería el arranque
+  (`log_level`, `timezone`, URLs de InfluxDB…) usan el tipo `str_required`.
+- **Valor efectivo, no `null`.** `GET /api/config` resuelve el default del modelo para
+  las claves ausentes del YAML (`_section_defaults`) y las marca en `default_keys`; la
+  web las pinta con un badge `def`. Antes se devolvía `null`, que pintaba un input vacío
+  y bloqueaba el guardado — y dejaba invisibles los parámetros que gobiernan el sistema
+  sin estar escritos en el fichero.
+- **Tipos nuevos**: `time_hhmm` (valida `HH:MM` antes de escribir), `int_list`
+  (`weekend_days`, chips L–D, se escribe en flow style para no ocupar tres líneas) y
+  `date_list` (`holidays`, chips con alta/baja; las fechas se escriben entrecomilladas
+  para que YAML no las relea como `datetime.date`).
+- **Las invariantes del modelo se validan también en cliente** (`window_days ≥
+  min_days_in_window`, `floor_a ≤ max_a`, `balance_soc_pct < max_soc_pct`, campos
+  obligatorios del backup, formato de las horas): señalan el campo concreto en vez de
+  devolver un `ValidationError` de Pydantic al pie del formulario. La validación del
+  backend sigue siendo la autoritativa.
+- **`backup` pasa a ser editable** (no tiene secretos: la autenticación es por clave SSH
+  montada) y el botón de disparo manual se mueve junto a su configuración. Antes el
+  botón vivía en una pestaña que no dejaba ver ni corregir los ajustes que usa —
+  y en producción la sección `backup:` ni siquiera existe en el YAML.
 
 ### 9.6 Backup — dos mecanismos, uno activo
 

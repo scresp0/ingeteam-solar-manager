@@ -89,6 +89,8 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .btn-danger:hover { background: rgba(248,81,73,.22); border-color: rgba(248,81,73,.55); }
 
 .btn.running { opacity: .55; cursor: not-allowed; pointer-events: none; }
+/* pointer-events: none evita además el hover, que cambiaría el fondo */
+.btn:disabled { opacity: .4; cursor: default; pointer-events: none; }
 .btn.sm { padding: 4px 10px; font-size: 12px; }
 
 /* ── Nav tabs ────────────────────────────────────── */
@@ -117,6 +119,7 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 .card-head {
   padding: 10px 15px; border-bottom: 1px solid var(--border);
   display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap;   /* sin esto, título y nota se solapan en móvil */
 }
 .card-title { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .65px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
 .card-body { padding: 15px; }
@@ -282,6 +285,70 @@ html, body { height: 100%; background: var(--bg); color: var(--text); font-famil
 }
 input.legacy-value, select.legacy-value { color: var(--red); border-color: rgba(248,81,73,.45); }
 
+/* Clave ausente del YAML: se muestra el default del modelo, que es el valor
+   que el sistema está usando de verdad. */
+.default-badge {
+  display: inline-block;
+  font-family: var(--mono); font-size: 9px; font-weight: 600;
+  padding: 1px 6px; border-radius: 3px;
+  background: rgba(125,133,144,.16); color: var(--muted);
+  text-transform: uppercase; letter-spacing: .4px;
+  margin-left: 6px; cursor: help; vertical-align: middle;
+}
+/* Campo modificado y aún sin guardar */
+.field.dirty label { color: var(--accent); }
+.field.dirty input, .field.dirty select { border-color: rgba(240,165,0,.55); }
+.field-help { font-size: 10.5px; color: var(--muted2); line-height: 1.5; }
+.field-err  { font-size: 10.5px; color: var(--red); line-height: 1.5; }
+.field.invalid input, .field.invalid select { border-color: rgba(248,81,73,.6); }
+
+/* ── Config: grupos colapsables ──────────────────── */
+.cfg-group { border: 1px solid var(--border); border-radius: var(--radius2); margin-bottom: 10px; background: var(--bg2); }
+.cfg-group-head {
+  display: flex; align-items: center; gap: 10px; cursor: pointer;
+  padding: 12px 15px; user-select: none;
+}
+.cfg-group-head:hover { background: rgba(255,255,255,.02); }
+.cfg-group-caret { color: var(--muted); font-size: 11px; transition: transform .15s; flex-shrink: 0; }
+.cfg-group.open .cfg-group-caret { transform: rotate(90deg); }
+.cfg-group-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.cfg-group-sub { font-size: 11px; color: var(--muted2); margin-left: auto; text-align: right; }
+.cfg-group-dirty {
+  font-family: var(--mono); font-size: 9px; font-weight: 600;
+  padding: 1px 6px; border-radius: 3px;
+  background: var(--accentd); color: var(--accent);
+}
+.cfg-group-body { padding: 4px 15px 15px; border-top: 1px solid var(--border); }
+.cfg-group:not(.open) .cfg-group-body { display: none; }
+.cfg-section:last-child { margin-bottom: 4px; }
+.cfg-warn {
+  font-size: 11px; line-height: 1.55; color: var(--orange);
+  background: var(--oranged); border: 1px solid rgba(210,153,34,.3);
+  border-radius: var(--radius); padding: 8px 11px; margin-bottom: 12px;
+}
+/* Listas editables (weekend_days, holidays) */
+.cfg-days { display: flex; flex-wrap: wrap; gap: 6px; }
+.cfg-day {
+  font-family: var(--mono); font-size: 11px; padding: 6px 10px; cursor: pointer;
+  border: 1px solid var(--border2); border-radius: var(--radius);
+  background: var(--bg3); color: var(--muted); user-select: none;
+}
+.cfg-day.on { background: var(--blued); border-color: rgba(88,166,255,.45); color: var(--blue); }
+.cfg-dates { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.cfg-date-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-family: var(--mono); font-size: 11px; padding: 4px 6px 4px 9px;
+  border: 1px solid var(--border2); border-radius: var(--radius);
+  background: var(--bg3); color: var(--text);
+}
+.cfg-date-chip button {
+  background: none; border: none; color: var(--muted); cursor: pointer;
+  font-size: 13px; line-height: 1; padding: 0 2px;
+}
+.cfg-date-chip button:hover { color: var(--red); }
+.cfg-dates-empty { font-size: 11.5px; color: var(--muted2); }
+.field-wide { grid-column: 1 / -1; }
+
 /* ── Run panel ───────────────────────────────────── */
 .run-panel {
   background: rgba(240,165,0,.05); border: 1px solid rgba(240,165,0,.18);
@@ -364,6 +431,9 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
   .grid-2         { grid-template-columns: 1fr; }
   .grid-3         { grid-template-columns: 1fr; }
   .cfg-grid       { grid-template-columns: 1fr; }
+  .cfg-group-head { padding: 11px 12px; }
+  .cfg-group-body { padding: 4px 12px 12px; }
+  .cfg-group-sub  { display: none; }
 
   /* Tiles de métricas: valor algo más compacto */
   .metric-value   { font-size: 20px; }
@@ -620,6 +690,10 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
               <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.4"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
               Test configuración
             </button>
+            <button class="btn" onclick="runTest('config_web')">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="1.6" y="2.6" width="12.8" height="10.8" rx="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M1.6 6h12.8M6 6v7.4" stroke="currentColor" stroke-width="1.3"/></svg>
+              Test pestaña Configuración
+            </button>
             <button class="btn" onclick="runTest('automation')">
               <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="1" y="3" width="14" height="10" rx="2" stroke="currentColor" stroke-width="1.4"/><path d="M5 7h6M5 10h4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
               Test automatización (dry)
@@ -712,16 +786,15 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
     <div class="card">
       <div class="card-head">
         <span class="card-title">Parámetros de configuración</span>
-        <span style="font-size:11px;color:var(--muted2)">Edita <code>config.yaml</code>. Reinicia el contenedor para que los cambios surtan efecto.</span>
+        <span style="font-size:11px;color:var(--muted2)">Edita <code>config.yaml</code> preservando comentarios. Solo se escriben los campos que cambies. Reinicia el contenedor para que surtan efecto.</span>
       </div>
       <div class="card-body">
         <div id="cfg-loading" style="color:var(--muted);font-size:12px">Cargando configuración…</div>
         <div id="cfg-form-container" style="display:none"></div>
         <div id="cfg-actions" style="display:none;align-items:center;gap:12px;margin-top:8px;flex-wrap:wrap">
-          <button class="btn btn-accent" onclick="saveConfig()">Guardar cambios</button>
+          <button class="btn btn-accent" id="cfg-save-btn" onclick="saveConfig()">Guardar cambios</button>
           <button class="btn" onclick="loadConfigForm()">Recargar desde disco</button>
           <button class="btn" id="cfg-export-btn" onclick="exportDb()">Exportar BD</button>
-          <button class="btn" id="cfg-backup-btn" onclick="runBackup()">Backup a servidor</button>
           <span class="save-feedback" id="cfg-ok">Guardado correctamente</span>
           <span id="cfg-err" style="font-size:12px;color:var(--red);display:none"></span>
         </div>
@@ -1626,109 +1699,262 @@ function setJobStatus(state, msg) {
     : `<span style="color:${col[state]||'var(--muted)'}">${escHtml(msg)}</span>`;
 }
 
-// ══ Config form (GET/POST /api/config) ═════════════
-// Schema: cada sección describe los campos editables del config.yaml.
-// El tipo "bool" se renderiza como select Activado/Desactivado.
-// "str_nullable" permite vacío → null (útil para schedule_recheck_at).
+// ══ Configuración ══════════════════════════════════
+// Estructura: grupos colapsables → bloques (una sección del YAML cada uno) →
+// campos. `section` es la sección de la API (que coincide con la del YAML salvo
+// `email`, expuesta como hermana pero anidada bajo system.email).
+// Cada campo puede llevar `help`: el texto vive aquí porque la web sustituye al
+// YAML como sitio donde se edita, y los comentarios del YAML no llegan al form.
 const CONFIG_SCHEMA = [
   {
-    section: 'charging', title: 'Algoritmo de carga',
-    note: 'Parámetros principales del decisor de carga nocturna.',
-    fields: [
-      { key: 'risk_factor',          label: 'Factor de riesgo (0–1)',          type: 'number', min: 0,   max: 1,   step: 0.05 },
-      { key: 'min_soc_pct',          label: 'SOC mínimo (%)',                  type: 'number', min: 0,   max: 100, step: 1 },
-      { key: 'max_soc_pct',          label: 'SOC máximo (%)',                  type: 'number', min: 0,   max: 100, step: 1 },
-      { key: 'safety_margin_kwh',    label: 'Margen de seguridad (kWh)',       type: 'number', min: 0,             step: 0.1 },
-      { key: 'night_consumption_kwh',label: 'Consumo nocturno fallback (kWh)', type: 'number', min: 0,             step: 0.1 },
-      { key: 'solar_bias_factor',    label: 'Factor calibración solar (fallback)', type: 'number', min: 0.5, max: 1.5, step: 0.01 },
+    group: 'decision', title: 'Decisión de carga nocturna', open: true,
+    sub: 'Cuánto cargar de red cada noche',
+    blocks: [
+      {
+        section: 'charging', title: 'Algoritmo de carga',
+        note: 'Parámetros principales del decisor de carga nocturna (ciclo de las 23:55).',
+        fields: [
+          { key: 'risk_factor',          label: 'Factor de riesgo (0–1)',          type: 'number', min: 0,   max: 1,   step: 0.05,
+            help: 'Peso del escenario pesimista: 0 = usar p50, 1 = usar p10. Se calibra solo si hay histórico.' },
+          { key: 'min_soc_pct',          label: 'SOC mínimo (%)',                  type: 'number', min: 0,   max: 100, step: 1,
+            help: 'Fallback: el valor real se lee del inversor por MODBUS.' },
+          { key: 'max_soc_pct',          label: 'SOC máximo (%)',                  type: 'number', min: 0,   max: 100, step: 1,
+            help: 'Tope de carga. Debe ser mayor que el SOC mínimo, y mayor que el SOC de balanceo si este está activo.' },
+          { key: 'safety_margin_kwh',    label: 'Margen de seguridad (kWh)',       type: 'number', min: 0,             step: 0.1,
+            help: 'Colchón que se suma al déficit calculado. Absorbe imprevistos como los picos de Peak-Shaving.' },
+          { key: 'night_consumption_kwh',label: 'Consumo nocturno fallback (kWh)', type: 'number', min: 0,             step: 0.1,
+            help: 'Consumo estimado 00:00–08:00 mientras no haya días suficientes en InfluxDB.' },
+          { key: 'solar_bias_factor',    label: 'Calibración solar fallback',      type: 'number', min: 0.5, max: 1.5, step: 0.01,
+            help: 'solar_real / forecast_p50. Compensa el sesgo de Solcast para esta instalación. 1.0 = sin corrección.' },
+        ],
+      },
+      {
+        section: 'installation', title: 'Instalación',
+        fields: [
+          { key: 'battery_capacity_kwh',          label: 'Capacidad batería (kWh)',       type: 'number', min: 0, step: 0.01 },
+          { key: 'average_daily_consumption_kwh', label: 'Consumo diario fallback (kWh)', type: 'number', min: 0, step: 0.1,
+            help: 'Consumo total de 24 h. Solo se usa mientras el consumo diario dinámico no tenga días suficientes.' },
+          { key: 'peak_power_kwp',                label: 'Potencia pico paneles (kWp)',   type: 'number', min: 0, step: 0.1 },
+        ],
+      },
+      {
+        section: 'charging', title: 'Calibración dinámica',
+        note: 'ventana = periodo que se promedia. días válidos mín. = días con dato que debe haber DENTRO de esa ventana para usar el valor dinámico en lugar del fallback. Debe cumplirse ventana ≥ días válidos mín., o el parámetro se quedaría clavado en el fallback en silencio.',
+        fields: [
+          { key: 'night_consumption_window_days',        label: 'Cons. nocturno · ventana (días)',            type: 'number', min: 7, step: 1 },
+          { key: 'night_consumption_min_days_in_window', label: 'Cons. nocturno · días válidos mín.',         type: 'number', min: 1, step: 1 },
+          { key: 'daily_consumption_window_days',        label: 'Cons. diario · ventana (días)',              type: 'number', min: 7, step: 1 },
+          { key: 'daily_consumption_min_days_in_window', label: 'Cons. diario · días válidos mín.',           type: 'number', min: 1, step: 1 },
+          { key: 'risk_factor_window_days',              label: 'Risk factor · ventana (días)',               type: 'number', min: 7, step: 1 },
+          { key: 'risk_factor_min_days_in_window',       label: 'Risk factor · días válidos mín.',            type: 'number', min: 1, step: 1 },
+          { key: 'solar_bias_window_days',               label: 'Solar bias · ventana (días)',                type: 'number', min: 7, step: 1 },
+          { key: 'solar_bias_min_days_in_window',        label: 'Solar bias · días válidos mín.',             type: 'number', min: 1, step: 1 },
+        ],
+      },
     ],
   },
   {
-    section: 'charging', title: 'Calibración dinámica',
-    note: 'window_days = periodo que se promedia. min_days_in_window = días con dato que debe haber DENTRO de esa ventana para usar el valor dinámico (en vez del fallback de arriba). Debe cumplirse window_days ≥ min_days_in_window.',
-    fields: [
-      { key: 'night_consumption_window_days',       label: 'Cons. nocturno · ventana (días)',          type: 'number', min: 7, step: 1 },
-      { key: 'night_consumption_min_days_in_window', label: 'Cons. nocturno · días válidos mín. en ventana', type: 'number', min: 1, step: 1 },
-      { key: 'risk_factor_window_days',             label: 'Risk factor · ventana (días)',             type: 'number', min: 7, step: 1 },
-      { key: 'risk_factor_min_days_in_window',       label: 'Risk factor · días válidos mín. en ventana', type: 'number', min: 1, step: 1 },
-      { key: 'solar_bias_window_days',              label: 'Solar bias · ventana (días)',              type: 'number', min: 7, step: 1 },
-      { key: 'solar_bias_min_days_in_window',        label: 'Solar bias · días válidos mín. en ventana', type: 'number', min: 1, step: 1 },
-      { key: 'daily_consumption_window_days',       label: 'Cons. diario · ventana (días)',            type: 'number', min: 7, step: 1 },
-      { key: 'daily_consumption_min_days_in_window', label: 'Cons. diario · días válidos mín. en ventana', type: 'number', min: 1, step: 1 },
+    group: 'charge_current', title: 'Corriente máxima de carga', open: true,
+    sub: 'Control dinámico para reducir el calor',
+    blocks: [
+      {
+        section: 'charge_current', title: 'General',
+        note: 'Ajusta la corriente máxima de carga (holding 40087) al mínimo necesario para llenar la batería a tiempo: el calor es ∝ corriente para una misma energía. Se lee por MODBUS y se escribe por web (sección 1.2 del inversor).',
+        fields: [
+          { key: 'enabled',      label: 'Controlador activado', type: 'bool' },
+          { key: 'interval_min', label: 'Intervalo del lazo (min)', type: 'number', min: 1, step: 1,
+            help: 'Cada cuánto recalcula y, si el objetivo difiere del tope actual, reescribe.' },
+        ],
+      },
+      {
+        section: 'charge_current', title: 'Límites de corriente',
+        fields: [
+          { key: 'floor_a', label: 'Corriente mínima (A)', type: 'number', min: 1, max: 66, step: 1,
+            help: 'Suelo normal, lado batería DC (~50 V), no red AC.' },
+          { key: 'max_a',   label: 'Corriente máxima (A)', type: 'number', min: 1, max: 66, step: 1,
+            help: '66 A es el máximo del inversor. Debe ser ≥ corriente mínima.' },
+          { key: 'margin',  label: 'Margen sobre el mínimo teórico', type: 'number', min: 1, max: 3, step: 0.01,
+            help: '1.33 desde 2026-08-18: con 1.2 un día real se quedó al 89% de SOC por el consumo de tarde del aire acondicionado.' },
+        ],
+      },
+      {
+        section: 'charge_current', title: 'Estimación del consumo de la vivienda',
+        note: 'El excedente solar que la batería puede absorber es producción − consumo de la casa. El consumo se predice por persistencia (mediana reciente del datalogger) mezclada, franja a franja, con el perfil histórico de esa media hora.',
+        fields: [
+          { key: 'house_power_window_min', label: 'Ventana de persistencia (min)', type: 'number', min: 5, max: 240, step: 1,
+            help: 'Minutos de datalogger sobre los que se toma la mediana de consumo.' },
+          { key: 'house_power_cache_min',  label: 'Caché de la lectura (min)',     type: 'number', min: 0, max: 120, step: 1,
+            help: 'Cada lectura descarga el día completo del datalogger (~1 MB). No subir a 60: sumado a la ventana, el dato representaría hasta 2 h atrás.' },
+          { key: 'house_profile_window_days',        label: 'Perfil histórico · ventana (días)',    type: 'number', min: 7, step: 1,
+            help: 'Días de solar_media_hora.house_kwh para la mediana por franja de 30 min.' },
+          { key: 'house_profile_min_days_in_window', label: 'Perfil histórico · días válidos mín.', type: 'number', min: 1, step: 1,
+            help: 'Mínimo en la franja peor cubierta. Por debajo, se usa solo persistencia.' },
+        ],
+      },
+      {
+        section: 'charge_current', title: 'Ventana solar y temperatura',
+        fields: [
+          { key: 'temp_gate_enabled', label: 'Puerta de temperatura', type: 'bool',
+            help: 'Activada: con la batería fría se va al máximo para captar picos intermitentes (prioriza captura en invierno). Desactivada: rampa suave siempre.' },
+          { key: 'hot_threshold_c',   label: 'Umbral batería caliente (°C)', type: 'number', step: 0.5,
+            help: 'Con la puerta activada: temperatura ≤ umbral → corriente máxima.' },
+          { key: 'productive_window_pct',      label: 'Ventana productiva (% del día)', type: 'number', min: 10, max: 100, step: 1,
+            help: 'Fallback de fin de producción a partir del histórico, si no hay forecast.' },
+          { key: 'productive_window_end_hour', label: 'Fin de producción fallback (h)', type: 'number', min: 0, max: 24, step: 0.5,
+            help: 'Último recurso si no hay ni forecast ni histórico.' },
+        ],
+      },
+      {
+        section: 'charge_current', title: 'Balanceo de celdas',
+        note: 'Cerca del tope, carga lo más suave posible para balancear las celdas del stack. Ignora la puerta de temperatura. Solo fija el límite de corriente: el tope real de carga lo marca la programación 6.3.1.',
+        fields: [
+          { key: 'battery_balance',   label: 'Balanceo activado', type: 'bool' },
+          { key: 'balance_soc_pct',   label: 'SOC de entrada (%)', type: 'number', min: 0, max: 100, step: 1,
+            help: 'Debe ser menor que el SOC máximo de carga, o el modo nunca se alcanza.' },
+          { key: 'balance_soc_pct_2', label: 'SOC 2ª etapa (%)',   type: 'number', min: 0, max: 100, step: 1,
+            help: 'A partir de aquí el suelo de corriente baja a la mitad. Debe ser ≥ SOC de entrada.' },
+          { key: 'balance_floor_a',   label: 'Corriente de balanceo (A)', type: 'number', min: 1, max: 66, step: 1,
+            help: 'Suelo durante el balanceo, más bajo que la corriente mínima normal.' },
+        ],
+      },
     ],
   },
   {
-    section: 'installation', title: 'Instalación',
-    fields: [
-      { key: 'battery_capacity_kwh',          label: 'Capacidad batería (kWh)',       type: 'number', min: 0, step: 0.01 },
-      { key: 'average_daily_consumption_kwh', label: 'Consumo medio diario (kWh) · fallback', type: 'number', min: 0, step: 0.1 },
-      { key: 'peak_power_kwp',                label: 'Potencia pico paneles (kWp)',   type: 'number', min: 0, step: 0.1 },
+    group: 'planning', title: 'Planificación horaria',
+    sub: 'Cuándo se ejecuta el ciclo y qué días son valle',
+    blocks: [
+      {
+        section: 'tariff', title: 'Ejecución',
+        fields: [
+          { key: 'schedule_at',         label: 'Hora ciclo nocturno (HH:MM)', type: 'text', placeholder: '23:55',
+            help: 'El ciclo canónico. Único que trabaja con las condiciones para las que se diseñó el algoritmo.' },
+          { key: 'schedule_recheck_at', label: 'Horas de re-evaluación', type: 'text', placeholder: '19:00, 03:00', nullable: true,
+            help: 'Varias separadas por coma; vacío = desactivado. Ojo con las horas de tarde: el consumo de la tarde-noche no se descuenta, así que la decisión es optimista.' },
+          { key: 'night_cutoff_hour',   label: 'Hora límite madrugada (0–12)', type: 'number', min: 0, max: 12, step: 1,
+            help: 'Antes de esta hora, la ejecución cuenta como la noche del día anterior. Debe ser ≤ fin del valle.' },
+        ],
+      },
+      {
+        section: 'tariff', title: 'Días valle',
+        note: 'En un día valle la tarifa es valle las 24 h: el algoritmo nunca carga de red la noche anterior y puede bloquear la descarga para reservar batería.',
+        fields: [
+          { key: 'weekend_days', label: 'Días de fin de semana', type: 'int_list', wide: true,
+            help: 'Marca los días que se tratan como valle todo el día.' },
+          { key: 'holidays',     label: 'Festivos', type: 'date_list', wide: true,
+            help: 'Fechas YYYY-MM-DD tratadas como día valle completo. Los festivos en día laborable los cubre la Prog 1 del inversor (L-V).' },
+        ],
+      },
     ],
   },
   {
-    section: 'tariff', title: 'Planificador',
-    fields: [
-      { key: 'schedule_at',         label: 'Hora ciclo nocturno (HH:MM)',     type: 'text',     placeholder: '23:55' },
-      { key: 'schedule_recheck_at', label: 'Horas re-evaluación (HH:MM, coma para varias; vacío = desactivado)', type: 'text', placeholder: '19:00, 03:00', nullable: true },
-      { key: 'night_cutoff_hour',   label: 'Hora límite madrugada (0–12)',    type: 'number',   min: 0, max: 12, step: 1 },
+    group: 'integrations', title: 'Integraciones',
+    sub: 'Solcast · inversor · InfluxDB · email',
+    blocks: [
+      {
+        section: 'solcast', title: 'Solcast',
+        note: 'La api_key y el resource_id viven solo en .env por seguridad.',
+        fields: [
+          { key: 'base_url',        label: 'Base URL',           type: 'text' },
+          { key: 'forecast_hours',  label: 'Horas de forecast',  type: 'number', min: 1, max: 168, step: 1 },
+          { key: 'cache_ttl_hours', label: 'Caché TTL (horas)',  type: 'number', min: 1, step: 1 },
+        ],
+      },
+      {
+        section: 'inverter', title: 'Inversor',
+        note: 'IP, usuario y contraseña del inversor viven solo en .env por seguridad.',
+        fields: [
+          { key: 'modbus_port',             label: 'Puerto MODBUS',          type: 'number', min: 1, max: 65535, step: 1 },
+          { key: 'modbus_slave',            label: 'Slave ID MODBUS',        type: 'number', min: 0, max: 255,   step: 1 },
+          { key: 'browser_timeout_seconds', label: 'Timeout Playwright (s)', type: 'number', min: 1, step: 1 },
+        ],
+      },
+      {
+        section: 'influxdb', title: 'InfluxDB',
+        note: 'El token vive solo en .env por seguridad.',
+        fields: [
+          { key: 'enabled', label: 'InfluxDB habilitado', type: 'bool' },
+          { key: 'url',     label: 'URL',                 type: 'text', placeholder: 'http://influxdb:8086' },
+          { key: 'org',     label: 'Organización',        type: 'text' },
+          { key: 'bucket',  label: 'Bucket',              type: 'text' },
+        ],
+      },
+      {
+        section: 'email', title: 'Email (notificaciones)',
+        note: 'Las credenciales SMTP (host, usuario, contraseña) viven solo en .env por seguridad.',
+        fields: [
+          { key: 'enabled',    label: 'Envío de email activado',  type: 'bool' },
+          { key: 'smtp_port',  label: 'Puerto SMTP',              type: 'number', min: 1, max: 65535, step: 1 },
+          { key: 'use_tls',    label: 'STARTTLS (puerto 587)',    type: 'bool' },
+          { key: 'use_ssl',    label: 'SSL directo (puerto 465)', type: 'bool' },
+          { key: 'verify_ssl', label: 'Verificar certificado SSL',type: 'bool',
+            help: 'Desactivar solo para un relay interno con certificado autofirmado.' },
+          { key: 'mail_from',  label: 'Remitente (From)',         type: 'text',   placeholder: 'solar-manager@example.com' },
+          { key: 'mail_to',    label: 'Destinatario (To)',        type: 'text',   placeholder: 'tu@email.com' },
+        ],
+      },
     ],
   },
   {
-    section: 'system', title: 'Sistema',
-    fields: [
-      { key: 'log_level',   label: 'Nivel de log',                 type: 'select', options: ['DEBUG','INFO','WARNING','ERROR'] },
-      { key: 'log_file',    label: 'Ruta del fichero de log',      type: 'text' },
-      { key: 'dry_run',     label: 'Dry run (no toca el inversor)',type: 'bool' },
-      { key: 'timezone',    label: 'Zona horaria',                 type: 'text',   placeholder: 'Europe/Madrid' },
-      { key: 'web_port',    label: 'Puerto interfaz web',          type: 'number', min: 1, max: 65535, step: 1 },
-      { key: 'web_enabled', label: 'Interfaz web habilitada',      type: 'bool' },
+    group: 'system', title: 'Sistema',
+    sub: 'Log · dry run · interfaz web',
+    blocks: [
+      {
+        section: 'system', title: 'Sistema',
+        warn: 'Cambiar el puerto o desactivar la interfaz web deja esta página inaccesible tras reiniciar el contenedor: solo se podría revertir editando config.yaml en el servidor.',
+        fields: [
+          { key: 'log_level',   label: 'Nivel de log',                 type: 'select', options: ['DEBUG','INFO','WARNING','ERROR'] },
+          { key: 'log_file',    label: 'Ruta del fichero de log',      type: 'text' },
+          { key: 'dry_run',     label: 'Dry run (no toca el inversor)',type: 'bool',
+            help: 'Toda la lógica se ejecuta y se registra, pero no se escribe nada en el inversor.' },
+          { key: 'timezone',    label: 'Zona horaria',                 type: 'text',   placeholder: 'Europe/Madrid' },
+          { key: 'web_port',    label: 'Puerto interfaz web',          type: 'number', min: 1, max: 65535, step: 1 },
+          { key: 'web_enabled', label: 'Interfaz web habilitada',      type: 'bool' },
+        ],
+      },
     ],
   },
   {
-    section: 'email', title: 'Email (notificaciones)',
-    note: 'Las credenciales SMTP (host, usuario, password) viven solo en .env por seguridad.',
-    fields: [
-      { key: 'enabled',    label: 'Envío de email activado',  type: 'bool' },
-      { key: 'smtp_port',  label: 'Puerto SMTP',              type: 'number', min: 1, max: 65535, step: 1 },
-      { key: 'use_tls',    label: 'STARTTLS (puerto 587)',    type: 'bool' },
-      { key: 'use_ssl',    label: 'SSL directo (puerto 465)', type: 'bool' },
-      { key: 'verify_ssl', label: 'Verificar certificado SSL',type: 'bool' },
-      { key: 'mail_from',  label: 'Remitente (From)',         type: 'text',   placeholder: 'solar-manager@example.com' },
-      { key: 'mail_to',    label: 'Destinatario (To)',        type: 'text',   placeholder: 'tu@email.com' },
-    ],
-  },
-  {
-    section: 'solcast', title: 'Solcast',
-    note: 'La api_key y resource_id viven solo en .env por seguridad.',
-    fields: [
-      { key: 'base_url',        label: 'Base URL',           type: 'text' },
-      { key: 'forecast_hours',  label: 'Horas de forecast',  type: 'number', min: 1, max: 168, step: 1 },
-      { key: 'cache_ttl_hours', label: 'Caché TTL (horas)',  type: 'number', min: 1, step: 1 },
-    ],
-  },
-  {
-    section: 'inverter', title: 'Inversor',
-    note: 'IP, usuario y password del inversor viven solo en .env por seguridad.',
-    fields: [
-      { key: 'modbus_port',             label: 'Puerto MODBUS',          type: 'number', min: 1, max: 65535, step: 1 },
-      { key: 'modbus_slave',            label: 'Slave ID MODBUS',        type: 'number', min: 0, max: 255,   step: 1 },
-      { key: 'browser_timeout_seconds', label: 'Timeout Playwright (s)', type: 'number', min: 1, step: 1 },
-    ],
-  },
-  {
-    section: 'influxdb', title: 'InfluxDB',
-    note: 'El token vive solo en .env por seguridad.',
-    fields: [
-      { key: 'enabled', label: 'InfluxDB habilitado', type: 'bool' },
-      { key: 'url',     label: 'URL',                 type: 'text', placeholder: 'http://influxdb:8086' },
-      { key: 'org',     label: 'Organización',        type: 'text' },
-      { key: 'bucket',  label: 'Bucket',              type: 'text' },
+    group: 'backup', title: 'Backup externo por SCP',
+    sub: 'BD + logs + config a un servidor remoto',
+    footer: 'backup',
+    blocks: [
+      {
+        section: 'backup', title: 'Destino y programación',
+        note: 'Empaqueta el backup online de InfluxDB, los logs y config.yaml en un .tar.gz y lo sube por SCP, rotando los antiguos. Sin secretos: la autenticación es por clave SSH montada en el contenedor, cuya pública debe estar en el authorized_keys del destino. Independiente del backup a NAS por systemd, si lo tienes configurado en el servidor.',
+        fields: [
+          { key: 'enabled',     label: 'Backup automático activado', type: 'bool',
+            help: 'Con esto activado, host, usuario y directorio remoto son obligatorios.' },
+          { key: 'schedule_at', label: 'Hora diaria (HH:MM)',        type: 'text', placeholder: '04:00' },
+          { key: 'host',        label: 'Servidor destino',           type: 'text', placeholder: 'backup.example.com' },
+          { key: 'port',        label: 'Puerto SSH',                 type: 'number', min: 1, max: 65535, step: 1 },
+          { key: 'user',        label: 'Usuario SSH',                type: 'text', placeholder: 'backup' },
+          { key: 'remote_dir',  label: 'Directorio remoto',          type: 'text', placeholder: '/srv/backups/solar-manager' },
+          { key: 'retention',   label: 'Backups a conservar',        type: 'number', min: 1, step: 1,
+            help: 'Los que excedan este número se borran por SSH tras subir el nuevo.' },
+          { key: 'timeout_seconds', label: 'Timeout scp/ssh (s)',    type: 'number', min: 30, step: 10 },
+        ],
+      },
+      {
+        section: 'backup', title: 'Claves SSH',
+        fields: [
+          { key: 'ssh_key_path',   label: 'Clave privada (ruta en el contenedor)', type: 'text', placeholder: '/root/.ssh/id_backup',
+            help: 'Debe coincidir con el volumen montado en docker-compose.yml.' },
+          { key: 'known_hosts_path', label: 'known_hosts (ruta en el contenedor)', type: 'text', placeholder: '/root/.ssh/known_hosts' },
+          { key: 'strict_host_key_checking', label: 'Verificar clave del host remoto', type: 'bool', wide: true,
+            help: 'Desactivarlo abre la puerta a un ataque man-in-the-middle sobre el backup. Úsalo solo para el primer arranque, hasta poblar known_hosts.' },
+        ],
+      },
     ],
   },
 ];
 
+const _WEEKDAYS = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
+
 let _envOverrides = new Set();   // claves "section.key" sobreescritas por .env
 let _legacyKeys   = new Map();   // "section.key" -> nombre obsoleto en el YAML
+let _defaultKeys  = new Set();   // claves ausentes del YAML (se muestra el default)
+let _cfgBaseline  = {};          // valores tal como se cargaron, para el diff
+let _cfgLists     = {};          // estado de los campos lista: "section.key" -> array
 
 async function loadConfigForm() {
   const loading = document.getElementById('cfg-loading');
@@ -1743,7 +1969,8 @@ async function loadConfigForm() {
     const d = await r.json();
     if (!d.ok) throw new Error(d.error || 'Error al cargar /api/config');
     _envOverrides = new Set((d.env_overrides || []).map(o => `${o.section}.${o.key}`));
-    _legacyKeys   = new Map((d.legacy_keys || []).map(o => [`${o.section}.${o.key}`, o.legacy_key]));
+    _legacyKeys   = new Map((d.legacy_keys   || []).map(o => [`${o.section}.${o.key}`, o.legacy_key]));
+    _defaultKeys  = new Set((d.default_keys  || []).map(o => `${o.section}.${o.key}`));
     _renderConfigForm(d.values || {});
     loading.style.display = 'none';
     form.style.display    = 'block';
@@ -1754,31 +1981,81 @@ async function loadConfigForm() {
 }
 
 function _renderConfigForm(values) {
-  const html = CONFIG_SCHEMA.map(secDef => {
-    const fields = secDef.fields.map(f => _renderField(secDef.section, f, values)).join('');
-    const note = secDef.note ? `<div class="cfg-section-note">${escHtml(secDef.note)}</div>` : '';
+  // Snapshot de referencia: el guardado envía solo lo que difiera de aquí, así
+  // un cambio en un campo no arrastra a los 70 restantes (ni pisa un valor que
+  // en realidad viene de .env).
+  _cfgBaseline = {};
+  _cfgLists    = {};
+
+  const html = CONFIG_SCHEMA.map(g => {
+    const blocks = g.blocks.map(b => {
+      const fields = b.fields.map(f => _renderField(b.section, f, values)).join('');
+      const note = b.note ? `<div class="cfg-section-note">${escHtml(b.note)}</div>` : '';
+      const warn = b.warn ? `<div class="cfg-warn">${escHtml(b.warn)}</div>` : '';
+      return `
+        <div class="cfg-section">
+          <div class="cfg-section-title">${escHtml(b.title)}</div>
+          ${note}${warn}
+          <div class="cfg-grid">${fields}</div>
+        </div>`;
+    }).join('');
+    const footer = g.footer === 'backup'
+      ? `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+           <button class="btn" id="cfg-backup-btn" onclick="runBackup()">Lanzar backup ahora</button>
+           <span style="font-size:11px;color:var(--muted2)">Usa la configuración ya guardada en disco, no lo que haya sin guardar en este formulario.</span>
+         </div>`
+      : '';
+    const sub = g.sub ? `<span class="cfg-group-sub" id="cfg-sub-${g.group}">${escHtml(g.sub)}</span>` : '';
     return `
-      <div class="cfg-section">
-        <div class="cfg-section-title">${escHtml(secDef.title)}</div>
-        ${note}
-        <div class="cfg-grid">${fields}</div>
+      <div class="cfg-group${g.open ? ' open' : ''}" id="cfg-group-${g.group}">
+        <div class="cfg-group-head" onclick="toggleCfgGroup('${g.group}')">
+          <span class="cfg-group-caret">▶</span>
+          <span class="cfg-group-title">${escHtml(g.title)}</span>
+          ${sub}
+        </div>
+        <div class="cfg-group-body">${blocks}${footer}</div>
       </div>`;
   }).join('');
+
   document.getElementById('cfg-form-container').innerHTML = html;
+
+  // Guardar baseline y enganchar el seguimiento de cambios.
+  for (const g of CONFIG_SCHEMA) {
+    for (const b of g.blocks) {
+      for (const f of b.fields) {
+        const id = `${b.section}.${f.key}`;
+        _cfgBaseline[id] = _readField(b.section, f);
+        const el = document.getElementById(`cfg-${b.section}-${f.key}`);
+        if (el) el.addEventListener('input',  () => _onFieldChange(b.section, f));
+        if (el) el.addEventListener('change', () => _onFieldChange(b.section, f));
+      }
+    }
+  }
+  _refreshDirtyBadges();
+}
+
+function toggleCfgGroup(name) {
+  document.getElementById(`cfg-group-${name}`).classList.toggle('open');
 }
 
 function _renderField(section, f, values) {
   const cur     = (values[section] || {})[f.key];
   const fieldId = `cfg-${section}-${f.key}`;
-  const ov      = _envOverrides.has(`${section}.${f.key}`);
-  const legacy  = _legacyKeys.get(`${section}.${f.key}`);
+  const id      = `${section}.${f.key}`;
+  const ov      = _envOverrides.has(id);
+  const legacy  = _legacyKeys.get(id);
+  const isDef   = _defaultKeys.has(id);
+
   const envBadge = ov
     ? `<span class="env-badge" title="Esta variable está definida en .env y sobreescribe el valor de config.yaml al arrancar. Guardar aquí modifica el YAML, pero seguirá ganando el valor de .env hasta que la quites del entorno.">.env override</span>`
     : '';
   const legacyBadge = legacy
     ? `<span class="legacy-badge" title="El YAML usa el nombre obsoleto '${escHtml(legacy)}'. Sigue funcionando vía alias, pero conviene renombrarlo a '${escHtml(f.key)}'. Al guardar se migra solo.">O</span>`
     : '';
-  const badge = envBadge + legacyBadge;
+  const defBadge = isDef
+    ? `<span class="default-badge" title="Esta clave no está en config.yaml: se muestra el valor por defecto del modelo, que es el que el sistema está usando. Al guardarlo se escribirá explícitamente en el YAML.">def</span>`
+    : '';
+  const badge = envBadge + legacyBadge + defBadge;
   const lc    = legacy ? ' class="legacy-value"' : '';
 
   let input;
@@ -1801,16 +2078,247 @@ function _renderField(section, f, values) {
     if (f.placeholder)        parts.push(`placeholder="${escHtml(f.placeholder)}"`);
     if (legacy)               parts.push('class="legacy-value"');
     input = `<input ${parts.join(' ')}>`;
+  } else if (f.type === 'int_list') {
+    _cfgLists[`${section}.${f.key}`] = Array.isArray(cur) ? cur.slice() : [];
+    input = `<div class="cfg-days" id="${fieldId}">${_weekdayChips(section, f.key)}</div>`;
+  } else if (f.type === 'date_list') {
+    _cfgLists[`${section}.${f.key}`] = Array.isArray(cur) ? cur.slice() : [];
+    input = `<div id="${fieldId}">${_dateListWidget(section, f.key)}</div>`;
   } else {
     const val = (cur === null || cur === undefined) ? '' : String(cur);
     const dt  = f.nullable ? 'str_nullable' : 'str';
     const ph  = f.placeholder ? ` placeholder="${escHtml(f.placeholder)}"` : '';
     input = `<input id="${fieldId}" type="text" data-type="${dt}" value="${escHtml(val)}"${ph}${lc}>`;
   }
-  return `<div class="field">
+
+  const help = f.help ? `<div class="field-help">${escHtml(f.help)}</div>` : '';
+  const wide = f.wide ? ' field-wide' : '';
+  return `<div class="field${wide}" id="field-${section}-${f.key}">
     <label for="${fieldId}">${escHtml(f.label)}${badge}</label>
     ${input}
+    ${help}
+    <div class="field-err" id="err-${section}-${f.key}" style="display:none"></div>
   </div>`;
+}
+
+// ── Campos lista ───────────────────────────────────
+function _weekdayChips(section, key) {
+  const sel = _cfgLists[`${section}.${key}`] || [];
+  return _WEEKDAYS.map((d, i) =>
+    `<span class="cfg-day${sel.includes(i) ? ' on' : ''}" onclick="toggleWeekday('${section}','${key}',${i})">${d}</span>`
+  ).join('');
+}
+
+function toggleWeekday(section, key, day) {
+  const id  = `${section}.${key}`;
+  const sel = _cfgLists[id] || [];
+  const i   = sel.indexOf(day);
+  if (i >= 0) sel.splice(i, 1); else sel.push(day);
+  _cfgLists[id] = sel.sort((a, b) => a - b);
+  document.getElementById(`cfg-${section}-${key}`).innerHTML = _weekdayChips(section, key);
+  _onFieldChange(section, { key, type: 'int_list' });
+}
+
+function _dateListWidget(section, key) {
+  const sel = (_cfgLists[`${section}.${key}`] || []).slice().sort();
+  const chips = sel.map(d =>
+    `<span class="cfg-date-chip">${escHtml(d)}<button type="button" title="Quitar"
+       onclick="removeHoliday('${section}','${key}','${escHtml(d)}')">×</button></span>`
+  ).join('');
+  const empty = sel.length ? '' : '<span class="cfg-dates-empty">Sin festivos configurados</span>';
+  return `<div class="cfg-dates">
+    ${chips}${empty}
+    <input type="date" id="add-${section}-${key}" style="max-width:170px">
+    <button type="button" class="btn" onclick="addHoliday('${section}','${key}')">Añadir</button>
+  </div>`;
+}
+
+function addHoliday(section, key) {
+  const inp = document.getElementById(`add-${section}-${key}`);
+  const val = (inp.value || '').trim();
+  if (!val) return;
+  const id  = `${section}.${key}`;
+  const sel = _cfgLists[id] || [];
+  if (!sel.includes(val)) sel.push(val);
+  _cfgLists[id] = sel.sort();
+  inp.value = '';
+  document.getElementById(`cfg-${section}-${key}`).innerHTML = _dateListWidget(section, key);
+  _onFieldChange(section, { key, type: 'date_list' });
+}
+
+function removeHoliday(section, key, day) {
+  const id  = `${section}.${key}`;
+  _cfgLists[id] = (_cfgLists[id] || []).filter(d => d !== day);
+  document.getElementById(`cfg-${section}-${key}`).innerHTML = _dateListWidget(section, key);
+  _onFieldChange(section, { key, type: 'date_list' });
+}
+
+// ── Lectura / diff ─────────────────────────────────
+function _readField(section, f) {
+  if (f.type === 'int_list' || f.type === 'date_list') {
+    return (_cfgLists[`${section}.${f.key}`] || []).slice();
+  }
+  const el = document.getElementById(`cfg-${section}-${f.key}`);
+  if (!el) return undefined;
+  const t = el.dataset.type;
+  const v = el.value;
+  if (t === 'bool')          return v === 'true';
+  if (t === 'number')        { const n = parseFloat(v); return Number.isNaN(n) ? null : n; }
+  if (t === 'str_nullable')  return v.trim() === '' ? null : v;
+  return String(v);
+}
+
+function _onFieldChange(section, f) {
+  const id    = `${section}.${f.key}`;
+  const field = document.getElementById(`field-${section}-${f.key}`);
+  if (field) {
+    const changed = JSON.stringify(_readField(section, f)) !== JSON.stringify(_cfgBaseline[id]);
+    field.classList.toggle('dirty', changed);
+  }
+  _refreshDirtyBadges();
+}
+
+function _collectDirty() {
+  const out = {};
+  let count = 0;
+  for (const g of CONFIG_SCHEMA) {
+    for (const b of g.blocks) {
+      for (const f of b.fields) {
+        const id  = `${b.section}.${f.key}`;
+        const cur = _readField(b.section, f);
+        if (cur === undefined) continue;
+        if (JSON.stringify(cur) === JSON.stringify(_cfgBaseline[id])) continue;
+        out[b.section] = out[b.section] || {};
+        out[b.section][f.key] = cur;
+        count++;
+      }
+    }
+  }
+  return { values: out, count };
+}
+
+function _refreshDirtyBadges() {
+  let total = 0;
+  for (const g of CONFIG_SCHEMA) {
+    let n = 0;
+    for (const b of g.blocks) {
+      for (const f of b.fields) {
+        const id = `${b.section}.${f.key}`;
+        const cur = _readField(b.section, f);
+        if (cur === undefined) continue;
+        if (JSON.stringify(cur) !== JSON.stringify(_cfgBaseline[id])) n++;
+      }
+    }
+    total += n;
+    const sub = document.getElementById(`cfg-sub-${g.group}`);
+    if (sub) {
+      sub.innerHTML = n
+        ? `<span class="cfg-group-dirty">${n} sin guardar</span>`
+        : escHtml(g.sub || '');
+    }
+  }
+  const btn = document.getElementById('cfg-save-btn');
+  if (btn) {
+    btn.textContent = total ? `Guardar ${total} cambio${total === 1 ? '' : 's'}` : 'Guardar cambios';
+    btn.disabled = total === 0;
+  }
+}
+
+// ── Validación en cliente de las invariantes del modelo ────
+// Duplicar aquí lo que Pydantic ya valida evita el viaje de ida y vuelta con un
+// ValidationError crudo, y señala el campo concreto en vez de un texto al pie.
+function _validateConfig(values) {
+  const errs = [];
+  const cur = (section, key) => {
+    if (values[section] && key in values[section]) return values[section][key];
+    return _cfgBaseline[`${section}.${key}`];
+  };
+  const fail = (section, key, msg) => errs.push({ section, key, msg });
+
+  for (const p of ['night_consumption', 'risk_factor', 'solar_bias', 'daily_consumption']) {
+    const win = cur('charging', `${p}_window_days`);
+    const min = cur('charging', `${p}_min_days_in_window`);
+    if (win != null && min != null && win < min) {
+      fail('charging', `${p}_window_days`,
+           `La ventana (${win} d) debe ser ≥ los días válidos mínimos (${min} d), o el valor dinámico nunca se activaría.`);
+    }
+  }
+
+  const minSoc = cur('charging', 'min_soc_pct'), maxSoc = cur('charging', 'max_soc_pct');
+  if (minSoc != null && maxSoc != null && maxSoc <= minSoc) {
+    fail('charging', 'max_soc_pct', `El SOC máximo debe ser mayor que el mínimo (${minSoc}%).`);
+  }
+
+  const floorA = cur('charge_current', 'floor_a'), maxA = cur('charge_current', 'max_a');
+  const balFloor = cur('charge_current', 'balance_floor_a');
+  if (floorA != null && maxA != null && floorA > maxA) {
+    fail('charge_current', 'floor_a', `La corriente mínima no puede superar la máxima (${maxA} A).`);
+  }
+  if (balFloor != null && maxA != null && balFloor > maxA) {
+    fail('charge_current', 'balance_floor_a', `La corriente de balanceo no puede superar la máxima (${maxA} A).`);
+  }
+  const b1 = cur('charge_current', 'balance_soc_pct'), b2 = cur('charge_current', 'balance_soc_pct_2');
+  if (b1 != null && b2 != null && b2 < b1) {
+    fail('charge_current', 'balance_soc_pct_2', `El SOC de la 2ª etapa no puede ser menor que el de entrada (${b1}%).`);
+  }
+  if (cur('charge_current', 'battery_balance') === true && b1 != null && maxSoc != null && b1 >= maxSoc) {
+    fail('charge_current', 'balance_soc_pct',
+         `Con el balanceo activado, el SOC de entrada debe ser menor que el SOC máximo de carga (${maxSoc}%), o el modo nunca se alcanza.`);
+  }
+  const hw = cur('charge_current', 'house_profile_window_days');
+  const hm = cur('charge_current', 'house_profile_min_days_in_window');
+  if (hw != null && hm != null && hw < hm) {
+    fail('charge_current', 'house_profile_window_days',
+         `La ventana (${hw} d) debe ser ≥ los días válidos mínimos (${hm} d).`);
+  }
+
+  if (cur('backup', 'enabled') === true) {
+    for (const [k, label] of [['host', 'servidor'], ['user', 'usuario'], ['remote_dir', 'directorio remoto']]) {
+      if (!String(cur('backup', k) || '').trim()) {
+        fail('backup', k, `Obligatorio con el backup automático activado: falta el ${label}.`);
+      }
+    }
+  }
+
+  for (const [section, key] of [['tariff', 'schedule_at'], ['backup', 'schedule_at']]) {
+    const v = cur(section, key);
+    if (v != null && !/^([01]?\d|2[0-3]):[0-5]\d$/.test(String(v).trim())) {
+      fail(section, key, `Hora inválida: se espera HH:MM.`);
+    }
+  }
+  const rc = cur('tariff', 'schedule_recheck_at');
+  if (rc) {
+    for (const part of String(rc).split(',')) {
+      const s = part.trim();
+      if (s && !/^([01]?\d|2[0-3]):[0-5]\d$/.test(s)) {
+        fail('tariff', 'schedule_recheck_at', `Hora inválida: ${s}. Se esperan horas HH:MM separadas por coma.`);
+        break;
+      }
+    }
+  }
+  return errs;
+}
+
+function _showFieldErrors(errs) {
+  document.querySelectorAll('.field-err').forEach(e => { e.style.display = 'none'; e.textContent = ''; });
+  document.querySelectorAll('.field.invalid').forEach(e => e.classList.remove('invalid'));
+  const groups = new Set();
+  for (const { section, key, msg } of errs) {
+    const box = document.getElementById(`err-${section}-${key}`);
+    if (box) { box.textContent = msg; box.style.display = 'block'; }
+    const fld = document.getElementById(`field-${section}-${key}`);
+    if (fld) fld.classList.add('invalid');
+    for (const g of CONFIG_SCHEMA) {
+      if (g.blocks.some(b => b.section === section && b.fields.some(f => f.key === key))) groups.add(g.group);
+    }
+  }
+  // Abrir los grupos que contienen errores: un fallo dentro de un grupo
+  // plegado sería invisible.
+  for (const g of groups) document.getElementById(`cfg-group-${g}`).classList.add('open');
+  if (errs.length) {
+    const first = document.getElementById(`field-${errs[0].section}-${errs[0].key}`);
+    if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
 }
 
 async function saveConfig() {
@@ -1819,35 +2327,30 @@ async function saveConfig() {
   ok.classList.remove('show');
   err.style.display = 'none';
   err.textContent   = '';
-  ok.textContent    = 'Guardado correctamente';
 
-  // Recopilar valores del DOM agrupados por sección.
-  const values = {};
-  for (const secDef of CONFIG_SCHEMA) {
-    values[secDef.section] = values[secDef.section] || {};
-    for (const f of secDef.fields) {
-      const el = document.getElementById(`cfg-${secDef.section}-${f.key}`);
-      if (!el) continue;
-      const t = el.dataset.type;
-      let v = el.value;
-      if (t === 'bool') {
-        v = (v === 'true');
-      } else if (t === 'number') {
-        const n = parseFloat(v);
-        if (Number.isNaN(n)) {
-          err.textContent = `Valor numérico inválido: ${secDef.title} → ${f.label}`;
-          err.style.display = 'inline';
-          return;
-        }
-        v = n;
-      } else if (t === 'str_nullable') {
-        v = v.trim() === '' ? null : v;
-      } else {
-        v = String(v);
-      }
-      values[secDef.section][f.key] = v;
+  const { values, count } = _collectDirty();
+  if (!count) {
+    err.textContent = 'No hay cambios que guardar.';
+    err.style.display = 'inline';
+    return;
+  }
+
+  // Un number vacío o ilegible se cuela como null: pararlo aquí evita escribir
+  // basura en el YAML y señala el campo.
+  const nulls = [];
+  for (const [section, fields] of Object.entries(values)) {
+    for (const [key, v] of Object.entries(fields)) {
+      if (v === null && !_isNullable(section, key)) nulls.push({ section, key, msg: 'Valor numérico inválido o vacío.' });
     }
   }
+  const errs = nulls.concat(_validateConfig(values));
+  if (errs.length) {
+    _showFieldErrors(errs);
+    err.textContent = `${errs.length} campo${errs.length === 1 ? '' : 's'} con errores — revisa lo marcado en rojo.`;
+    err.style.display = 'inline';
+    return;
+  }
+  _showFieldErrors([]);
 
   try {
     const r = await _postWithAuth('/api/config', {
@@ -1860,13 +2363,27 @@ async function saveConfig() {
       err.style.display = 'inline';
       return;
     }
-    ok.textContent = `Guardado · ${d.applied} campos · reinicia para aplicar`;
+    ok.textContent = `Guardado · ${d.applied} campo${d.applied === 1 ? '' : 's'} · reinicia el contenedor para aplicar`;
     ok.classList.add('show');
-    setTimeout(() => ok.classList.remove('show'), 5000);
+    setTimeout(() => ok.classList.remove('show'), 8000);
+    // Releer del disco: deja el baseline alineado con lo escrito y refresca los
+    // badges "def" de las claves que acaban de materializarse en el YAML.
+    loadConfigForm();
   } catch (e) {
     err.textContent = e.message;
     err.style.display = 'inline';
   }
+}
+
+function _isNullable(section, key) {
+  for (const g of CONFIG_SCHEMA) {
+    for (const b of g.blocks) {
+      if (b.section !== section) continue;
+      const f = b.fields.find(x => x.key === key);
+      if (f) return !!f.nullable;
+    }
+  }
+  return false;
 }
 
 // ══ Helpers ════════════════════════════════════════
