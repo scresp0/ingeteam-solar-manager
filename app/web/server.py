@@ -505,6 +505,8 @@ def create_app(cfg: AppConfig) -> FastAPI:
             "automation": "app.diag_automation",
             "cycle":      "app.run_cycle",
             "logger_reader": "app.test_logger_reader",
+            "storage":    "app.test_storage",
+            "notifier":   "app.test_notifier",
             "charge_current": "app.test_charge_current",
             "charge_current_scenarios": "app.test_charge_current_scenarios",
             "simulate_current": "app.simulate_charge_current",

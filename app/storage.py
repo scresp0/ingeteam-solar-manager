@@ -506,7 +506,6 @@ def _forecast_real_pairs(cfg: InfluxDBConfig, fetch_days: int) -> list[tuple[flo
     maneje (devolviendo fallback).
     """
     from datetime import timedelta
-    from influxdb_client import InfluxDBClient
 
     q_ciclo = f"""
 from(bucket: "{cfg.bucket}")
@@ -523,10 +522,12 @@ from(bucket: "{cfg.bucket}")
   |> filter(fn: (r) => r._value > 0.5)
 """
 
-    with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
-        api = client.query_api()
-        ciclo_tables = api.query(q_ciclo, org=cfg.org)
-        stats_tables = api.query(q_stats, org=cfg.org)
+    # Vía `_query` como el resto de lecturas: esta función abría su propio cliente
+    # y reimplementaba lo que `_query` encapsula. Cuesta una conexión más (corre
+    # una o dos veces al día) y a cambio el JOIN queda cubierto por los tests, que
+    # interceptan `_query` como único punto de entrada a InfluxDB.
+    ciclo_tables = _query(cfg, q_ciclo)
+    stats_tables = _query(cfg, q_stats)
 
     # date -> solar_kwh (timestamp de stats_diarias = medianoche UTC del día)
     solar_by_date: dict = {}

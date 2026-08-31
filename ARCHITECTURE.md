@@ -1448,7 +1448,7 @@ tests cuando la red de seguridad real eran seis. v1.84 los separa por prefijo:
 | `diag_*` | Necesita inversor o internet; imprime, no afirma | El equipo no responde |
 | `run_cycle` | Camino de producción (`POST /api/cycle`) | Depende de qué falle |
 
-`make test` ejecuta los seis deterministas en un solo contenedor (`--no-deps`: ninguno
+`make test` ejecuta los ocho deterministas en un solo contenedor (`--no-deps`: ninguno
 necesita InfluxDB) y devuelve código de salida agregado. No hay CI.
 
 **Qué está cubierto:**
@@ -1461,20 +1461,30 @@ necesita InfluxDB) y devuelve código de salida agregado. No hay CI.
 | `test_logger_reader` | 30 | `house_power_w`, `_calculate_stats`, caché de consumo |
 | `test_charge_current_scenarios` | 22 | Informe narrado: excedente franja a franja, puerta de temperatura, fallback lineal, valle y BALANCE |
 | `test_config_web` | 15 | Modelo ↔ `_EDITABLE_FIELDS` ↔ `CONFIG_SCHEMA`, casteos |
+| `test_storage` | 59 | Los cuatro dinámicos, el JOIN `ciclo_carga`↔`stats_diarias`, el perfil de consumo por franja y los puntos que se escriben |
+| `test_notifier` | 54 | El email: parseo de las líneas de decisión y de configuración, tarjetas, tabla ANTES/DESPUÉS, HTML y texto plano |
+
+**Cómo se prueban `storage` y `notifier` sin sus dependencias** (v1.86):
+
+- Todas las lecturas de InfluxDB pasan por `storage._query` y todas las escrituras por
+  `storage._write_points`. Sustituyéndolos por dobles que devuelven tablas sintéticas, el
+  JOIN y los cuatro dinámicos se prueban sin base de datos. `_forecast_real_pairs` abría
+  su propio cliente en vez de usar `_query`; se unificó en v1.86 (una conexión más en una
+  función que corre una vez al día, a cambio de poder cubrir el JOIN).
+- El log que consume `notifier` **no se escribe a mano**: se genera llamando a
+  `decision.charge_oneliner`/`discharge_oneliner` y reproduciendo los f-strings de
+  `main.py`. Si alguien cambia un prefijo, el test falla. Verificado por mutación:
+  cambiar `[CARGA] SÍ` por `[CARGA] SI` —solo la tilde— deja el email sin la tarjeta de
+  carga, y el test lo detecta.
 
 **Qué NO está cubierto** — ningún test importa estos módulos:
 
-- **`storage.py`**: los cuatro parámetros dinámicos y el JOIN `forecast_date =
-  ciclo_UTC.date()+1`, que alimentan `decide_charge`. Es el hueco más caro.
-- **`notifier.py`**: el email se monta parseando las líneas `[CARGA]`/`[DESCARGA]`/
-  `[ANTES]`/`[DESPUÉS]` del log. Cambiar un prefijo en `decision.py` lo rompe en silencio.
 - **`scheduler.py`**: incluido `_parse_hhmm` y el fail-safe de v1.82.
 - **`backup.py`** y la parte pura de `automation.py` (perfiles de etiquetas por firmware),
   que sería testeable sin inversor.
-
-La incoherencia **I-5** (el `NameError` del timeout de Solcast) ilustra el patrón: un test
-unitario trivial la habría cazado, pero `diag_solcast` llama a la API real y solo recorre
-el camino feliz.
+- **`solcast.py`**: la incoherencia **I-5** (el `NameError` del timeout) ilustra el
+  patrón — un test unitario trivial la habría cazado, pero `diag_solcast` llama a la API
+  real y solo recorre el camino feliz.
 
 **Dos ficheros reescritos en v1.85:**
 

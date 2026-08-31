@@ -3,7 +3,7 @@
 # Tests deterministas: no tocan el inversor, ni Solcast, ni InfluxDB, así que un
 # fallo aquí SIEMPRE es una regresión del código. Los módulos `diag_*` quedan
 # fuera a propósito: necesitan hardware o internet y no afirman nada.
-TESTS := config config_web decision charge_current charge_current_scenarios logger_reader
+TESTS := config config_web decision charge_current charge_current_scenarios logger_reader storage notifier
 
 up:
 	HOST_HOSTNAME=$$(hostname) docker compose up -d
