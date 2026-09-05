@@ -327,6 +327,35 @@ def create_app(cfg: AppConfig) -> FastAPI:
         if key and x_api_key != key:
             raise HTTPException(status_code=403, detail="API key inválida o ausente")
 
+    def _hot_reload_config() -> dict:
+        """Relee config.yaml y lo aplica al proceso en marcha.
+
+        Tres pasos: volcar el fichero sobre el AppConfig compartido (in-place, para
+        que lo vean el closure de la web, los jobs del scheduler y los hilos), ajustar
+        el nivel de log y reprogramar los jobs con los horarios nuevos.
+
+        El YAML ya está escrito cuando se llama, así que un fallo aquí no invalida el
+        guardado: se devuelve `warning` y queda el reinicio como salida.
+        """
+        from app.config import reload_config
+        from app.scheduler import reschedule
+
+        result = {"reloaded": False, "rescheduled": False,
+                  "restart_required": [], "warning": None}
+        try:
+            result["restart_required"] = reload_config(cfg)
+            result["reloaded"] = True
+            logging.getLogger().setLevel(
+                getattr(logging, cfg.system.log_level, logging.INFO))
+            result["rescheduled"] = reschedule(cfg)
+        except Exception as e:
+            logger.exception("Error recargando la configuración en caliente")
+            result["warning"] = (
+                f"config.yaml se escribió, pero no se pudo aplicar en caliente ({e}). "
+                "Reinicia el contenedor (make restart)."
+            )
+        return result
+
     @app.get("/", response_class=HTMLResponse)
     async def dashboard():
         html = Path(__file__).parent / "templates" / "index.html"
@@ -509,6 +538,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
             "notifier":   "app.test_notifier",
             "charge_current": "app.test_charge_current",
             "charge_current_scenarios": "app.test_charge_current_scenarios",
+            "scheduler":  "app.test_scheduler",
             "simulate_current": "app.simulate_charge_current",
         }
         if test_name not in allowed:
@@ -1057,11 +1087,29 @@ def create_app(cfg: AppConfig) -> FastAPI:
                 "ok": False, "errors": [f"No se pudo escribir {path}: {e}"]})
 
         logger.info(f"config.yaml actualizado vía web: {applied} campos modificados")
+
+        # Aplicar sin reiniciar: releer el fichero recién escrito y volcarlo sobre
+        # la config viva. Se relee del disco en vez de reutilizar el dict `data`
+        # para que los overrides de .env vuelvan a tener la última palabra, igual
+        # que en el arranque.
+        reload_info = _hot_reload_config()
+        if reload_info["warning"]:
+            note = reload_info["warning"]
+        elif reload_info["restart_required"]:
+            note = ("Cambios aplicados en caliente. Requieren reinicio: "
+                    + ", ".join(reload_info["restart_required"]))
+        else:
+            note = "Cambios aplicados en caliente — no hace falta reiniciar."
+        logger.info(f"Configuración recargada: {note}")
+
         return {
             "ok": True,
             "applied": applied,
             "path": str(path),
-            "note": "Cambios escritos. Reinicia el contenedor para que surtan efecto.",
+            "reloaded": reload_info["reloaded"],
+            "rescheduled": reload_info["rescheduled"],
+            "restart_required": reload_info["restart_required"],
+            "note": note,
         }
 
     @app.get("/api/db/export", dependencies=[Depends(_require_api_key)])

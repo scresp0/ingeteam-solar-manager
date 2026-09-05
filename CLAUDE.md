@@ -47,7 +47,7 @@ en función de la previsión solar del día siguiente y el SOC actual.
 app/
 ├── version.py       # fuente de verdad del número de versión — editar solo aquí
 ├── main.py          # orquestación del ciclo nocturno (run + run_recheck)
-├── scheduler.py     # APScheduler — lanza run a las 23:55 y run_recheck en cada schedule_recheck_at (19:00, 03:00)
+├── scheduler.py     # APScheduler — lanza run a las 23:55 y run_recheck en cada schedule_recheck_at (19:00, 03:00); reschedule() reprograma tras recargar config
 ├── decision.py      # algoritmo decide_charge + decide_discharge
 ├── solcast.py       # cliente Solcast API
 ├── inverter.py      # lector MODBUS TCP
@@ -380,7 +380,7 @@ Ajusta la "Corriente Máxima de Carga" de la batería al **mínimo necesario** p
 | `GET /api/logs` | Últimas N líneas del fichero de log |
 | `GET /api/config` | Devuelve el contenido editable de `config.yaml` + lista `env_overrides` con (sección, key, env_var) para los campos sobreescritos por `.env`. No expone secretos. |
 | `POST /api/cycle` | Lanza ciclo completo manual (dry_run o real) |
-| `POST /api/config` | Aplica `{values: {<seccion>: {<key>: <valor>}}}` a `config.yaml` preservando comentarios (ruamel.yaml round-trip). Valida el YAML completo contra el modelo Pydantic `AppConfig` antes de escribir. Requiere `web_api_key`. |
+| `POST /api/config` | Aplica `{values: {<seccion>: {<key>: <valor>}}}` a `config.yaml` preservando comentarios (ruamel.yaml round-trip). Valida el YAML completo contra el modelo Pydantic `AppConfig` antes de escribir. Después lo **recarga en caliente** sobre la config viva y reprograma los jobs → `reloaded`/`rescheduled`/`restart_required`. Requiere `web_api_key`. |
 | `GET /api/db/export` | Backup consistente de InfluxDB (`influx backup` online sobre el bucket configurado) empaquetado en `.tar.gz` descargable. Requiere `web_api_key`. El token se pasa por env var `INFLUX_TOKEN`, no en argv. |
 | `POST /api/backup/run` | Lanza bajo demanda la copia de seguridad externa por SCP (DB + logs + config → servidor remoto, con rotación). Requiere `web_api_key`. Ver sección "Copia de seguridad externa". |
 | `POST /api/run/{test}` | Lanza en background un test determinista (`app.test_*`) o un diagnóstico (`app.diag_*`) |
@@ -440,7 +440,12 @@ Además del SOC ring y estados del inversor, muestra dos filas de parámetros de
 - **Validación**: el backend serializa a JSON, normaliza `tariff.holidays` a strings y construye `AppConfig(**plain)`; si falla, 400 sin escribir. Es la autoritativa. `_validateConfig()` duplica en cliente las invariantes ya modeladas (`window_days ≥ min_days_in_window`, `floor_a ≤ max_a`, `balance_soc_pct < max_soc_pct`, obligatorios del backup, formato de horas) solo para señalar el campo concreto y abrir su grupo, en vez de soltar un `ValidationError` crudo al pie.
 - **Persistencia**: `ruamel.yaml` round-trip → preserva comentarios, orden y formato; solo toca las claves recibidas. Requiere `./config.yaml:/app/config.yaml` SIN `:ro` en `docker-compose.yml` (v1.47).
 - **Secretos**: api_keys, passwords, tokens y `INFLUXDB_TOKEN` NO están en `_EDITABLE_FIELDS` — solo en `.env`. Los campos de host (IP inversor, host SMTP) tampoco. `test_config_web` comprueba además que ninguna clave con `password`/`token`/`api_key`/`secret`/`username` se cuele en la lista blanca.
-- **Aplicar cambios**: requiere reinicio del contenedor (`make restart`). El YAML editado queda persistido en el host porque es bind mount.
+- **Aplicar cambios (v1.87: en caliente)**: `POST /api/config`, tras escribir el YAML, llama a `_hot_reload_config()` → `config.reload_config(cfg)` (relee el fichero con `load_config`, así los overrides de `.env` mandan igual que en el arranque, y lo vuelca sobre el `AppConfig` VIVO con `apply_in_place`) + `logging.getLogger().setLevel(...)` + `scheduler.reschedule(cfg)`. La respuesta trae `reloaded`, `rescheduled` y `restart_required`, y la web lo dice en el mensaje de guardado.
+  - **Mutación in-place, no sustitución**: hay UN solo `AppConfig` repartido por referencia (closure de `create_app`, `args=[cfg]` de cada job, hilos de arranque, `CycleEmailNotifier.cfg` = el `EmailConfig`). Devolver un objeto nuevo dejaría a todos leyendo el viejo; `apply_in_place` recorre `model_fields` recursivamente y conserva la identidad de cada submodelo.
+  - **Siguen exigiendo `make restart`** (`config.HOT_RELOAD_EXCLUDED`): `system.web_port`, `system.web_enabled`, `system.log_file`, `system.timezone` — el hilo de uvicorn, el `FileHandler` y el `BlockingScheduler` ya están construidos. Se copian igualmente al objeto (la config en memoria no debe diverger del fichero) y se devuelven en `restart_required`.
+  - **`reschedule` borra y vuelve a registrar** todos los jobs (`scheduler._register_jobs`, extraído de `start_scheduler` en v1.87): así desaparecen los que dejan de aplicar (una hora de `schedule_recheck_at` que se quita, el backup deshabilitado). El job `charge_current` vuelve a entrar con su `next_run_time` ≈ 20s → un cambio de `floor_a`/`margin` se nota enseguida. La tz se conserva de la del arranque (`_TIMEZONE`).
+  - **Fail-safe**: `reload_config` construye el `AppConfig` completo antes de tocar nada (YAML inválido → excepción, config viva intacta). El fichero ya está escrito cuando se llama, así que un fallo de recarga no invalida el guardado: se devuelve `warning` y queda el reinicio. `rescheduled: false` no es error — significa que ese proceso no tiene scheduler (uvicorn suelto en dev, tests).
+  El YAML editado queda persistido en el host porque es bind mount.
 - **Exportar BD (v1.48)**: botón "Exportar BD" → `exportDb()` hace `GET /api/db/export` con cabecera `X-API-Key`, recibe el `.tar.gz` como blob y dispara la descarga en el navegador (nombre `influxdb-<bucket>-<timestamp>.tar.gz`). Solo export; el import/restore se descartó por ser destructivo (reemplaza el bucket) — se hace a mano si hace falta.
 
 ### Diseño responsive
@@ -460,7 +465,7 @@ El campo `night_consumption_kwh` en `stats_diarias` se añadió en v1.25. Regist
 
 Dos familias con propósitos distintos; el prefijo lo dice:
 
-- **`test_*`** — deterministas: no tocan inversor, Solcast ni InfluxDB. **Un fallo es siempre una regresión del código.** Son `decision`, `charge_current`, `charge_current_scenarios`, `logger_reader`, `config`, `config_web`, `storage` y `notifier`.
+- **`test_*`** — deterministas: no tocan inversor, Solcast ni InfluxDB. **Un fallo es siempre una regresión del código.** Son `decision`, `charge_current`, `charge_current_scenarios`, `logger_reader`, `config`, `config_web`, `storage`, `notifier` y `scheduler`.
 - **`diag_*`** — necesitan hardware o internet y solo imprimen lo que encuentran (`diag_inverter`, `diag_solcast`, `diag_automation`, más el ya existente `diag_forecast_bias`). No afirman nada: un fallo suyo significa que el equipo no responde. **No los uses como red de seguridad.**
 - **`run_cycle.py`** (antes `test_main.py`) — no es un test: `POST /api/cycle` lo lanza como subproceso, así que es camino de producción.
 
@@ -468,7 +473,7 @@ Dos familias con propósitos distintos; el prefijo lo dice:
 
 Las claves de `POST /api/run/{test}` se mantienen estables aunque el módulo se renombre (`inverter` → `app.diag_inverter`). La única que cambió es `main` → `cycle`.
 
-**Huecos conocidos** (ver ARCHITECTURE §9.7): `scheduler.py` (incluido `_parse_hhmm`), `backup.py`, la parte pura de `automation.py` y `solcast.py` no tienen ningún test.
+**Huecos conocidos** (ver ARCHITECTURE §9.7): `backup.py`, la parte pura de `automation.py` y `solcast.py` no tienen ningún test. De `scheduler.py` quedan fuera `start_scheduler` (arranca un `BlockingScheduler` real) y los wrappers `_run_*_job`; el resto lo cubre `test_scheduler` desde v1.87 con un doble que solo apunta las llamadas a `add_job`.
 
 **El email depende del FORMATO del log.** `notifier.py` monta las tarjetas parseando las líneas `[CARGA]`/`[DESCARGA]` de `decision.py` y la tabla ANTES/DESPUÉS de las de `main.py`, con expresiones regulares. No es una interfaz declarada: cambiar un prefijo, una tilde o un separador deja el email mudo sin que falle nada. `test_notifier` genera el log con los generadores reales para que ese cambio rompa el test — comprobado por mutación: `[CARGA] SÍ` → `[CARGA] SI` basta para perder la tarjeta.
 
