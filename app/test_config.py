@@ -28,7 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from app.config import (
     ChargeCurrentConfig, ChargingConfig, BackupConfig, InverterConfig,
-    find_deprecated_config_keys, get_host_hostname, load_config,
+    find_deprecated_config_keys, get_host_hostname, load_config, reload_config,
 )
 
 passed = failed = 0
@@ -382,6 +382,51 @@ def test_config_real():
         print(f"  ⚠  claves obsoletas en el YAML real: {obsoletas} (migrables con make migrate-config)")
 
 
+def test_recarga_en_caliente(tmp):
+    """reload_config vuelca el fichero sobre el AppConfig vivo, sin sustituirlo.
+
+    La app reparte UN solo AppConfig por referencia (web, jobs del scheduler,
+    hilos). Si la recarga devolviera un objeto nuevo, todos ellos seguirían
+    leyendo el viejo, así que lo que hay que fijar aquí es la identidad: el mismo
+    objeto y los mismos submodelos, con los valores nuevos dentro.
+    """
+    print("=== Recarga en caliente ===")
+    path = escribe_yaml(tmp, nombre="config-reload.yaml")
+    cfg = load_config(path)
+    raiz, charging, email = cfg, cfg.charging, cfg.system.email
+
+    modificado = (YAML_BASE
+                  .replace("min_soc_pct: 35", "min_soc_pct: 42")
+                  .replace('schedule_at: "23:55"', 'schedule_at: "23:30"')
+                  .replace("enabled: false", "enabled: true")
+                  + "  web_port: 9999\n")
+    path.write_text(modificado, encoding="utf-8")
+    pendientes = reload_config(cfg, path)
+
+    check("valor recargado del disco", cfg.charging.min_soc_pct == 42, cfg.charging.min_soc_pct)
+    check("horario recargado", cfg.tariff.schedule_at == "23:30", cfg.tariff.schedule_at)
+    check("submodelo anidado recargado", cfg.system.email.enabled is True)
+    check("el AppConfig es el mismo objeto", cfg is raiz)
+    check("los submodelos son los mismos objetos",
+          cfg.charging is charging and cfg.system.email is email)
+    check("web_port se marca como pendiente de reinicio",
+          pendientes == ["system.web_port"], pendientes)
+    check("web_port se copia igualmente a la config en memoria",
+          cfg.system.web_port == 9999, cfg.system.web_port)
+
+    # Un YAML inválido no debe dejar la config a medias: reload_config valida
+    # ANTES de tocar nada (load_config construye el AppConfig completo primero).
+    path.write_text(YAML_BASE.replace("min_soc_pct: 35", "min_soc_pct: 999"),
+                    encoding="utf-8")
+    try:
+        reload_config(cfg, path)
+        check("un YAML inválido aborta la recarga", False, "no lanzó")
+    except Exception:
+        check("un YAML inválido aborta la recarga", True)
+    check("la config viva sigue intacta tras el fallo",
+          cfg.charging.min_soc_pct == 42, cfg.charging.min_soc_pct)
+
+
 def main():
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
@@ -394,6 +439,7 @@ def main():
             test_env_overrides(tmp)
             test_claves_obsoletas(tmp)
             test_balance_cruzado(tmp)
+            test_recarga_en_caliente(tmp)
         test_validadores()
         test_defaults_calibracion()
         test_lista_env_actualizada()

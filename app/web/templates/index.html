@@ -702,6 +702,10 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
               <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><rect x="1.6" y="3.4" width="12.8" height="9.2" rx="1.6" stroke="currentColor" stroke-width="1.3"/><path d="M2.2 4.4L8 8.8l5.8-4.4" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
               Email del ciclo
             </button>
+            <button class="btn" onclick="runTest('scheduler')">
+              <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.3" stroke="currentColor" stroke-width="1.3"/><path d="M8 4.3V8l2.6 1.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              Programación de jobs
+            </button>
             <button class="btn" onclick="runTest('config')">
               <svg width="13" height="13" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="2" stroke="currentColor" stroke-width="1.4"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
               Configuración (modelo)
@@ -805,7 +809,7 @@ details.log-section[open] > summary.log-section-hd::before { transform: rotate(9
     <div class="card">
       <div class="card-head">
         <span class="card-title">Parámetros de configuración</span>
-        <span style="font-size:11px;color:var(--muted2)">Edita <code>config.yaml</code> preservando comentarios. Solo se escriben los campos que cambies. Reinicia el contenedor para que surtan efecto.</span>
+        <span style="font-size:11px;color:var(--muted2)">Edita <code>config.yaml</code> preservando comentarios. Solo se escriben los campos que cambies. Se aplican al guardar, sin reiniciar (salvo puerto web, fichero de log y zona horaria).</span>
       </div>
       <div class="card-body">
         <div id="cfg-loading" style="color:var(--muted);font-size:12px">Cargando configuración…</div>
@@ -2382,7 +2386,16 @@ async function saveConfig() {
       err.style.display = 'inline';
       return;
     }
-    ok.textContent = `Guardado · ${d.applied} campo${d.applied === 1 ? '' : 's'} · reinicia el contenedor para aplicar`;
+    // El backend aplica los cambios en caliente; solo unos pocos campos
+    // (puerto web, fichero de log, zona horaria) siguen necesitando reinicio.
+    let estado = 'aplicado en caliente';
+    if (!d.reloaded) {
+      estado = 'reinicia el contenedor para aplicar';
+      if (d.note) { err.textContent = d.note; err.style.display = 'inline'; }
+    } else if (d.restart_required && d.restart_required.length) {
+      estado = `aplicado · requieren reinicio: ${d.restart_required.join(', ')}`;
+    }
+    ok.textContent = `Guardado · ${d.applied} campo${d.applied === 1 ? '' : 's'} · ${estado}`;
     ok.classList.add('show');
     setTimeout(() => ok.classList.remove('show'), 8000);
     // Releer del disco: deja el baseline alineado con lo escrito y refresca los

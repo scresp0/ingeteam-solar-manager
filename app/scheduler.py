@@ -48,14 +48,20 @@ def _notify_config_error(cfg: AppConfig, message: str) -> None:
     notifier.send(success=False)
 
 
-def start_scheduler(cfg: AppConfig) -> None:
-    """
-    Arranca el scheduler bloqueante.
-    El proceso vive indefinidamente hasta recibir SIGTERM o SIGINT.
-    """
-    timezone = cfg.system.timezone
-    scheduler = BlockingScheduler(timezone=timezone)
+# Scheduler vivo y zona horaria con la que se construyó. Los guarda `start_scheduler`
+# para que `reschedule` pueda volver a programar los jobs cuando la configuración se
+# recarga en caliente (POST /api/config) sin reiniciar el contenedor.
+_SCHEDULER: BlockingScheduler | None = None
+_TIMEZONE: str | None = None
 
+
+def _register_jobs(scheduler: BlockingScheduler, cfg: AppConfig, timezone: str) -> None:
+    """Registra todos los jobs a partir de `cfg`.
+
+    Se llama al arrancar y de nuevo en cada recarga en caliente, así que no debe
+    tener efectos secundarios más allá de programar (nada de RUN_ON_START ni de
+    señales, que son cosa del arranque).
+    """
     # Ciclo nocturno. Un schedule_at inválido no aborta el arranque (a
     # diferencia de schedule_recheck_at, que ya lo valida Pydantic al cargar
     # la config): se avisa por log+email y se sigue sin programar este job,
@@ -66,8 +72,8 @@ def start_scheduler(cfg: AppConfig) -> None:
         _notify_config_error(
             cfg,
             f"tariff.schedule_at={schedule_at!r} no es un horario HH:MM válido — "
-            "el ciclo nocturno de carga NO se ha programado. Corrige config.yaml "
-            "y reinicia el contenedor (make restart)."
+            "el ciclo nocturno de carga NO se ha programado. Corrígelo desde la "
+            "pestaña Configuración (se reprograma solo) o en config.yaml + make restart."
         )
     else:
         hour, minute = parsed_schedule_at
@@ -173,6 +179,19 @@ def start_scheduler(cfg: AppConfig) -> None:
                 f"→ {cfg.backup.user}@{cfg.backup.host}:{cfg.backup.remote_dir}"
             )
 
+
+def start_scheduler(cfg: AppConfig) -> None:
+    """
+    Arranca el scheduler bloqueante.
+    El proceso vive indefinidamente hasta recibir SIGTERM o SIGINT.
+    """
+    global _SCHEDULER, _TIMEZONE
+    timezone = cfg.system.timezone
+    scheduler = BlockingScheduler(timezone=timezone)
+    _SCHEDULER, _TIMEZONE = scheduler, timezone
+
+    _register_jobs(scheduler, cfg, timezone)
+
     # Ejecutar inmediatamente si se pide (útil para pruebas)
     if os.environ.get("RUN_ON_START", "").lower() in ("true", "1", "yes"):
         logger.info("RUN_ON_START activo — ejecutando ciclo ahora")
@@ -191,6 +210,25 @@ def start_scheduler(cfg: AppConfig) -> None:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):
         logger.info("Scheduler detenido")
+
+
+def reschedule(cfg: AppConfig) -> bool:
+    """Vuelve a programar todos los jobs con la configuración ya recargada.
+
+    Borra los jobs existentes y los registra de nuevo: así desaparecen los que
+    dejan de aplicar (una hora de recheck que se quita, el backup que se
+    deshabilita) además de actualizarse los horarios de los que siguen.
+
+    Devuelve False si no hay scheduler vivo en este proceso (uvicorn arrancado
+    suelto en desarrollo, tests): no es un error, solo significa que no hay nada
+    que reprogramar.
+    """
+    if _SCHEDULER is None:
+        return False
+    _SCHEDULER.remove_all_jobs()
+    _register_jobs(_SCHEDULER, cfg, _TIMEZONE or cfg.system.timezone)
+    logger.info("Jobs reprogramados tras recargar la configuración")
+    return True
 
 
 def _run_job(cfg: AppConfig) -> None:

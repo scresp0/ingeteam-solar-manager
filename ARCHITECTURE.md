@@ -56,10 +56,10 @@ un `None` que fuerce la ruta segura, nunca un valor por defecto plausible. Ver
 
 | Fichero | Responsabilidad |
 |---|---|
-| `version.py` | Única línea: `VERSION = "1.76"`. Fuente de verdad del número de versión; se muestra en el log de arranque, en el HTML del dashboard y en `GET /api/version`. |
-| `config.py` | Modelos Pydantic de toda la configuración, carga de `config.yaml`, aplicación de overrides por variables de entorno y validadores cruzados. Incluye la detección de claves renombradas (`find_deprecated_config_keys`). |
+| `version.py` | Única línea: `VERSION = "1.87"`. Fuente de verdad del número de versión; se muestra en el log de arranque, en el HTML del dashboard y en `GET /api/version`. |
+| `config.py` | Modelos Pydantic de toda la configuración, carga de `config.yaml`, aplicación de overrides por variables de entorno y validadores cruzados. Incluye la detección de claves renombradas (`find_deprecated_config_keys`) y la recarga en caliente (`reload_config`/`apply_in_place`, §6.11). |
 | `main.py` | Orquestación. Contiene `run` (ciclo nocturno), `run_recheck` (re-evaluación), `backfill_solar_history`, `run_charge_current_controller` (control de corriente) y `main()` (arranque del proceso). |
-| `scheduler.py` | APScheduler `BlockingScheduler`: registra los jobs (ciclo nocturno, re-evaluaciones, backfill 00:30, control de corriente por intervalo, backup SCP) y maneja SIGTERM/SIGINT. |
+| `scheduler.py` | APScheduler `BlockingScheduler`: registra los jobs (ciclo nocturno, re-evaluaciones, backfill 00:30, control de corriente por intervalo, backup SCP) y maneja SIGTERM/SIGINT. `reschedule()` vuelve a registrarlos cuando la configuración se recarga en caliente. |
 | `decision.py` | Algoritmo puro, sin E/S: `decide_charge`, `decide_discharge`, `is_valley_day`, `reference_date` y los formateadores de log (`*_oneliner`, `*_summary`). |
 | `solcast.py` | Cliente HTTP de la API de Solcast + caché JSON en disco. Agrega intervalos de 30 min a kWh/día (p10/p50/p90) y expone los intervalos de día 1 y de hoy. |
 | `inverter.py` | Lectura MODBUS TCP del estado del inversor (SOC, SOH, tensión, potencia, temperatura, estados, SOC mínimo, corriente máxima de carga). Serializado con un lock global. |
@@ -926,6 +926,39 @@ campos que están siendo sobrescritos por el entorno, para que la web los marque
 La ruta del fichero se resuelve así: argumento explícito → `CONFIG_PATH` →
 `/app/config.yaml` → `config.yaml` → `FileNotFoundError`.
 
+### 6.11 Recarga en caliente (v1.87)
+
+Un guardado desde la pestaña Configuración surte efecto en el proceso en marcha, sin
+`make restart`. `POST /api/config`, tras escribir el YAML, llama a `_hot_reload_config()`
+(`web/server.py`), que hace tres cosas en orden:
+
+1. **`config.reload_config(cfg)`** — relee el fichero con `load_config()` (así los
+   overrides de `.env` vuelven a tener la última palabra, igual que en el arranque) y
+   vuelca los valores sobre el `AppConfig` vivo con `apply_in_place`.
+2. **Nivel de log** — `logging.getLogger().setLevel(...)` con el `log_level` nuevo.
+3. **`scheduler.reschedule(cfg)`** — borra los jobs y los vuelve a registrar con los
+   horarios nuevos.
+
+**Por qué se muta en vez de sustituir.** La app crea **un solo** `AppConfig` en `main()`
+y lo reparte por referencia: el closure de `create_app`, los `args=[cfg]` de cada job del
+scheduler, los hilos de arranque, y algún submodelo suelto (`CycleEmailNotifier.cfg` es
+el `EmailConfig`). Devolver un objeto nuevo dejaría a todos esos titulares leyendo el
+viejo. `apply_in_place` recorre `model_fields` recursivamente y conserva la identidad de
+cada submodelo, así que todos ven los valores nuevos sin ir a buscarlos.
+
+**Qué no se aplica en caliente** (`HOT_RELOAD_EXCLUDED`): `system.web_port`,
+`system.web_enabled` (uvicorn ya está escuchando en su hilo), `system.log_file` (el
+`FileHandler` tiene el fichero abierto) y `system.timezone` (el `BlockingScheduler` se
+construyó con ella). Se copian igualmente al objeto —la config en memoria no debe
+diverger del fichero— pero el recurso ya construido no cambia; la respuesta los devuelve
+en `restart_required` y la web los nombra en el mensaje de guardado.
+
+**Fail-safe.** `reload_config` construye el `AppConfig` completo antes de tocar nada: un
+YAML inválido propaga la excepción sin dejar la config a medias. Y como el fichero ya
+está escrito cuando se llama, un fallo aquí no invalida el guardado — se devuelve
+`warning` y queda el reinicio como salida. `rescheduled: false` no es un error: significa
+que este proceso no tiene scheduler (uvicorn suelto en desarrollo, tests).
+
 ---
 
 ## 7. Integración con el inversor
@@ -1192,8 +1225,19 @@ risk factor usa `solar_kwh`, que es un campo original y acumula datos antes.
 | `charge_current` | Interval `interval_min` | 120 s | `max_instances=1`, `coalesce=True`, y **`next_run_time` ≈ 20 s tras el arranque**, porque `IntervalTrigger` no dispara al inicio: sin eso, un `make restart` dejaría el inversor con el tope anterior hasta `interval_min` minutos. |
 | `external_backup` | Cron a `backup.schedule_at` | 3600 s | Solo si `backup.enabled`. |
 
+El registro vive en `_register_jobs(scheduler, cfg, timezone)`, separado de
+`start_scheduler` para poder repetirlo: `reschedule(cfg)` hace `remove_all_jobs()` +
+`_register_jobs` sobre el scheduler vivo (guardado en `_SCHEDULER` al arrancar), que es
+como una recarga de configuración (§6.11) cambia horarios sin reiniciar. Borrar y
+registrar de nuevo, en vez de actualizar job a job, es lo que hace que desaparezcan los
+que dejan de aplicar: una hora de `schedule_recheck_at` que se quita, el backup que se
+deshabilita. Efecto secundario buscado: el job `charge_current` vuelve a entrar con su
+`next_run_time` ≈ 20 s, así que un cambio de `floor_a`/`margin` se nota enseguida.
+La zona horaria se conserva de la del arranque (`_TIMEZONE`): cambiarla exige reinicio.
+
 Además, `RUN_ON_START=true` en el entorno ejecuta un ciclo completo inmediatamente al
-arrancar. Se manejan SIGTERM y SIGINT para un cierre limpio.
+arrancar — solo en el arranque, nunca en una reprogramación. Se manejan SIGTERM y SIGINT
+para un cierre limpio.
 
 Cada wrapper de job captura `Exception` y la registra con `logger.exception`, de modo
 que un fallo no mata el scheduler.
@@ -1246,7 +1290,7 @@ measurement se queda corto.
 | `GET /api/charge_current_today` | — | Cambios de corriente registrados hoy. |
 | `GET /api/logs` | — | Últimas N líneas del fichero de log. |
 | `GET /api/config` | — | Config editable + `env_overrides` + `legacy_keys` + `default_keys` (claves ausentes del YAML, devueltas con el default del modelo). No expone secretos. |
-| `POST /api/config` | ✔ | Aplica cambios con `ruamel.yaml` (round-trip: preserva comentarios y orden), valida el YAML completo contra `AppConfig` antes de escribir; si falla, 400 sin tocar el fichero. |
+| `POST /api/config` | ✔ | Aplica cambios con `ruamel.yaml` (round-trip: preserva comentarios y orden), valida el YAML completo contra `AppConfig` antes de escribir; si falla, 400 sin tocar el fichero. Tras escribir, recarga la config en el proceso vivo y reprograma los jobs (§6.11): devuelve `reloaded`, `rescheduled` y `restart_required`. |
 | `POST /api/cycle` | ✔ | Lanza `python -m app.run_cycle` como subproceso (`--write` si no es dry_run) y devuelve un `job_id`. |
 | `POST /api/run/{test}` | ✔ | Lanza uno de los 11 módulos permitidos (`app.test_*`, `app.diag_*`, `app.run_cycle`, `app.simulate_charge_current`). Las claves de la API son estables aunque el módulo detrás se renombre; `main` pasó a `cycle` en v1.84. |
 | `GET /api/stream/{job_id}` | — | SSE con la salida del job. |
@@ -1448,7 +1492,7 @@ tests cuando la red de seguridad real eran seis. v1.84 los separa por prefijo:
 | `diag_*` | Necesita inversor o internet; imprime, no afirma | El equipo no responde |
 | `run_cycle` | Camino de producción (`POST /api/cycle`) | Depende de qué falle |
 
-`make test` ejecuta los ocho deterministas en un solo contenedor (`--no-deps`: ninguno
+`make test` ejecuta los nueve deterministas en un solo contenedor (`--no-deps`: ninguno
 necesita InfluxDB) y devuelve código de salida agregado. No hay CI.
 
 **Qué está cubierto:**
@@ -1463,6 +1507,7 @@ necesita InfluxDB) y devuelve código de salida agregado. No hay CI.
 | `test_config_web` | 15 | Modelo ↔ `_EDITABLE_FIELDS` ↔ `CONFIG_SCHEMA`, casteos |
 | `test_storage` | 59 | Los cuatro dinámicos, el JOIN `ciclo_carga`↔`stats_diarias`, el perfil de consumo por franja y los puntos que se escriben |
 | `test_notifier` | 54 | El email: parseo de las líneas de decisión y de configuración, tarjetas, tabla ANTES/DESPUÉS, HTML y texto plano |
+| `test_scheduler` | 25 | `_parse_hhmm`, qué jobs registra `_register_jobs` para cada config, el fail-safe del `schedule_at` inválido y la reprogramación en caliente |
 
 **Cómo se prueban `storage` y `notifier` sin sus dependencias** (v1.86):
 
@@ -1479,7 +1524,9 @@ necesita InfluxDB) y devuelve código de salida agregado. No hay CI.
 
 **Qué NO está cubierto** — ningún test importa estos módulos:
 
-- **`scheduler.py`**: incluido `_parse_hhmm` y el fail-safe de v1.82.
+- **`scheduler.py`**: cubierto desde v1.87 en lo que se puede probar sin arrancarlo
+  (`_parse_hhmm`, `_register_jobs`, `reschedule`, el fail-safe de v1.82). Siguen fuera
+  `start_scheduler` —arranca un `BlockingScheduler` real— y los wrappers `_run_*_job`.
 - **`backup.py`** y la parte pura de `automation.py` (perfiles de etiquetas por firmware),
   que sería testeable sin inversor.
 - **`solcast.py`**: la incoherencia **I-5** (el `NameError` del timeout) ilustra el

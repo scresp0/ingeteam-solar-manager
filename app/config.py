@@ -525,3 +525,57 @@ def _apply_env_overrides(data: dict) -> dict:
             else:
                 data[section][key] = value
     return data
+
+
+# ---------------------------------------------------------------------------
+# Recarga en caliente
+# ---------------------------------------------------------------------------
+
+# Campos que, aunque se relean bien, NO surten efecto sin reiniciar el proceso:
+# el puerto y el hilo de uvicorn ya están arrancados, el FileHandler del log ya
+# tiene el fichero abierto y el scheduler se construyó con su zona horaria.
+HOT_RELOAD_EXCLUDED: tuple[tuple[str, str], ...] = (
+    ("system", "web_port"),
+    ("system", "web_enabled"),
+    ("system", "log_file"),
+    ("system", "timezone"),
+)
+
+
+def apply_in_place(target: BaseModel, source: BaseModel) -> None:
+    """Vuelca los valores de `source` sobre `target` conservando la identidad
+    de `target` y la de todos sus submodelos.
+
+    La app crea UN solo AppConfig en `main()` y lo reparte por referencia (closure
+    de la web, args de cada job del scheduler, hilos de arranque); algunos objetos
+    guardan además un submodelo suelto (`CycleEmailNotifier.cfg` es el `EmailConfig`).
+    Mutar en vez de sustituir es lo que hace que todos esos titulares vean los
+    valores nuevos sin tener que ir a buscarlos uno a uno.
+    """
+    for name in type(target).model_fields:
+        current, new = getattr(target, name), getattr(source, name)
+        if (isinstance(current, BaseModel) and isinstance(new, BaseModel)
+                and type(current) is type(new)):
+            apply_in_place(current, new)
+        else:
+            setattr(target, name, new)
+
+
+def reload_config(cfg: AppConfig, config_path: str | Path | None = None) -> List[str]:
+    """Relee config.yaml (con sus overrides de entorno) y lo aplica sobre `cfg`.
+
+    Devuelve la lista de campos "seccion.clave" que han cambiado y que aun así
+    necesitan un reinicio del contenedor para surtir efecto (HOT_RELOAD_EXCLUDED).
+    Se copian igualmente al objeto para que la config en memoria no diverja del
+    fichero; lo que no cambia es el recurso ya construido a partir de ellos.
+
+    Si la lectura o la validación fallan, propaga la excepción sin tocar `cfg`.
+    """
+    new = load_config(config_path)
+    pending = [
+        f"{section}.{key}"
+        for section, key in HOT_RELOAD_EXCLUDED
+        if getattr(getattr(cfg, section), key) != getattr(getattr(new, section), key)
+    ]
+    apply_in_place(cfg, new)
+    return pending
