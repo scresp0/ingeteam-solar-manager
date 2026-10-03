@@ -1048,7 +1048,8 @@ MODBUS, se escribe por web.
 **Perfiles de etiquetas por firmware (`LabelProfile` / `FIRMWARE_PROFILES`):**
 la única etiqueta que cambia entre firmwares es la fila del SELECT "Programación
 Horaria N". Hay dos perfiles: `modo` (`"Programación Horaria N: Modo"`, firmware
-`ABH1007AD`, verificado en vivo según el comentario) y `legacy`
+`ABH1007AD` y `ABH1007AE`, verificado en vivo — AE el 2026-10-03 con escrituras reales
+y restauración en 1.2, 6.3.1 y 6.3.2) y `legacy`
 (`"...: Carga de baterías desde la Red"` / `"...: Descarga de baterías"`, histórico sin
 verificar). Las etiquetas de `SOC Grid` y de `Hora/Minuto On/Off` son estables.
 
