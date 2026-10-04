@@ -970,7 +970,7 @@ Tres canales, cada uno con su razón de ser.
 Puerto 502, función 0x04 (input registers) y 0x03 (holding registers).
 **Direccionamiento base-0**: registro `30016` → dirección `15`.
 
-Una sola llamada lee `address=0, count=28` (registros 30001–30028) y se indexan:
+Una sola llamada lee `address=0, count=72` (registros 30001–30072) y se indexan:
 
 | Registro | Índice | Campo | Escala / convención |
 |---|---|---|---|
@@ -981,6 +981,18 @@ Una sola llamada lee `address=0, count=28` (registros 30001–30028) y se indexa
 | 30022 | `regs[21]` | Battery SOH | % |
 | 30027 | `regs[26]` | Battery Status | código → tabla `BATTERY_STATUS` (0..10) |
 | 30028 | `regs[27]` | Battery Temperature | INT16, `/10` → ºC |
+| 30034 | `regs[33]` | PV 1 Power (= `Pdc1` del datalogger) | W |
+| 30037 | `regs[36]` | PV 2 Power (= `Pdc2`) | W |
+| 30038 | `regs[37]` | Inverter AC Power (= `Pac`) | INT16, W |
+| 30072 | `regs[71]` | External Meter Power (= `PacMeter`) | INT16, W; **+ importando, − exportando** |
+
+Los cuatro últimos (v1.89) alimentan los tiles Producción solar / Consumo casa / Red.
+No salen del PDF de registros (el de `docs/` es una revisión antigua con otro offset)
+sino del **mapa que publica el propio inversor**: `GET http://<inversor>/inverter/map/1`
+devuelve todos los input/holding registers del firmware en curso con su nombre, y un
+`loggermap` que declara de qué dirección MODBUS copia el datalogger cada campo — por
+eso valor y signo coinciden con los del datalogger. Es la fuente a consultar para
+cualquier registro nuevo o tras un cambio de firmware.
 
 Más dos holding registers, leídos por separado y tolerantes a fallo:
 
@@ -1283,9 +1295,9 @@ measurement se queda corto.
 |---|---|---|
 | `GET /` | — | Dashboard HTML; sustituye `{{VERSION}}` y `{{HOSTNAME}}`. |
 | `GET /api/version` | — | Versión. |
-| `GET /api/status` | — | Estado MODBUS (SOC, SOH, potencia, tensión, temperatura, estados, corriente máx.). |
+| `GET /api/status` | — | Estado MODBUS (SOC, SOH, potencia, tensión, temperatura, estados, corriente máx.) y, desde v1.89, `solar_power_w` / `house_power_w` / `grid_power_w` instantáneos. |
 | `GET /api/forecast` | — | Forecast de mañana por hora + total crudo y calibrado. |
-| `GET /api/today_solar` | — | Producción, consumo de casa y flujo de red de hoy, del datalogger. Requiere `device_id` (si no, 503). |
+| `GET /api/today_solar` | — | Producción de hoy (acumulado y perfil por hora), del datalogger. Requiere `device_id` (si no, 503). Si el datalogger no tiene el día (`code != ok`) devuelve 502, no ceros. |
 | `GET /api/params` | — | Parámetros dinámicos activos, su origen y los días válidos. |
 | `GET /api/solar_history` | — | Historial forecast vs real (`view=day|week|month`). |
 | `GET /api/charge_current_today` | — | Cambios de corriente registrados hoy. |
