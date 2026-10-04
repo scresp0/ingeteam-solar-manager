@@ -14,8 +14,8 @@ Registros usados:
   30028 — Battery Temperature [ºC x10]  INT16
   30034 — PV 1 Power          [W]       UINT16  (= `Pdc1` del datalogger)
   30037 — PV 2 Power          [W]       UINT16  (= `Pdc2`)
-  30038 — Inverter AC Power   [W]       INT16   (= `Pac`)
   30072 — External Meter Power [W]      INT16   (= `PacMeter`: + importando, − exportando)
+  30079 — Total Loads Power   [W]       UINT16  (= `Pload` del datalogger SDO: consumo de la vivienda)
 
 Los cuatro últimos no salen del PDF sino del mapa que publica el propio inversor
 (`GET /inverter/map/1`, firmware ABH1007AE, 2026-10-04): su `loggermap` declara de qué
@@ -140,8 +140,8 @@ def read_inverter_state(cfg: InverterConfig) -> InverterState:
 
         # El inversor usa direccionamiento base 0 (registro 30001 = address 0)
         # Leemos desde address=0 (30001) hasta cubrir todos los registros necesarios
-        # El más lejano es 30072 (vatímetro externo) → count=72
-        result = client.read_input_registers(address=0, count=72, slave=slave)
+        # El más lejano es 30079 (cargas totales) → count=79
+        result = client.read_input_registers(address=0, count=79, slave=slave)
 
         if result.isError():
             raise InverterError(f"Error MODBUS al leer registros: {result}")
@@ -156,8 +156,8 @@ def read_inverter_state(cfg: InverterConfig) -> InverterState:
         # regs[27] = 30028 Battery Temperature [ºC x10] INT16
         # regs[33] = 30034 PV 1 Power [W]
         # regs[36] = 30037 PV 2 Power [W]
-        # regs[37] = 30038 Inverter AC Power [W] INT16
         # regs[71] = 30072 External Meter Power [W] INT16
+        # regs[78] = 30079 Total Loads Power [W]
 
         inverter_status_code = regs[15]
         battery_voltage_raw  = regs[17]
@@ -170,7 +170,6 @@ def read_inverter_state(cfg: InverterConfig) -> InverterState:
         # INT16: si el valor supera 32767 es negativo en complemento a 2
         battery_power_w = battery_power_raw if battery_power_raw < 32768 else battery_power_raw - 65536
         battery_temp_c  = (battery_temp_raw if battery_temp_raw < 32768 else battery_temp_raw - 65536) / 10.0
-        pac_w           = regs[37] if regs[37] < 32768 else regs[37] - 65536
         grid_power_w    = regs[71] if regs[71] < 32768 else regs[71] - 65536
 
         # Leer SOC mínimo del holding register 40126
@@ -210,7 +209,7 @@ def read_inverter_state(cfg: InverterConfig) -> InverterState:
             charge_current_max_a=charge_current_max,
             pv_power_w=regs[33] + regs[36],
             grid_power_w=grid_power_w,
-            house_power_w=round(house_power_w({"Pac": pac_w, "PacMeter": grid_power_w})),
+            house_power_w=round(house_power_w({"Pload": regs[78]})),
         )
 
         logger.debug(

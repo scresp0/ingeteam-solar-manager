@@ -970,7 +970,7 @@ Tres canales, cada uno con su razón de ser.
 Puerto 502, función 0x04 (input registers) y 0x03 (holding registers).
 **Direccionamiento base-0**: registro `30016` → dirección `15`.
 
-Una sola llamada lee `address=0, count=72` (registros 30001–30072) y se indexan:
+Una sola llamada lee `address=0, count=79` (registros 30001–30079) y se indexan:
 
 | Registro | Índice | Campo | Escala / convención |
 |---|---|---|---|
@@ -983,10 +983,10 @@ Una sola llamada lee `address=0, count=72` (registros 30001–30072) y se indexa
 | 30028 | `regs[27]` | Battery Temperature | INT16, `/10` → ºC |
 | 30034 | `regs[33]` | PV 1 Power (= `Pdc1` del datalogger) | W |
 | 30037 | `regs[36]` | PV 2 Power (= `Pdc2`) | W |
-| 30038 | `regs[37]` | Inverter AC Power (= `Pac`) | INT16, W |
 | 30072 | `regs[71]` | External Meter Power (= `PacMeter`) | INT16, W; **+ importando, − exportando** |
+| 30079 | `regs[78]` | Total Loads Power (= `Pload` del datalogger SDO) | W; consumo de la vivienda |
 
-Los cuatro últimos (v1.89) alimentan los tiles Producción solar / Consumo casa / Red.
+Los cuatro últimos (v1.89/v1.90) alimentan los tiles Producción solar / Consumo casa / Red.
 No salen del PDF de registros (el de `docs/` es una revisión antigua con otro offset)
 sino del **mapa que publica el propio inversor**: `GET http://<inversor>/inverter/map/1`
 devuelve todos los input/holding registers del firmware en curso con su nombre, y un
@@ -1008,7 +1008,20 @@ una conexión recibe el frame de la otra y se lee un snapshot caducado.
 
 ### 7.2 HTTP datalogger — solo lectura (`logger_reader.py`)
 
-`GET http://{host}/inverter/log/{device_id}/{YYYY-MM-DD}` con Basic Auth. Devuelve el
+**Dos endpoints desde v1.90.** El 2026-10-03 a las 21:40 el firmware del DSP pasó de
+ABH1006AB a ABH1006AC y el inversor cambió de datalogger: el antiguo
+(`/inverter/log/...`) dejó de grabar y sus días nuevos responden `{"code": "error"}`;
+el que graba ahora es el "SDO", `GET /inverter/sdodatalogger/read/{modbus_slave}/{YYYYMMDD}/0/-1`
+(el que enseña la web del inversor en *Logger*). `_fetch_records` consulta los dos y
+los une por hora (`_merge_loggers`), así que los días antiguos siguen leyéndose y el
+día del cambio sale completo. Diferencias del SDO: las claves son ids de texto del
+mapa (`L-165`…, traducidas por `_SDO_FIELDS`; una clave ausente lanza
+`LoggerReaderError`, no devuelve 0), no trae `Pac` (el consumo de casa viene ya
+calculado como `Pload` = "Cargas Totales") ni `EPvToGrid` (la exportación diaria se
+integra de `PacMeter`). Los dos últimos índices de la URL son un rango de registros
+(`0/-1` = todo el día).
+
+El antiguo: `GET http://{host}/inverter/log/{device_id}/{YYYY-MM-DD}` con Basic Auth. Devuelve el
 día completo minuto a minuto (hasta 1440 registros). No admite rangos: **siempre se
 descarga el día entero**.
 

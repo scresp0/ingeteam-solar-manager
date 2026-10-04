@@ -724,39 +724,20 @@ def create_app(cfg: AppConfig) -> FastAPI:
     async def today_solar():
         """Producción solar, consumo casa y flujo de red de hoy (datalogger del inversor, minuto a minuto)."""
         import asyncio
-        import requests as _req
         from datetime import date as _date
+        from app.logger_reader import _fetch_records, LoggerReaderError
 
         today = _date.today()
         date_str = today.isoformat()
-        host = cfg.inverter.get_modbus_host()
-        device_id = cfg.inverter.device_id
-        if not device_id:
+        if not cfg.inverter.device_id:
             return JSONResponse(status_code=503, content={"ok": False, "error": "INVERTER_DEVICE_ID no configurado"})
 
-        url = f"http://{host}/inverter/log/{device_id}/{date_str}"
-
-        def _fetch():
-            r = _req.get(url, auth=(cfg.inverter.username, cfg.inverter.password), timeout=15)
-            r.raise_for_status()
-            return r.json()
-
+        # Sin datos no es "0 W": el 2026-10-04 el datalogger cambió de endpoint y
+        # esto pintaba ceros con el inversor produciendo.
         try:
-            data = await asyncio.to_thread(_fetch)
-        except Exception as e:
-            return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
-
-        # Un día sin grabar responde 200 con {"code": "error"}: no es "0 W", es que
-        # no hay dato (2026-10-04: el datalogger se paró y esto pintaba ceros).
-        if data.get("code") != "ok":
-            return JSONResponse(status_code=502, content={
-                "ok": False, "error": f"El datalogger no tiene datos de {date_str}: {data}"})
-
-        records = [entry["val"] for entry in data.get("data", [])]
-        if not records:
-            return {"ok": True, "date": date_str, "hours": [], "solar_kw": [],
-                    "current_solar_w": 0, "total_solar_kwh": 0.0,
-                    "current_grid_w": 0, "current_house_w": 0}
+            records, _ = await asyncio.to_thread(_fetch_records, cfg.inverter, today)
+        except LoggerReaderError as e:
+            return JSONResponse(status_code=502, content={"ok": False, "error": str(e)})
 
         last = records[-1]
         current_solar_w = round(last.get("Pdc1", 0) + last.get("Pdc2", 0))

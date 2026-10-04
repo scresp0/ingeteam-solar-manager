@@ -1,19 +1,27 @@
 """
 logger_reader.py — lee el datalogger del inversor Ingeteam via HTTP.
 
-Endpoint:
-  GET http://{host}/inverter/log/{device_id}/{fecha}
-  Autenticación: Basic Auth con las credenciales del inversor
+Endpoints (Basic Auth con las credenciales del inversor):
+  GET http://{host}/inverter/log/{device_id}/{YYYY-MM-DD}
+      Datalogger de la tarjeta de comunicaciones. Dejó de grabar el 2026-10-03 a las
+      21:40, al actualizarse el firmware del DSP de ABH1006AB a ABH1006AC.
+  GET http://{host}/inverter/sdodatalogger/read/{modbus_slave}/{YYYYMMDD}/0/-1
+      Datalogger "SDO", el que graba desde entonces (y el que muestra la web del
+      inversor en Logger). Mismo minuto a minuto, otras claves — ver `_SDO_FIELDS`.
+
+`_fetch_records` consulta los dos y los une por hora, así que un día partido entre
+ambos (el propio 2026-10-03) sale completo y los días antiguos siguen leyéndose.
 
 Calcula acumulados diarios a partir de los datos minuto a minuto:
   - solar_kwh        : producción solar total (Pdc1 + Pdc2)
   - grid_consumed_kwh: energía consumida de red (PacMeter > 0)
-  - grid_exported_kwh: energía exportada a red (EPvToGrid delta)
+  - grid_exported_kwh: energía exportada a red (EPvToGrid delta; sin ese contador,
+                       que el datalogger SDO no trae, ∫PacMeter < 0)
   - soc_start_pct    : SOC al inicio del día (00:00)
   - soc_end_pct      : SOC al final del día (23:59)
   - peak_soc_pct     : SOC máximo alcanzado en el día (pico tras la carga)
   - battery_charged_kwh : energía neta cargada en la batería en el día (∫Pbatt < 0)
-  - consumption_kwh  : consumo total estimado (Pac integral)
+  - consumption_kwh  : consumo de la vivienda (∫ `house_power_w`)
 """
 
 import logging
@@ -30,6 +38,21 @@ from app.config import InverterConfig
 logger = logging.getLogger(__name__)
 
 LOGGER_PATH = "/inverter/log"
+SDO_LOGGER_PATH = "/inverter/sdodatalogger/read"
+
+# Datalogger SDO: las claves son los ids de texto del mapa del inversor
+# (`GET /inverter/map/1` → `sdodata` + `langs`), no nombres. Se traducen a las claves
+# del datalogger antiguo para que el resto del módulo no distinga el origen.
+# No trae `Pac` ni `EPvToGrid`; a cambio trae el consumo de la vivienda ya calculado.
+_SDO_FIELDS = {
+    "L-165": "Pdc1",      # FV 1. Potencia
+    "L-168": "Pdc2",      # FV 2. Potencia
+    "L-133": "Pbatt",     # Batería. Potencia
+    "L-135": "Sbatt",     # Batería. SOC
+    "L-183": "PacGrid",   # Vatímetro Interno Red. Potencia Activa
+    "L-660": "PacMeter",  # Vatímetro Externo Red. Potencia Activa
+    "L-709": "Pload",     # Cargas Totales. Potencia Activa
+}
 
 
 def house_power_w(record: dict) -> float:
@@ -57,7 +80,16 @@ def house_power_w(record: dict) -> float:
     `Pac`, se parece a `−PacMeter`.
 
     El suelo en 0 cubre desincronizaciones puntuales entre las dos medidas.
+
+    Los registros del datalogger SDO (desde el 2026-10-03) no traen `Pac` sino
+    `Pload`: "Cargas Totales. Potencia Activa", el consumo que calcula el propio
+    inversor (input register 30079) y el que enseña su web. Comparado en vivo por
+    MODBUS el 2026-10-04 contra `Pac + PacMeter`: 283/287, 275/265, 277/281,
+    277/276 W — la misma magnitud sin el ruido de sumar dos medidas.
+    ⚠️ Comprobado solo SIN flujo de red (|PacMeter| < 10 W); falta verlo exportando.
     """
+    if "Pload" in record:
+        return max(0.0, record["Pload"])
     return max(0.0, record.get("Pac", 0) + record.get("PacMeter", 0))
 
 
@@ -108,8 +140,55 @@ def get_yesterday_stats(cfg: InverterConfig) -> DailyStats:
     return get_daily_stats(cfg, yesterday)
 
 
+def _sdo_to_legacy(val: dict) -> dict:
+    """Traduce un registro del datalogger SDO a las claves del datalogger antiguo.
+
+    Una clave ausente lanza `LoggerReaderError` en vez de quedarse en 0: si un
+    firmware renumera los ids de texto, un día entero de producción o consumo a
+    cero es un dato falso pero plausible que acabaría en InfluxDB.
+    """
+    missing = [k for k in _SDO_FIELDS if k not in val]
+    if missing:
+        raise LoggerReaderError(
+            f"El datalogger SDO no trae los campos {missing} — ¿ha cambiado el mapa "
+            f"del inversor? Revisar `_SDO_FIELDS` contra GET /inverter/map/1"
+        )
+    return {name: val[key] for key, name in _SDO_FIELDS.items()}
+
+
+def _get_logger_json(cfg: InverterConfig, url: str) -> dict:
+    logger.debug(f"Leyendo logger: {url}")
+    try:
+        response = requests.get(url, auth=(cfg.username, cfg.password), timeout=30)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.HTTPError as e:
+        raise LoggerReaderError(f"Error HTTP al leer logger: {e}") from e
+    except requests.exceptions.ConnectionError as e:
+        raise LoggerReaderError(f"No se pudo conectar al inversor: {e}") from e
+    except Exception as e:
+        raise LoggerReaderError(f"Error inesperado leyendo logger: {e}") from e
+
+
+def _merge_loggers(legacy: list[dict], sdo: list[dict]) -> list[dict]:
+    """Une las entradas `{time, val}` de los dos dataloggers en una lista de registros.
+
+    Del SDO solo se toman las posteriores a la última del antiguo: en el día del
+    cambio el antiguo cubre hasta las 21:40 y el SDO desde las 21:45.
+    """
+    last = legacy[-1]["time"] if legacy else ""
+    return [e["val"] for e in legacy] + [
+        _sdo_to_legacy(e["val"]) for e in sdo if e["time"] > last
+    ]
+
+
 def _fetch_records(cfg: InverterConfig, target_date: date) -> tuple[list[dict], str]:
-    """Descarga los registros minuto a minuto de un día. Devuelve (registros, device_id)."""
+    """Descarga los registros minuto a minuto de un día. Devuelve (registros, device_id).
+
+    Consulta el datalogger antiguo y el SDO (ver docstring del módulo). El que no
+    tiene el día responde 200 con `{"code": "error"}` en unos bytes, así que pedir
+    los dos no cuesta una segunda descarga.
+    """
     host = cfg.get_modbus_host()
     date_str = target_date.isoformat()
 
@@ -120,30 +199,21 @@ def _fetch_records(cfg: InverterConfig, target_date: date) -> tuple[list[dict], 
     else:
         device_id = _get_device_id(cfg, host, date_str)
 
-    url = f"http://{host}{LOGGER_PATH}/{device_id}/{date_str}"
-    logger.debug(f"Leyendo logger: {url}")
+    legacy = _get_logger_json(cfg, f"http://{host}{LOGGER_PATH}/{device_id}/{date_str}")
+    sdo = _get_logger_json(
+        cfg,
+        f"http://{host}{SDO_LOGGER_PATH}/{cfg.modbus_slave}/{target_date:%Y%m%d}/0/-1",
+    )
 
-    try:
-        response = requests.get(
-            url,
-            auth=(cfg.username, cfg.password),
-            timeout=30,
-        )
-        response.raise_for_status()
-        data = response.json()
-    except requests.exceptions.HTTPError as e:
-        raise LoggerReaderError(f"Error HTTP al leer logger: {e}") from e
-    except requests.exceptions.ConnectionError as e:
-        raise LoggerReaderError(f"No se pudo conectar al inversor: {e}") from e
-    except Exception as e:
-        raise LoggerReaderError(f"Error inesperado leyendo logger: {e}") from e
-
-    if data.get("code") != "ok":
-        raise LoggerReaderError(f"Logger devolvió error: {data}")
-
-    records = [entry["val"] for entry in data.get("data", [])]
+    records = _merge_loggers(
+        legacy.get("data", []) if legacy.get("code") == "ok" else [],
+        sdo.get("data", []) if sdo.get("code") == "ok" else [],
+    )
     if not records:
-        raise LoggerReaderError(f"No hay datos en el logger para {date_str}")
+        raise LoggerReaderError(
+            f"No hay datos en el logger para {date_str} "
+            f"(antiguo: {legacy.get('code')}, SDO: {sdo.get('code')})"
+        )
 
     return records, device_id
 
@@ -276,10 +346,15 @@ def _calculate_stats(records: list[dict], target_date: date, device_id: str) -> 
         for r in records
     ) / 1000
 
-    # Energía exportada a red: diferencia del contador EPvToGrid (en Wh)
-    epv_start = records[0].get("EPvToGrid", 0)
-    epv_end   = records[-1].get("EPvToGrid", 0)
-    grid_exported_kwh = max(0, epv_end - epv_start) / 1000
+    # Energía exportada a red: diferencia del contador EPvToGrid (en Wh). El
+    # datalogger SDO no trae ese contador: sin él en los dos extremos del día se
+    # integra PacMeter, igual que el perfil de media hora (`grid_export_kwh`).
+    if "EPvToGrid" in records[0] and "EPvToGrid" in records[-1]:
+        grid_exported_kwh = max(0, records[-1]["EPvToGrid"] - records[0]["EPvToGrid"]) / 1000
+    else:
+        grid_exported_kwh = sum(
+            max(0, -r.get("PacMeter", 0)) * INTERVAL_H for r in records
+        ) / 1000
 
     # Consumo total de la vivienda. Ver `house_power_w`: la fórmula PacGrid+PacMeter
     # usada hasta v1.79 daba ≈0 siempre que no había flujo de red significativo
