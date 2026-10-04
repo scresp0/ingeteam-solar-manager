@@ -89,6 +89,35 @@ def main():
     print("=== caché de get_recent_house_power ===")
     import app.logger_reader as lr
 
+    print("=== datalogger SDO (firmware DSP ABH1006AC, desde el 2026-10-03) ===")
+    sdo_val = {"L-165": 546.0, "L-168": 520.0, "L-133": -793.0, "L-135": 58.0,
+               "L-183": 265.0, "L-660": 2.0, "L-709": 270.0, "L-128": 49.8}
+    rec = lr._sdo_to_legacy(sdo_val)
+    check("FV 1 + FV 2 → Pdc1 + Pdc2", rec["Pdc1"] + rec["Pdc2"], 1066.0)
+    check("vatímetro externo → PacMeter", rec["PacMeter"], 2.0)
+    check("SOC → Sbatt", rec["Sbatt"], 58.0)
+    check("casa = Cargas Totales, no Pac + PacMeter", house_power_w(rec), 270.0)
+    check("suelo en 0 también con Pload", house_power_w({"Pload": -5.0}), 0.0)
+    try:
+        lr._sdo_to_legacy({k: v for k, v in sdo_val.items() if k != "L-709"})
+        check("campo ausente lanza error, no devuelve 0", "sin excepción", "LoggerReaderError")
+    except lr.LoggerReaderError:
+        check("campo ausente lanza error, no devuelve 0", "LoggerReaderError", "LoggerReaderError")
+
+    # Día del cambio: el antiguo llega a las 21:40 y el SDO arranca a las 21:45.
+    legacy = [{"time": "21:39:00", "val": _rec(pac=400)}, {"time": "21:40:00", "val": _rec(pac=410)}]
+    sdo = [{"time": "21:40:00", "val": sdo_val}, {"time": "21:45:00", "val": sdo_val}]
+    merged = lr._merge_loggers(legacy, sdo)
+    check("unión sin duplicar el minuto solapado", len(merged), 3)
+    check("primero los del antiguo", merged[0]["Pac"], 400)
+    check("después los del SDO, ya traducidos", merged[-1]["Pload"], 270.0)
+    check("solo SDO (días nuevos)", len(lr._merge_loggers([], sdo)), 2)
+    check("solo antiguo (días viejos)", len(lr._merge_loggers(legacy, [])), 2)
+
+    # Sin EPvToGrid la exportación se integra de PacMeter: 60 min a −1200 W = 1.2 kWh.
+    sdo_day = [lr._sdo_to_legacy({**sdo_val, "L-660": -1200.0})] * 60
+    check("export sin contador EPvToGrid", _calculate_stats(sdo_day, date(2026, 10, 4), "TEST").grid_exported_kwh, 1.2)
+
     calls = {"n": 0}
     fake = [_rec(pac=1000, pacmeter=200)] * 60
 
