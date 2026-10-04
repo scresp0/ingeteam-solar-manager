@@ -383,6 +383,9 @@ def create_app(cfg: AppConfig) -> FastAPI:
                 "battery_voltage_v": state.battery_voltage_v,
                 "battery_temp_c": state.battery_temp_c,
                 "charge_current_max_a": state.charge_current_max_a,
+                "solar_power_w": state.pv_power_w,
+                "house_power_w": state.house_power_w,
+                "grid_power_w": state.grid_power_w,
                 "timestamp": datetime.now().isoformat(),
             }
         except Exception as e:
@@ -742,6 +745,12 @@ def create_app(cfg: AppConfig) -> FastAPI:
             data = await asyncio.to_thread(_fetch)
         except Exception as e:
             return JSONResponse(status_code=500, content={"ok": False, "error": str(e)})
+
+        # Un día sin grabar responde 200 con {"code": "error"}: no es "0 W", es que
+        # no hay dato (2026-10-04: el datalogger se paró y esto pintaba ceros).
+        if data.get("code") != "ok":
+            return JSONResponse(status_code=502, content={
+                "ok": False, "error": f"El datalogger no tiene datos de {date_str}: {data}"})
 
         records = [entry["val"] for entry in data.get("data", [])]
         if not records:

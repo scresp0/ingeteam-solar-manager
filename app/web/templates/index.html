@@ -965,6 +965,18 @@ function applyStatus(d) {
   const cc = parseFloat(d.charge_current_max_a);
   setMetric('m-chgcur', (isNaN(cc) || cc <= 0) ? '—' : cc.toFixed(0) + ' A', '', 'Corriente máxima de carga');
 
+  // Producción, consumo y red: instantáneos por MODBUS (no dependen del datalogger)
+  if (d.solar_power_w !== undefined) {
+    setMetric('m-solar', d.solar_power_w + ' W', d.solar_power_w > 50 ? 'green' : '');
+    setMetric('m-house', d.house_power_w + ' W', '', 'consumo');
+    // Red: + importando de red, - exportando a red
+    const gw = d.grid_power_w;
+    const exporting = gw < -50;
+    const importing = gw > 50;
+    setMetric('m-grid', Math.abs(gw) + ' W', exporting ? 'green' : (importing ? 'amber' : ''),
+              exporting ? 'Exportando a red' : (importing ? 'Importando de red' : 'Sin flujo de red'));
+  }
+
   // Inverter detail
   document.getElementById('inv-status').textContent = d.inverter_status || '—';
   document.getElementById('inv-status').style.color = d.inverter_status === 'On-grid' ? 'var(--green)' : 'var(--muted)';
@@ -1387,10 +1399,13 @@ async function loadTodaySolar() {
   try {
     const r = await fetch('/api/today_solar');
     const d = await r.json();
-    if (!d.ok) return;
+    if (!d.ok) {
+      document.getElementById('m-solar-sub').textContent = 'sin datos del datalogger';
+      return;
+    }
 
-    const w = d.current_solar_w;
-    setMetric('m-solar', w + ' W', w > 50 ? 'green' : '', d.total_solar_kwh + ' kWh hoy');
+    // El acumulado del día sí sale del datalogger; los W instantáneos, de /api/status
+    document.getElementById('m-solar-sub').textContent = d.total_solar_kwh + ' kWh hoy';
 
     if (_isTodayView()) {
       const prodVal = document.getElementById('f-produced');
@@ -1398,23 +1413,6 @@ async function loadTodaySolar() {
         prodVal.textContent = d.total_solar_kwh.toFixed(2) + ' kWh';
         prodVal.classList.remove('empty');
       }
-    }
-
-    // Consumo casa (PacGrid)
-    if (d.current_house_w !== undefined) {
-      const hw = d.current_house_w;
-      setMetric('m-house', hw + ' W', '', 'consumo');
-    }
-
-    // Red: PacMeter (+ importando de red, - exportando a red)
-    if (d.current_grid_w !== undefined) {
-      const gw = d.current_grid_w;
-      const absGw = Math.abs(gw);
-      const exporting = gw < -50;
-      const importing = gw > 50;
-      const cls = exporting ? 'green' : (importing ? 'amber' : '');
-      const sub = exporting ? 'Exportando a red' : (importing ? 'Importando de red' : 'Sin flujo de red');
-      setMetric('m-grid', absGw + ' W', cls, sub);
     }
 
     _todayByHour = {};

@@ -12,6 +12,14 @@ Registros usados:
   30022 — Battery SOH         [%]       UINT16
   30027 — Battery Status      UINT16
   30028 — Battery Temperature [ºC x10]  INT16
+  30034 — PV 1 Power          [W]       UINT16  (= `Pdc1` del datalogger)
+  30037 — PV 2 Power          [W]       UINT16  (= `Pdc2`)
+  30038 — Inverter AC Power   [W]       INT16   (= `Pac`)
+  30072 — External Meter Power [W]      INT16   (= `PacMeter`: + importando, − exportando)
+
+Los cuatro últimos no salen del PDF sino del mapa que publica el propio inversor
+(`GET /inverter/map/1`, firmware ABH1007AE, 2026-10-04): su `loggermap` declara de qué
+dirección MODBUS copia el datalogger cada campo, así que valor y signo son los mismos.
 """
 
 import functools
@@ -23,6 +31,7 @@ from pymodbus.client import ModbusTcpClient
 from pymodbus.exceptions import ModbusException
 
 from app.config import InverterConfig
+from app.logger_reader import house_power_w
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +100,9 @@ class InverterState:
     battery_status: str        # Descripción del estado de la batería
     min_soc_pct: float = 0.0   # SOC mínimo configurado en el inversor (holding reg 40126)
     charge_current_max_a: float = 0.0  # Corriente máxima de carga configurada (holding reg 40087) [A]
+    pv_power_w: int = 0        # Producción solar instantánea, FV 1 + FV 2 [W]
+    grid_power_w: int = 0      # Vatímetro externo [W] (+ importando de red, − exportando)
+    house_power_w: int = 0     # Consumo de la vivienda [W] — ver `logger_reader.house_power_w`
 
 
 # ---------------------------------------------------------------------------
@@ -128,8 +140,8 @@ def read_inverter_state(cfg: InverterConfig) -> InverterState:
 
         # El inversor usa direccionamiento base 0 (registro 30001 = address 0)
         # Leemos desde address=0 (30001) hasta cubrir todos los registros necesarios
-        # El más lejano es 30028 (Battery Temp) → count=28
-        result = client.read_input_registers(address=0, count=28, slave=slave)
+        # El más lejano es 30072 (vatímetro externo) → count=72
+        result = client.read_input_registers(address=0, count=72, slave=slave)
 
         if result.isError():
             raise InverterError(f"Error MODBUS al leer registros: {result}")
@@ -142,6 +154,10 @@ def read_inverter_state(cfg: InverterConfig) -> InverterState:
         # regs[21] = 30022 Battery SOH [%]
         # regs[26] = 30027 Battery Status
         # regs[27] = 30028 Battery Temperature [ºC x10] INT16
+        # regs[33] = 30034 PV 1 Power [W]
+        # regs[36] = 30037 PV 2 Power [W]
+        # regs[37] = 30038 Inverter AC Power [W] INT16
+        # regs[71] = 30072 External Meter Power [W] INT16
 
         inverter_status_code = regs[15]
         battery_voltage_raw  = regs[17]
@@ -154,6 +170,8 @@ def read_inverter_state(cfg: InverterConfig) -> InverterState:
         # INT16: si el valor supera 32767 es negativo en complemento a 2
         battery_power_w = battery_power_raw if battery_power_raw < 32768 else battery_power_raw - 65536
         battery_temp_c  = (battery_temp_raw if battery_temp_raw < 32768 else battery_temp_raw - 65536) / 10.0
+        pac_w           = regs[37] if regs[37] < 32768 else regs[37] - 65536
+        grid_power_w    = regs[71] if regs[71] < 32768 else regs[71] - 65536
 
         # Leer SOC mínimo del holding register 40126
         # Mismo patrón que input registers: address = número_registro - 40001 = 125
@@ -190,6 +208,9 @@ def read_inverter_state(cfg: InverterConfig) -> InverterState:
             battery_status=BATTERY_STATUS.get(battery_status_code, f"Unknown ({battery_status_code})"),
             min_soc_pct=min_soc,
             charge_current_max_a=charge_current_max,
+            pv_power_w=regs[33] + regs[36],
+            grid_power_w=grid_power_w,
+            house_power_w=round(house_power_w({"Pac": pac_w, "PacMeter": grid_power_w})),
         )
 
         logger.debug(
