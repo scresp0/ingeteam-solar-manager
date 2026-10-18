@@ -361,7 +361,8 @@ def test_write_daily_stats():
         date=date(2026, 8, 21), device_id="ABC123", solar_kwh=30.0,
         grid_consumed_kwh=4.0, grid_exported_kwh=10.0, consumption_kwh=19.0,
         night_consumption_kwh=4.8, soc_start_pct=40.0, soc_end_pct=90.0,
-        peak_soc_pct=95.0, battery_charged_kwh=16.0, records=1440,
+        peak_soc_pct=95.0, battery_charged_kwh=16.0,
+        battery_discharged_kwh=14.5, records=1440,
         half_hour_solar_kwh=[0.0] * 48, half_hour_house_kwh=[0.0] * 48,
         half_hour_grid_import_kwh=[0.0] * 48, half_hour_grid_export_kwh=[0.0] * 48,
     )
@@ -378,6 +379,7 @@ def test_write_daily_stats():
     check("night_consumption_kwh", p["fields"]["night_consumption_kwh"], 4.8)
     check("peak_soc_pct (v1.78)", p["fields"]["peak_soc_pct"], 95.0)
     check("battery_charged_kwh (v1.78)", p["fields"]["battery_charged_kwh"], 16.0)
+    check("battery_discharged_kwh (v1.91)", p["fields"]["battery_discharged_kwh"], 14.5)
     check("records va como float", isinstance(p["fields"]["records"], float), True)
 
     puntos.clear()

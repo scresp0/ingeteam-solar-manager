@@ -207,6 +207,7 @@ def write_daily_stats(cfg: InfluxDBConfig, stats: DailyStats) -> None:
             "soc_end_pct":            stats.soc_end_pct,
             "peak_soc_pct":           stats.peak_soc_pct,
             "battery_charged_kwh":    stats.battery_charged_kwh,
+            "battery_discharged_kwh": stats.battery_discharged_kwh,
             "records":                float(stats.records),
         }
     }
