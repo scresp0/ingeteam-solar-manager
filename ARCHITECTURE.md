@@ -1289,7 +1289,7 @@ En `volumes:` quedan declarados `solar-manager-logs`, `influxdb-data` e
 | Measurement | Tags | Timestamp | Escrito por | Campos |
 |---|---|---|---|---|
 | `ciclo_carga` | — | `now()` UTC real (~22–23 h UTC) | `run` únicamente | estado del inversor, forecast p10/p50/p90 crudo, `solar_effective_kwh`, `energy_stored/at_dawn/deficit`, `charge_needed`, `target_soc_pct`, `target_kwh`, `valley_day_skip`, `solcast_error`, `automation_ok`, `dry_run` |
-| `stats_diarias` | `device_id` | medianoche UTC del día de datos | `run` (ayer) y backfill | `solar_kwh`, `grid_consumed_kwh`, `grid_exported_kwh`, `consumption_kwh`, `night_consumption_kwh`, `soc_start_pct`, `soc_end_pct`, `peak_soc_pct` (v1.78), `battery_charged_kwh` (v1.78), `records` |
+| `stats_diarias` | `device_id` | medianoche UTC del día de datos | `run` (ayer) y backfill | `solar_kwh`, `grid_consumed_kwh`, `grid_exported_kwh`, `consumption_kwh`, `night_consumption_kwh`, `soc_start_pct`, `soc_end_pct`, `peak_soc_pct` (v1.78), `battery_charged_kwh` (v1.78), `battery_discharged_kwh` (v1.91), `records` |
 | `solar_media_hora` | — | hora local etiquetada UTC, cada 30 min | `run` (forecast + real) y backfill (real) | `real_kwh`, `house_kwh`, `grid_import_kwh`, `grid_export_kwh`, `forecast_p50_kwh`, `forecast_p10_kwh`, `forecast_p90_kwh` |
 | `corriente_carga` | `mode` | hora local etiquetada UTC, al segundo | controlador de corriente, solo si cambia | `current_a`, `calculated_a`, `previous_a`, `delta_a`, `soc_pct`, `battery_temp_c`, `battery_voltage_v`, `detail`, `verified`, `dry_run` |
 

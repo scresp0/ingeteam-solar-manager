@@ -21,6 +21,7 @@ Calcula acumulados diarios a partir de los datos minuto a minuto:
   - soc_end_pct      : SOC al final del día (23:59)
   - peak_soc_pct     : SOC máximo alcanzado en el día (pico tras la carga)
   - battery_charged_kwh : energía neta cargada en la batería en el día (∫Pbatt < 0)
+  - battery_discharged_kwh : energía entregada por la batería en el día (∫Pbatt > 0)
   - consumption_kwh  : consumo de la vivienda (∫ `house_power_w`)
 """
 
@@ -115,6 +116,7 @@ class DailyStats:
     soc_end_pct: float
     peak_soc_pct: float          # SOC máximo del día — cuánto se acercó al objetivo de carga
     battery_charged_kwh: float   # kWh netos cargados en la batería (valle + solar, ∫Pbatt < 0)
+    battery_discharged_kwh: float  # kWh entregados por la batería (∫Pbatt > 0)
     records: int                            # número de registros del día (max 1440)
     half_hour_solar_kwh: list[float]        # 48 slots × 30 min, kWh por slot
     half_hour_house_kwh: list[float]        # consumo de la vivienda por slot
@@ -285,7 +287,8 @@ def get_daily_stats(cfg: InverterConfig, target_date: date) -> DailyStats:
         f"Red consumida={stats.grid_consumed_kwh:.2f} kWh | "
         f"Red exportada={stats.grid_exported_kwh:.2f} kWh | "
         f"SOC {stats.soc_start_pct}% → {stats.soc_end_pct}% (pico {stats.peak_soc_pct}%) | "
-        f"Cargado en batería={stats.battery_charged_kwh:.2f} kWh"
+        f"Cargado en batería={stats.battery_charged_kwh:.2f} kWh | "
+        f"Descargado={stats.battery_discharged_kwh:.2f} kWh"
     )
     return stats
 
@@ -389,6 +392,14 @@ def _calculate_stats(records: list[dict], target_date: date, device_id: str) -> 
         max(0, -r.get("Pbatt", 0)) * INTERVAL_H for r in records
     ) / 1000
 
+    # Energía entregada por la batería (Pbatt positivo = descargando). Junto con
+    # `battery_charged_kwh` y el ΔSOC da las pérdidas de la batería en cualquier
+    # periodo: cargado − descargado − ΔSOC·capacidad. Medido en bornes de batería
+    # (lado DC): no incluye la conversión del inversor.
+    battery_discharged_kwh = sum(
+        max(0, r.get("Pbatt", 0)) * INTERVAL_H for r in records
+    ) / 1000
+
     # Perfil por slot de 30 min (48 slots, "local labeled UTC"). El flujo de red se
     # integra de PacMeter (+ importando, − exportando), coherente con el balance
     # verificado; NO del contador EPvToGrid que usa `grid_exported_kwh` diario.
@@ -419,6 +430,7 @@ def _calculate_stats(records: list[dict], target_date: date, device_id: str) -> 
         soc_end_pct=soc_end,
         peak_soc_pct=peak_soc_pct,
         battery_charged_kwh=round(battery_charged_kwh, 3),
+        battery_discharged_kwh=round(battery_discharged_kwh, 3),
         records=len(records),
         half_hour_solar_kwh=half_hour,
         half_hour_house_kwh=half_hour_house,

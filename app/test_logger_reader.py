@@ -52,7 +52,7 @@ def main():
     print("=== _calculate_stats: acumulados y perfil de 30 min ===")
     # Día sintético de 1440 min: 8 h de noche importando 600 W, luego 16 h
     # produciendo 3000 W con la casa a 1200 W y el resto exportado.
-    night = [_rec(pac=0, pacmeter=600, sbatt=40, pbatt=0)] * 480
+    night = [_rec(pac=0, pacmeter=600, sbatt=40, pbatt=500)] * 480
     day = [_rec(pac=3000, pacmeter=-1800, pdc1=1500, pdc2=1500, sbatt=90, pbatt=-1000)] * 960
     stats = _calculate_stats(night + day, date(2026, 8, 16), "TEST")
 
@@ -70,6 +70,8 @@ def main():
     check("peak_soc_pct", stats.peak_soc_pct, 90)
     # Carga: noche sin cargar (Pbatt=0), día a 1000 W × 16 h = 16 kWh.
     check("battery_charged_kwh", stats.battery_charged_kwh, 16.0)
+    # Descarga: noche a 500 W × 8 h = 4 kWh; de día solo carga, no cuenta.
+    check("battery_discharged_kwh", stats.battery_discharged_kwh, 4.0)
 
     # Los perfiles de 30 min deben sumar exactamente los agregados diarios.
     check("48 slots de casa", len(stats.half_hour_house_kwh), 48)
