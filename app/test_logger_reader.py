@@ -88,16 +88,30 @@ def main():
     check("slot 16 casa (día)", stats.half_hour_house_kwh[16], 0.6)
     check("slot 16 solar (día)", stats.half_hour_solar_kwh[16], 1.5)
 
+    # Batería por franja (v1.92): debe sumar lo mismo que los totales diarios.
+    check("Σ half_hour_battery_charge == battery_charged",
+          sum(stats.half_hour_battery_charge_kwh), 16.0, 0.01)
+    check("Σ half_hour_battery_discharge == battery_discharged",
+          sum(stats.half_hour_battery_discharge_kwh), 4.0, 0.01)
+    # Slot 0: descarga 500 W × 0.5 h; slot 16: carga 1000 W × 0.5 h.
+    check("slot 0 descarga (noche)", stats.half_hour_battery_discharge_kwh[0], 0.25)
+    check("slot 0 carga (noche)", stats.half_hour_battery_charge_kwh[0], 0.0)
+    check("slot 16 carga (día)", stats.half_hour_battery_charge_kwh[16], 0.5)
+    # El datalogger antiguo no trae temperatura → None, nunca 0.
+    check("sin Tbatt → temperatura None", stats.half_hour_battery_temp_c[0], None)
+
     print("=== caché de get_recent_house_power ===")
     import app.logger_reader as lr
 
     print("=== datalogger SDO (firmware DSP ABH1006AC, desde el 2026-10-03) ===")
     sdo_val = {"L-165": 546.0, "L-168": 520.0, "L-133": -793.0, "L-135": 58.0,
-               "L-183": 265.0, "L-660": 2.0, "L-709": 270.0, "L-128": 49.8}
+               "L-183": 265.0, "L-660": 2.0, "L-709": 270.0, "L-128": 49.8,
+               "L-152": 26.8}
     rec = lr._sdo_to_legacy(sdo_val)
     check("FV 1 + FV 2 → Pdc1 + Pdc2", rec["Pdc1"] + rec["Pdc2"], 1066.0)
     check("vatímetro externo → PacMeter", rec["PacMeter"], 2.0)
     check("SOC → Sbatt", rec["Sbatt"], 58.0)
+    check("temperatura → Tbatt", rec["Tbatt"], 26.8)
     check("casa = Cargas Totales, no Pac + PacMeter", house_power_w(rec), 270.0)
     check("suelo en 0 también con Pload", house_power_w({"Pload": -5.0}), 0.0)
     try:
@@ -119,6 +133,11 @@ def main():
     # Sin EPvToGrid la exportación se integra de PacMeter: 60 min a −1200 W = 1.2 kWh.
     sdo_day = [lr._sdo_to_legacy({**sdo_val, "L-660": -1200.0})] * 60
     check("export sin contador EPvToGrid", _calculate_stats(sdo_day, date(2026, 10, 4), "TEST").grid_exported_kwh, 1.2)
+    # Temperatura media por franja: 30 min a 26.0 y 30 a 28.0 en el mismo slot → 27.0.
+    temp_day = ([lr._sdo_to_legacy({**sdo_val, "L-152": 26.0})] * 15
+                + [lr._sdo_to_legacy({**sdo_val, "L-152": 28.0})] * 15)
+    check("temperatura media de la franja",
+          _calculate_stats(temp_day, date(2026, 10, 4), "TEST").half_hour_battery_temp_c[0], 27.0)
 
     calls = {"n": 0}
     fake = [_rec(pac=1000, pacmeter=200)] * 60

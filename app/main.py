@@ -486,9 +486,12 @@ def backfill_solar_history(cfg: AppConfig) -> None:
     # se han ido añadiendo en momentos distintos (house/grid en v1.73), así que hay
     # que arrancar desde el más atrasado: mirando solo `real_kwh` los días antiguos
     # se darían por hechos y los campos nuevos no se rellenarían nunca.
+    # `battery_temp_c` no hace falta: se escribe en el mismo punto que los campos de
+    # batería, y los días del datalogger antiguo no la tienen ni la tendrán nunca.
     last_by_field = [
         get_last_real_solar_date(cfg.influxdb, field=f)
-        for f in ("real_kwh", "house_kwh", "grid_import_kwh", "grid_export_kwh")
+        for f in ("real_kwh", "house_kwh", "grid_import_kwh", "grid_export_kwh",
+                  "battery_charge_kwh", "battery_discharge_kwh")
     ]
     last_stored = None if any(d is None for d in last_by_field) else min(last_by_field)
     start_day = (last_stored + timedelta(days=1)) if last_stored else floor_day

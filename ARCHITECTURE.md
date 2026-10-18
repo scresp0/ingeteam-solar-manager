@@ -309,9 +309,10 @@ si not influxdb.enabled → return
 yesterday = hoy − 1
 floor_day = yesterday − (MAX_BACKFILL_DAYS − 1)        # MAX_BACKFILL_DAYS = 59
 
-# El día de arranque es el MÁS ATRASADO de los cuatro campos
+# El día de arranque es el MÁS ATRASADO de los seis campos
 last_by_field = [get_last_real_solar_date(field=f)
-                 for f in (real_kwh, house_kwh, grid_import_kwh, grid_export_kwh)]
+                 for f in (real_kwh, house_kwh, grid_import_kwh, grid_export_kwh,
+                           battery_charge_kwh, battery_discharge_kwh)]
 last_stored = None si algún campo es None, si no min(last_by_field)
 start_day = (last_stored + 1) si last_stored else floor_day
 start_day = max(start_day, floor_day)
@@ -329,8 +330,10 @@ mismo timestamp → InfluxDB sobrescribe).
 
 El motivo de consultar **cada campo por separado** está en el comentario: los campos se
 han ido añadiendo en momentos distintos (`house_kwh`, `grid_import_kwh` y
-`grid_export_kwh` en v1.73), así que mirando solo `real_kwh` los días antiguos se
-darían por completos y los campos nuevos no se rellenarían nunca.
+`grid_export_kwh` en v1.73; `battery_charge_kwh` y `battery_discharge_kwh` en v1.92),
+así que mirando solo `real_kwh` los días antiguos se darían por completos y los campos
+nuevos no se rellenarían nunca. `battery_temp_c` (v1.92) no se consulta: va en el mismo
+punto que los campos de batería y los días del datalogger antiguo no la tienen.
 
 `MAX_BACKFILL_DAYS = 59` está justificado en el código: el datalogger del inversor es
 una **ventana rodante de ~59 días**, así que lo que no se copie antes de que un día
@@ -1018,7 +1021,8 @@ día del cambio sale completo. Diferencias del SDO: las claves son ids de texto 
 mapa (`L-165`…, traducidas por `_SDO_FIELDS`; una clave ausente lanza
 `LoggerReaderError`, no devuelve 0), no trae `Pac` (el consumo de casa viene ya
 calculado como `Pload` = "Cargas Totales") ni `EPvToGrid` (la exportación diaria se
-integra de `PacMeter`). Los dos últimos índices de la URL son un rango de registros
+integra de `PacMeter`). A cambio trae la temperatura de la batería (`L-152` → `Tbatt`),
+que el antiguo no tenía. Los dos últimos índices de la URL son un rango de registros
 (`0/-1` = todo el día).
 
 El antiguo: `GET http://{host}/inverter/log/{device_id}/{YYYY-MM-DD}` con Basic Auth. Devuelve el
@@ -1290,7 +1294,7 @@ En `volumes:` quedan declarados `solar-manager-logs`, `influxdb-data` e
 |---|---|---|---|---|
 | `ciclo_carga` | — | `now()` UTC real (~22–23 h UTC) | `run` únicamente | estado del inversor, forecast p10/p50/p90 crudo, `solar_effective_kwh`, `energy_stored/at_dawn/deficit`, `charge_needed`, `target_soc_pct`, `target_kwh`, `valley_day_skip`, `solcast_error`, `automation_ok`, `dry_run` |
 | `stats_diarias` | `device_id` | medianoche UTC del día de datos | `run` (ayer) y backfill | `solar_kwh`, `grid_consumed_kwh`, `grid_exported_kwh`, `consumption_kwh`, `night_consumption_kwh`, `soc_start_pct`, `soc_end_pct`, `peak_soc_pct` (v1.78), `battery_charged_kwh` (v1.78), `battery_discharged_kwh` (v1.91), `records` |
-| `solar_media_hora` | — | hora local etiquetada UTC, cada 30 min | `run` (forecast + real) y backfill (real) | `real_kwh`, `house_kwh`, `grid_import_kwh`, `grid_export_kwh`, `forecast_p50_kwh`, `forecast_p10_kwh`, `forecast_p90_kwh` |
+| `solar_media_hora` | — | hora local etiquetada UTC, cada 30 min | `run` (forecast + real) y backfill (real) | `real_kwh`, `house_kwh`, `grid_import_kwh`, `grid_export_kwh`, `battery_charge_kwh` (v1.92), `battery_discharge_kwh` (v1.92), `battery_temp_c` (v1.92, solo días del datalogger SDO), `forecast_p50_kwh`, `forecast_p10_kwh`, `forecast_p90_kwh` |
 | `corriente_carga` | `mode` | hora local etiquetada UTC, al segundo | controlador de corriente, solo si cambia | `current_a`, `calculated_a`, `previous_a`, `delta_a`, `soc_pct`, `battery_temp_c`, `battery_voltage_v`, `detail`, `verified`, `dry_run` |
 
 Real y forecast comparten `solar_media_hora` a propósito: mismo timestamp de franja, así

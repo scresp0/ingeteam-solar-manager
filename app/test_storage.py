@@ -365,6 +365,9 @@ def test_write_daily_stats():
         battery_discharged_kwh=14.5, records=1440,
         half_hour_solar_kwh=[0.0] * 48, half_hour_house_kwh=[0.0] * 48,
         half_hour_grid_import_kwh=[0.0] * 48, half_hour_grid_export_kwh=[0.0] * 48,
+        half_hour_battery_charge_kwh=[0.0] * 48,
+        half_hour_battery_discharge_kwh=[0.25] * 48,
+        half_hour_battery_temp_c=[None] * 47 + [21.5],
     )
     puntos = []
     with con_write(puntos):
@@ -386,6 +389,17 @@ def test_write_daily_stats():
     with con_write(puntos):
         storage.write_daily_stats(CFG_OFF, stats)
     check("InfluxDB deshabilitado → no escribe", puntos, [])
+
+    print("\n=== write_half_hour_stats: batería y temperatura por franja (v1.92) ===")
+    puntos.clear()
+    with con_write(puntos):
+        storage.write_half_hour_stats(CFG, stats)
+    check("48 puntos", len(puntos), 48)
+    check("battery_discharge_kwh", puntos[0]["fields"]["battery_discharge_kwh"], 0.25)
+    check("battery_charge_kwh", puntos[0]["fields"]["battery_charge_kwh"], 0.0)
+    # Sin temperatura no se escribe el campo: un 0 sería un dato falso pero plausible.
+    check("sin temperatura → campo ausente", "battery_temp_c" in puntos[0]["fields"], False)
+    check("con temperatura → se escribe", puntos[47]["fields"].get("battery_temp_c"), 21.5)
 
 
 def test_write_charge_current():
