@@ -664,6 +664,10 @@ def write_half_hour_stats(cfg: InfluxDBConfig, stats: DailyStats) -> None:
       - house_kwh        : consumo de la vivienda        (v1.73)
       - grid_import_kwh  : energía tomada de red         (v1.73)
       - grid_export_kwh  : energía vertida a red         (v1.73)
+      - battery_charge_kwh    : energía cargada en la batería   (v1.92)
+      - battery_discharge_kwh : energía entregada por la batería (v1.92)
+      - battery_temp_c        : temperatura media de la batería  (v1.92; solo
+                                datalogger SDO, desde el 2026-10-03 — sin dato no se escribe)
 
     Van al MISMO measurement que la producción y el forecast, a propósito: comparten
     el timestamp de franja, así que el cruce más útil —el excedente disponible para la
@@ -685,6 +689,10 @@ def write_half_hour_stats(cfg: InfluxDBConfig, stats: DailyStats) -> None:
                 "house_kwh":       stats.half_hour_house_kwh[slot],
                 "grid_import_kwh": stats.half_hour_grid_import_kwh[slot],
                 "grid_export_kwh": stats.half_hour_grid_export_kwh[slot],
+                "battery_charge_kwh":    stats.half_hour_battery_charge_kwh[slot],
+                "battery_discharge_kwh": stats.half_hour_battery_discharge_kwh[slot],
+                **({"battery_temp_c": float(stats.half_hour_battery_temp_c[slot])}
+                   if stats.half_hour_battery_temp_c[slot] is not None else {}),
             },
         }
         for slot in range(len(stats.half_hour_solar_kwh))

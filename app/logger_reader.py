@@ -23,6 +23,9 @@ Calcula acumulados diarios a partir de los datos minuto a minuto:
   - battery_charged_kwh : energía neta cargada en la batería en el día (∫Pbatt < 0)
   - battery_discharged_kwh : energía entregada por la batería en el día (∫Pbatt > 0)
   - consumption_kwh  : consumo de la vivienda (∫ `house_power_w`)
+
+Y el perfil del día en 48 franjas de 30 min (producción, casa, red, batería y
+temperatura de la batería) para `solar_media_hora`.
 """
 
 import logging
@@ -50,6 +53,7 @@ _SDO_FIELDS = {
     "L-168": "Pdc2",      # FV 2. Potencia
     "L-133": "Pbatt",     # Batería. Potencia
     "L-135": "Sbatt",     # Batería. SOC
+    "L-152": "Tbatt",     # Batería. Temperatura (ºC) — el datalogger antiguo no la trae
     "L-183": "PacGrid",   # Vatímetro Interno Red. Potencia Activa
     "L-660": "PacMeter",  # Vatímetro Externo Red. Potencia Activa
     "L-709": "Pload",     # Cargas Totales. Potencia Activa
@@ -122,6 +126,9 @@ class DailyStats:
     half_hour_house_kwh: list[float]        # consumo de la vivienda por slot
     half_hour_grid_import_kwh: list[float]  # energía tomada de red por slot
     half_hour_grid_export_kwh: list[float]  # energía vertida a red por slot
+    half_hour_battery_charge_kwh: list[float]     # energía cargada en la batería por slot
+    half_hour_battery_discharge_kwh: list[float]  # energía entregada por la batería por slot
+    half_hour_battery_temp_c: list[float | None]  # temperatura media; None sin dato (logger antiguo)
 
 
 class LoggerReaderError(Exception):
@@ -407,6 +414,9 @@ def _calculate_stats(records: list[dict], target_date: date, device_id: str) -> 
     half_hour_house: list[float] = []
     half_hour_import: list[float] = []
     half_hour_export: list[float] = []
+    half_hour_charge: list[float] = []
+    half_hour_discharge: list[float] = []
+    half_hour_temp: list[float | None] = []
     for slot in range(48):
         slot_recs = records[slot * SLOT_MINUTES : (slot + 1) * SLOT_MINUTES]
         half_hour.append(round(sum(
@@ -417,6 +427,17 @@ def _calculate_stats(records: list[dict], target_date: date, device_id: str) -> 
             max(0, r.get("PacMeter", 0)) * INTERVAL_H for r in slot_recs) / 1000, 4))
         half_hour_export.append(round(sum(
             max(0, -r.get("PacMeter", 0)) * INTERVAL_H for r in slot_recs) / 1000, 4))
+        # Batería por franja: junto con la red y la casa de la misma franja separa las
+        # pérdidas de cada camino (red→batería en valle, batería→casa de noche), que
+        # el total diario mezcla.
+        half_hour_charge.append(round(sum(
+            max(0, -r.get("Pbatt", 0)) * INTERVAL_H for r in slot_recs) / 1000, 4))
+        half_hour_discharge.append(round(sum(
+            max(0, r.get("Pbatt", 0)) * INTERVAL_H for r in slot_recs) / 1000, 4))
+        # Sin temperatura (días del datalogger antiguo) → None, nunca 0: 0 ºC es un
+        # dato falso pero plausible en invierno.
+        temps = [r["Tbatt"] for r in slot_recs if r.get("Tbatt") is not None]
+        half_hour_temp.append(round(sum(temps) / len(temps), 1) if temps else None)
 
     return DailyStats(
         date=target_date,
@@ -436,4 +457,7 @@ def _calculate_stats(records: list[dict], target_date: date, device_id: str) -> 
         half_hour_house_kwh=half_hour_house,
         half_hour_grid_import_kwh=half_hour_import,
         half_hour_grid_export_kwh=half_hour_export,
+        half_hour_battery_charge_kwh=half_hour_charge,
+        half_hour_battery_discharge_kwh=half_hour_discharge,
+        half_hour_battery_temp_c=half_hour_temp,
     )
