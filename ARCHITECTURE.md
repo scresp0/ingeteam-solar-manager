@@ -347,8 +347,9 @@ salga de ella se pierde para siempre.
 
 ### 3.6 Escritura condicionada al inversor — `_needs_update` / `_apply_inverter_decisions`
 
-Antes de escribir, `run` y `run_recheck` leen el estado real vía
-`read_inverter_schedule` (`_read_schedule_before`) y lo comparan:
+Antes de escribir, `run` y `run_recheck` leen el estado real por MODBUS con
+`inverter.read_schedule_state` (`_read_schedule_before`; hasta v1.95 por web con
+`read_inverter_schedule`) y lo comparan:
 
 ```
 charge_soc_target = round(target_soc_pct) si charge_needed, si no 0
@@ -368,7 +369,8 @@ pulsa "Escribir").
 
 Que `schedule_before is None` fuerce la escritura es deliberado: si la lectura falla,
 se reescribe (fail-safe). El fallo de lectura llega como `None` porque
-`read_inverter_schedule` captura la excepción que lanza `_get_select_value_by_label`.
+`read_schedule_state` captura cualquier error MODBUS (y la lectura web,
+`read_inverter_schedule`, la excepción que lanza `_get_select_value_by_label`).
 
 Se emiten dos líneas de log INFO que la web y el email parsean:
 
@@ -1062,21 +1064,36 @@ en tiempo real del consumo de la vivienda.
 Es el único canal de **escritura**: MODBUS se usa solo para leer. El registro 40087 se
 lee por MODBUS pero se escribe por web.
 
-⚠️ El código partía de que la programación horaria (6.3.1/6.3.2) no estaba expuesta
-por MODBUS. **Sí lo está** (comprobado el 2026-10-21 con el mapa `/inverter/map/1`): en
-holding registers empaquetados por bits —modos de Prog 1 de 6.3.1 y 6.3.2 en 40101
-(bits 5–6 / 10–11 / 12–13, compartido con campos de otras secciones), Prog 2 de 6.3.1
-en 40134 (bits 1–2), SOC Grid 1/2 en 40120/40064 y horas en `hora·256+minuto`
-(40118/40119). Ojo: 40125 es el «SOC Grid 1» de la sección 6.2 UPS, con el mismo texto.
-Verificado escribiendo SOC 75 % por web y leyéndolo en 40120/40064. La lectura sigue
-yendo por Playwright (`read_inverter_schedule`); pasarla a MODBUS queda pendiente.
+**La programación horaria (6.3.1/6.3.2) se lee por MODBUS pero no se puede escribir
+por MODBUS.** Hasta v1.95 se creía que ni siquiera se podía leer: no figura en el PDF.
+Desde v1.96 el ciclo lee el estado ANTES con `inverter.read_schedule_state`: una sola
+lectura del bloque holding 40059–40134, ~0,3 s frente a ~25 s y una sesión web.
+`decode_schedule` aplica exactamente las reglas de la lectura web (carga activa si
+alguna programación no está Desactivada; descarga LIBRE, BLOQUEADA canónica o no
+reconocida). Registros, según `/inverter/map/1` (campos `start`/`len`):
+
+| Campo | Registro | Bits |
+|---|---|---|
+| 6.3.1 Prog 1 modo | 40101 | 5–6 |
+| 6.3.1 Prog 2 modo | 40134 | 1–2 |
+| 6.3.1 SOC Grid 1 / 2 | 40120 / 40064 | — |
+| 6.3.1 horas On/Off Prog 1 / 2 | 40118–40119 / 40062–40063 | hora·256+minuto |
+| 6.3.2 Prog 1 / Prog 2 modo | 40101 | 10–11 / 12–13 |
+| 6.3.2 horas On/Off Prog 1 / 2 | 40121–40122 / 40065–40066 | hora·256+minuto |
+
+Los modos usan los mismos códigos que el select de la web (0 Desactivado, 1 Toda la
+semana, 2 L-V, 3 S-D). 40101 y 40134 comparten bits con campos de otras secciones
+(tipo de red, potencia contratada, 6.3.3, «Uso de Batería»…): hay que enmascarar.
+⚠️ 40125 también se llama «SOC Grid 1…», pero es el de 6.2 UPS. `diag_automation`
+compara ambas lecturas: tras un cambio de firmware, una discrepancia significa que el
+empaquetado ha cambiado. `test_schedule_modbus` fija la decodificación.
 
 | Operación | Sección de la web | Función |
 |---|---|---|
 | Escribir programación de carga | **6.3.1** Programación Horaria: Carga de Batería desde Red | `set_charge_schedule` |
 | Escribir programación de descarga | **6.3.2** Programación Horaria: Descarga de Batería | `set_discharge_schedule` (+ read-back) |
 | Escribir corriente máxima de carga | **1.2** Parámetros Batería con BMS, campo "Corriente Máxima de Carga (A)" | `set_charge_current` |
-| Leer ambas programaciones | 6.3.1 + 6.3.2 en una sola sesión | `read_inverter_schedule` |
+| Leer ambas programaciones (solo `diag_automation` desde v1.96) | 6.3.1 + 6.3.2 en una sola sesión | `read_inverter_schedule` |
 | Leer versión de firmware | menú **Actualización**, fila "Firmware" | `read_firmware_version` |
 
 **Mecánica obligatoria** (aprendida a base de fallos, según los comentarios):
@@ -1566,6 +1583,7 @@ necesita InfluxDB) y devuelve código de salida agregado. No hay CI.
 | `test_storage` | 59 | Los cuatro dinámicos, el JOIN `ciclo_carga`↔`stats_diarias`, el perfil de consumo por franja y los puntos que se escriben |
 | `test_notifier` | 54 | El email: parseo de las líneas de decisión y de configuración, tarjetas, tabla ANTES/DESPUÉS, HTML y texto plano |
 | `test_scheduler` | 25 | `_parse_hhmm`, qué jobs registra `_register_jobs` para cada config, el fail-safe del `schedule_at` inválido y la reprogramación en caliente |
+| `test_schedule_modbus` | 11 | `inverter.decode_schedule`: valores reales de AG, estados canónicos y no reconocidos, e independencia de los bits ajenos de 40101/40134 |
 
 **Cómo se prueban `storage` y `notifier` sin sus dependencias** (v1.86):
 

@@ -26,7 +26,7 @@ from pathlib import Path
 from app.version import VERSION
 from app.config import load_config, AppConfig
 from app.solcast import get_two_day_forecast, get_day1_intervals, get_today_intervals, SolcastError
-from app.inverter import read_inverter_state, InverterError, InverterState
+from app.inverter import read_inverter_state, read_schedule_state, InverterError, InverterState
 from app.decision import (
     DecisionInput, decide_charge, decide_discharge,
     charge_summary, discharge_summary,
@@ -35,7 +35,7 @@ from app.decision import (
 )
 from app.automation import (
     set_charge_schedule, set_discharge_schedule, AutomationError,
-    read_inverter_schedule, ScheduleState, set_charge_current, _load_schedule_state,
+    ScheduleState, set_charge_current, _load_schedule_state,
     read_firmware_version, configure_active_profile,
 )
 from app.notifier import CycleEmailNotifier
@@ -268,7 +268,7 @@ def _read_schedule_before(cfg: AppConfig, logger: logging.Logger) -> ScheduleSta
     schedule_before: ScheduleState | None = None
     if not cfg.system.dry_run:
         try:
-            schedule_before = read_inverter_schedule(cfg.inverter)
+            schedule_before = read_schedule_state(cfg.inverter)
         except Exception as e:
             logger.warning(f"Error al leer programación del inversor: {e}")
 
