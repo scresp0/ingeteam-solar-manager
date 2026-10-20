@@ -117,7 +117,9 @@ orden:
 2. **Estado del inversor por MODBUS** (`read_inverter_state`). Si falla, se usa
    `SOC = 50 %` como fallback y se registra un `ERROR`.
 3. **`min_soc`**: el leído del inversor (holding 40126) si es > 0; si no, el de
-   `charging.min_soc_pct`.
+   `charging.min_soc_pct`. **Capacidad de la batería** (v1.94, `_battery_capacity_kwh`):
+   la leída del inversor (holding 40132) si es > 0; si no, `installation.battery_capacity_kwh`
+   con `WARNING`. El controlador de corriente usa el mismo helper.
 4. **Consumo nocturno** (dinámico o fallback), **consumo diario** (dinámico o
    fallback), **risk factor** (dinámico o fallback) y **factor de calibración
    solar** (dinámico o fallback). Ver sección 4.
@@ -799,7 +801,7 @@ difiere).
 
 | Clave | Tipo / rango | Defecto | Significado |
 |---|---|---|---|
-| `battery_capacity_kwh` | float, **requerido** | — | Capacidad nominal. Convierte SOC ↔ kWh en todo el algoritmo. Override: `BATTERY_CAPACITY_KWH`. |
+| `battery_capacity_kwh` | float, **requerido** | — | Capacidad nominal. Convierte SOC ↔ kWh en todo el algoritmo. **Solo fallback** desde v1.94: manda la del inversor (holding 40132), también sobre el override `BATTERY_CAPACITY_KWH`. |
 | `average_daily_consumption_kwh` | float, **requerido** | — | Consumo diario de 24 h. **Solo fallback** desde v1.75: lo calibra `get_avg_daily_consumption`. Override: `DAILY_CONSUMPTION_KWH`. |
 | `peak_power_kwp` | float | 0.0 | Potencia pico instalada. Informativo: no lo usa ningún cálculo. |
 
@@ -997,12 +999,13 @@ devuelve todos los input/holding registers del firmware en curso con su nombre, 
 eso valor y signo coinciden con los del datalogger. Es la fuente a consultar para
 cualquier registro nuevo o tras un cambio de firmware.
 
-Más dos holding registers, leídos por separado y tolerantes a fallo:
+Más tres holding registers, leídos por separado y tolerantes a fallo:
 
 | Registro | Dirección | Campo | Si falla |
 |---|---|---|---|
 | 40126 | 125 | SOC mínimo configurado en el inversor | `min_soc = 0.0` → el algoritmo usa el de config |
 | 40087 | 86 | **Corriente máxima de carga** (A, 1–66) | `charge_current_max_a = 0.0` → el controlador considera el tope ilegible y **omite el tick** |
+| 40132 | 131 | **Capacidad nominal** (kWh ×10; sección web 1.2, rango 1–200 kWh) — parámetro que se configura en el inversor, no medida del BMS | `battery_capacity_kwh = 0.0` → se usa la de config |
 
 Todo el acceso MODBUS está serializado por `_MODBUS_LOCK` (decorador
 `@_serialize_modbus`). Motivo documentado: el inversor admite muy pocas conexiones

@@ -60,7 +60,7 @@ def _cfg(**overrides):
 
 
 def _state(soc, temp):
-    return NS(soc_pct=soc, battery_temp_c=temp, battery_voltage_v=V)
+    return NS(soc_pct=soc, battery_temp_c=temp, battery_voltage_v=V, battery_capacity_kwh=0.0)
 
 
 def _sched(charge_needed, target=0):

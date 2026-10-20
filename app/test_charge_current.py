@@ -40,7 +40,7 @@ def _cfg(**overrides):
 
 
 def _state(soc, temp, v=50.0):
-    return NS(soc_pct=soc, battery_temp_c=temp, battery_voltage_v=v)
+    return NS(soc_pct=soc, battery_temp_c=temp, battery_voltage_v=v, battery_capacity_kwh=0.0)
 
 
 def _sched(charge_needed, target=0):
@@ -186,6 +186,22 @@ def main():
     check("fría con window → máx (gate manda)", comp_win(cfg, _state(70, 28), 12.0, 40, win([4.0] * 10)), 66, "máx")
     # Window vacía (forecast dice que ya no queda sol) → end_hour 0 → IDLE.
     check("sin sol restante → IDLE", comp_win(cfg, _state(70, 32), 12.0, 33, win([], 0.0)), 33, "sin cambios")
+
+    print("=== Capacidad de la batería: manda el inversor (40132) ===")
+    st_inv = _state(50, 24)
+    st_inv.battery_capacity_kwh = 11.25
+    # Mismo caso que "SOC50→95, quedan 6h" (40A con los 22.5 de config): con la mitad
+    # de capacidad leída del inversor la energía pendiente es la mitad → la mitad de corriente.
+    check("capacidad del inversor 11.25 kWh", comp(cfg, st_inv, 2.0, _sched(True, 95), 55, 0), 20, "VALLE")
+    for desc, st, exp in [
+        ("inversor 19.0 → manda el inversor", NS(battery_capacity_kwh=19.0), 19.0),
+        ("inversor 0 (no leída) → config", NS(battery_capacity_kwh=0.0), 22.5),
+        ("sin estado MODBUS → config", None, 22.5),
+    ]:
+        got = m._battery_capacity_kwh(cfg, st)
+        ok = got == exp
+        passed, failed = passed + ok, failed + (not ok)
+        print(f"  {'✓' if ok else '✗'}  {desc} → {got}" + ("" if ok else f"  (esperado {exp})"))
 
     print("=== Perfil histórico de consumo (_house_consumption_for_slot) ===")
 
