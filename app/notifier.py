@@ -200,6 +200,14 @@ def _render_config_change(log: str) -> str:
             f'color:{color};text-align:center;{border_style}">{v}</td>'
         )
 
+    def arrow_cell(border: bool = True) -> str:
+        border_style = f"border-bottom:1px solid {_C['border']};" if border else ""
+        return (
+            f'<td style="padding:8px 0;font-size:12px;font-weight:700;'
+            f'font-family:monospace;color:{_C["muted"]};text-align:center;'
+            f'white-space:nowrap;{border_style}">--&gt;</td>'
+        )
+
     label_style = (
         f"padding:8px 14px;font-size:12.5px;color:{_C['text']};"
         f"border-bottom:1px solid {_C['border']};"
@@ -220,16 +228,18 @@ def _render_config_change(log: str) -> str:
         f'<tr>'
         f'<th style="{th_label_style}">Parámetro</th>'
         f'<th style="{th_style}">Antes</th>'
+        f'<th style="{th_style}"></th>'
         f'<th style="{th_style}">Después</th>'
         f'</tr>'
         f'<tr>'
         f'<td style="{label_style}">Carga (6.3.1)</td>'
-        f'{val_cell(antes_charge)}{val_cell(despues_charge)}'
+        f'{val_cell(antes_charge)}{arrow_cell()}{val_cell(despues_charge)}'
         f'</tr>'
         f'<tr>'
         f'<td style="padding:8px 14px;font-size:12.5px;color:{_C["text"]};">'
         f'Descarga (6.3.2)</td>'
-        f'{val_cell(antes_discharge, border=False)}{val_cell(despues_discharge, border=False)}'
+        f'{val_cell(antes_discharge, border=False)}{arrow_cell(border=False)}'
+        f'{val_cell(despues_discharge, border=False)}'
         f'</tr>'
         f'</table>'
     )
