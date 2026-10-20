@@ -157,7 +157,7 @@ LABEL_SOC_2  = "SOC Grid 2: Carga máxima para mantener las baterías desde la R
 # secciones (verificado por dump del DOM el 2026-07-11). El resto de campos (SOC Grid,
 # Hora/Minuto On/Off) son estables. Por eso el perfil solo modela esas 4 etiquetas.
 #
-# Solo el perfil "Modo" (ABH1007AD y ABH1007AE) está verificado en vivo; el perfil "legacy"
+# Solo el perfil "Modo" (ABH1007AD, ABH1007AE y ABH1007AG) está verificado en vivo; el perfil "legacy"
 # documenta las etiquetas anteriores (histórico, sin inversor viejo para verificar).
 # Firmware desconocido → se usa DEFAULT (el más reciente) con un WARNING para revisar.
 
@@ -190,6 +190,7 @@ _PROFILE_LEGACY = LabelProfile(
 FIRMWARE_PROFILES: dict[str, LabelProfile] = {
     "ABH1007AD": _PROFILE_MODO,
     "ABH1007AE": _PROFILE_MODO,   # mismas etiquetas; lectura y escritura verificadas en vivo el 2026-10-03
+    "ABH1007AG": _PROFILE_MODO,   # ídem el 2026-10-21 (DSP ABH1006AD); mapa sin cambios en lo que usa la app
 }
 # Perfil por defecto para firmware desconocido/no leído: el más reciente verificado.
 DEFAULT_PROFILE = _PROFILE_MODO
