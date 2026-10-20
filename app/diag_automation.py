@@ -9,7 +9,8 @@ Ejecutar con:
   docker compose run --rm solar-manager python -m app.diag_automation [opciones]
 
 Opciones:
-  (sin flags)   lee el estado actual del inversor (6.3.1 y 6.3.2) — solo lectura
+  (sin flags)   lee el estado actual del inversor (6.3.1 y 6.3.2) por web y por
+                MODBUS y comprueba que coinciden — solo lectura
   --write       ejecuta además las escrituras en dry_run (navega, rellena, no guarda)
   --write --go  ejecuta las escrituras aplicando cambios REALES al inversor
 """
@@ -24,6 +25,7 @@ from app.automation import (
     configure_active_profile,
     AutomationError,
 )
+from app.inverter import read_schedule_state
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -60,6 +62,17 @@ def main():
 
     print(f"  6.3.1 Carga    : {state.charge_str()}")
     print(f"  6.3.2 Descarga : {state.discharge_str()}")
+    print()
+
+    # ── Misma lectura por MODBUS (la que usa el ciclo) ─────────────────────
+    # Tras un cambio de firmware, una discrepancia aquí significa que el empaquetado
+    # de bits de inverter.read_schedule_state ya no corresponde con la web.
+    print("── Comparando con la lectura MODBUS (inverter.read_schedule_state) ──")
+    modbus_state = read_schedule_state(cfg.inverter)
+    if modbus_state != state:
+        print(f"  ERROR: web={state} ≠ MODBUS={modbus_state}")
+        sys.exit(1)
+    print("  OK — web y MODBUS coinciden")
     print()
 
     if not do_write:

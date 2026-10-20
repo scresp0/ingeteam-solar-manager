@@ -25,6 +25,9 @@ Holding registers (función 0x03):
   40087 — Corriente Máxima de Carga [A]
   40126 — SOC mínimo                [%]
   40132 — Capacidad Nominal         [kWh x10]  (sección web 1.2; mapa: `of: float(1)`)
+  40059–40134 — Programación horaria 6.3.1 / 6.3.2, empaquetada por bits — ver
+                `read_schedule_state`. Solo LECTURA: escribirla por MODBUS no funciona,
+                la escritura sigue siendo por web.
 """
 
 import functools
@@ -35,6 +38,11 @@ from dataclasses import dataclass
 from pymodbus.client import ModbusTcpClient
 from pymodbus.exceptions import ModbusException
 
+from app.automation import (
+    ScheduleState, SCHEDULE_DISABLED, SCHEDULE_WEEKDAY, SCHEDULE_WEEKEND,
+    DISC_WEEKDAY_ON_H, DISC_WEEKDAY_ON_M, DISC_WEEKDAY_OFF_H, DISC_WEEKDAY_OFF_M,
+    DISC_WEEKEND_ON_H, DISC_WEEKEND_ON_M, DISC_WEEKEND_OFF_H, DISC_WEEKEND_OFF_M,
+)
 from app.config import InverterConfig
 from app.logger_reader import house_power_w
 
@@ -248,3 +256,100 @@ def read_inverter_state(cfg: InverterConfig) -> InverterState:
     finally:
         client.close()
 
+
+# ---------------------------------------------------------------------------
+# Programación horaria 6.3.1 / 6.3.2 (solo lectura)
+# ---------------------------------------------------------------------------
+# No viene en el PDF de registros: sale de `GET /inverter/map/1` (campos `start`/`len`
+# de cada entrada `holding`), verificado el 2026-10-21 con firmware ABH1007AG. Los
+# modos van empaquetados por bits en registros que comparten con campos de otras
+# secciones (40101 lleva también el tipo de red, la potencia contratada y 6.3.3), así
+# que hay que enmascarar. Las horas van como hora·256 + minuto.
+#   ⚠️ 40125 también se llama «SOC Grid 1…», pero es el de 6.2 UPS: el de 6.3.1 es 40120.
+# Direcciones base-0 (40101 → 100).
+_SCHED_FIRST, _SCHED_COUNT = 58, 76          # bloque 40059–40134, una sola lectura
+_CHARGE_PROG1_MODE = (100, 5, 2)             # (dirección, bit inicial, nº de bits)
+_CHARGE_PROG2_MODE = (133, 1, 2)
+_CHARGE_SOC_1      = 119                     # 40120 SOC Grid 1 de 6.3.1
+_DISC_PROG1_MODE   = (100, 10, 2)
+_DISC_PROG2_MODE   = (100, 12, 2)
+_DISC_PROG1_ON, _DISC_PROG1_OFF = 120, 121   # 40121 / 40122
+_DISC_PROG2_ON, _DISC_PROG2_OFF = 64, 65     # 40065 / 40066
+
+
+def _bits(regs: dict[int, int], field: tuple[int, int, int]) -> str:
+    addr, start, length = field
+    return str((regs[addr] >> start) & ((1 << length) - 1))
+
+
+def _hhmm(value: int) -> tuple[int, int]:
+    return value >> 8, value & 0xFF
+
+
+def decode_schedule(regs: dict[int, int]) -> ScheduleState:
+    """Traduce los holding registers de 6.3.1/6.3.2 al mismo `ScheduleState` que la web.
+
+    Mismas reglas que `automation._read_charge_state` / `_read_discharge_state`:
+    carga activa si cualquiera de las dos programaciones no está Desactivada; descarga
+    LIBRE si ambas lo están, BLOQUEADA solo con la config canónica, y cualquier otra
+    cosa → `discharge_recognized=False` para forzar la reescritura.
+    """
+    charge_active = (_bits(regs, _CHARGE_PROG1_MODE) != SCHEDULE_DISABLED
+                     or _bits(regs, _CHARGE_PROG2_MODE) != SCHEDULE_DISABLED)
+    charge_soc = regs[_CHARGE_SOC_1] if charge_active else 0
+
+    disc1, disc2 = _bits(regs, _DISC_PROG1_MODE), _bits(regs, _DISC_PROG2_MODE)
+    if disc1 == SCHEDULE_DISABLED and disc2 == SCHEDULE_DISABLED:
+        blocked, recognized = False, True
+    elif (disc1 == SCHEDULE_WEEKDAY and disc2 == SCHEDULE_WEEKEND
+          and _hhmm(regs[_DISC_PROG1_ON]) + _hhmm(regs[_DISC_PROG1_OFF])
+              == (DISC_WEEKDAY_ON_H, DISC_WEEKDAY_ON_M, DISC_WEEKDAY_OFF_H, DISC_WEEKDAY_OFF_M)
+          and _hhmm(regs[_DISC_PROG2_ON]) + _hhmm(regs[_DISC_PROG2_OFF])
+              == (DISC_WEEKEND_ON_H, DISC_WEEKEND_ON_M, DISC_WEEKEND_OFF_H, DISC_WEEKEND_OFF_M)):
+        blocked, recognized = True, True
+    else:
+        logger.warning(
+            "6.3.2 tiene una programación de descarga activa pero NO canónica "
+            f"(Prog1={disc1} {_hhmm(regs[_DISC_PROG1_ON])}–{_hhmm(regs[_DISC_PROG1_OFF])}, "
+            f"Prog2={disc2} {_hhmm(regs[_DISC_PROG2_ON])}–{_hhmm(regs[_DISC_PROG2_OFF])}) "
+            "— se reescribirá"
+        )
+        blocked, recognized = False, False
+
+    return ScheduleState(
+        charge_active=charge_active,
+        charge_soc_pct=charge_soc,
+        discharge_blocked=blocked,
+        discharge_recognized=recognized,
+    )
+
+
+@_serialize_modbus
+def read_schedule_state(cfg: InverterConfig) -> ScheduleState | None:
+    """Lee 6.3.1 y 6.3.2 por MODBUS. None si falla (el caller fuerza la reescritura).
+
+    Sustituye a `automation.read_inverter_schedule` (Playwright, ~25 s y una sesión
+    web) para leer el estado ANTES de escribir; esa sigue existiendo para
+    `diag_automation`, que compara ambas lecturas tras un cambio de firmware.
+    """
+    client = ModbusTcpClient(host=cfg.get_modbus_host(), port=cfg.modbus_port,
+                             timeout=cfg.browser_timeout_seconds)
+    try:
+        if not client.connect():
+            raise InverterError(f"No se pudo conectar al inversor en {cfg.get_modbus_host()}:502")
+        result = client.read_holding_registers(address=_SCHED_FIRST, count=_SCHED_COUNT,
+                                               slave=cfg.modbus_slave)
+        if result.isError():
+            raise InverterError(f"Error MODBUS al leer la programación: {result}")
+        regs = dict(enumerate(result.registers, start=_SCHED_FIRST))
+        state = decode_schedule(regs)
+        logger.info(
+            f"Programación leída del inversor (MODBUS): "
+            f"6.3.1 Carga={state.charge_str()} | 6.3.2 Descarga={state.discharge_str()}"
+        )
+        return state
+    except Exception as e:
+        logger.warning(f"No se pudo leer la programación del inversor por MODBUS: {e}")
+        return None
+    finally:
+        client.close()

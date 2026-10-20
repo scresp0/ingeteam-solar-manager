@@ -542,6 +542,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
             "charge_current": "app.test_charge_current",
             "charge_current_scenarios": "app.test_charge_current_scenarios",
             "scheduler":  "app.test_scheduler",
+            "schedule_modbus": "app.test_schedule_modbus",
             "simulate_current": "app.simulate_charge_current",
         }
         if test_name not in allowed:
