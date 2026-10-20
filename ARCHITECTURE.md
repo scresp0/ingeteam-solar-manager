@@ -84,8 +84,10 @@ un `None` que fuerce la ruta segura, nunca un valor por defecto plausible. Ver
 | `scripts/backup_influxdb.sh` | Backup real de producción: binario + line protocol de InfluxDB a NAS por NFS, con rotación GFS. Independiente de la aplicación. |
 | `scripts/systemd/*.{service,timer}` | Unidades systemd que ejecutan ese script a las 23:57 con `Persistent=true`. |
 | `scripts/migrate_config.py` | Renombra las claves obsoletas de `config.yaml` (`make migrate-config`). |
+| `scripts/inverter_map.py` | Guarda (`save`) y compara (`diff`) el mapa `GET /inverter/map/1` antes y después de una actualización de firmware. Ver §7.1. |
 | `Makefile` | `up/down/restart/build/logs/shell/migrate-config`. Inyecta `HOST_HOSTNAME=$(hostname)`, que `docker-compose.yml` requiere. |
 | `docs/` | PDFs de Ingeteam (registros MODBUS, manual, API, notas de firmware) y un `.docx`. Documentación de referencia del fabricante, no código. |
+| `docs/inverter-maps/` | Instantáneas del mapa de registros del inversor (`inverter_map.py save`), referencia para comparar tras cada firmware. |
 
 ---
 
@@ -998,6 +1000,21 @@ devuelve todos los input/holding registers del firmware en curso con su nombre, 
 `loggermap` que declara de qué dirección MODBUS copia el datalogger cada campo — por
 eso valor y signo coinciden con los del datalogger. Es la fuente a consultar para
 cualquier registro nuevo o tras un cambio de firmware.
+
+**Antes y después de actualizar el firmware**, `scripts/inverter_map.py` (stdlib, corre
+en el host con las credenciales de `.env`): `save` guarda el mapa en `docs/inverter-maps/`;
+`diff <antes.json> [después.json]` lo compara (sin segundo fichero, contra el inversor
+en vivo). Marca como **crítico** —exit code 1— cualquier cambio en lo que usa la app:
+dirección, tipo o escala de los registros de esta sección (lista `MODBUS_REGISTERS`
+del script, a mantener a mano), posición de los campos de `_SDO_FIELDS` y presencia de
+las etiquetas web de `automation.py` (perfil por defecto, `LABEL_*`) en los textos
+`langs` del mapa. Estas dos últimas listas se extraen del código con `ast`, no se
+duplican. Un registro movido es el fallo más peligroso: se leerían números plausibles
+pero erróneos sin ningún error. Lo que no está en el mapa (navegación, botones
+Leer/Escribir, menú Actualización) sigue requiriendo `diag_automation` y una escritura
+de verificación. Gotcha: los tids de holding se repiten (`L-242` «Corriente Máxima de
+Carga» existe en 1.1 plomo-ácido @80 y en 1.2 BMS @86), por eso los holding críticos
+se identifican también por `cat`.
 
 Más tres holding registers, leídos por separado y tolerantes a fallo:
 
