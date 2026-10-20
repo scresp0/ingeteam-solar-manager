@@ -30,7 +30,7 @@ inverter:
 # Instalación fotovoltaica
 # -----------------------------------------------------------------------------
 installation:
-  battery_capacity_kwh: 10.0
+  battery_capacity_kwh: 10.0          # fallback: manda la del inversor (holding 40132)
   average_daily_consumption_kwh: 15.0
   peak_power_kwp: 5.0
 

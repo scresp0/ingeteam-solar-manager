@@ -1752,7 +1752,8 @@ const CONFIG_SCHEMA = [
       {
         section: 'installation', title: 'Instalación',
         fields: [
-          { key: 'battery_capacity_kwh',          label: 'Capacidad batería (kWh)',       type: 'number', min: 0, step: 0.01 },
+          { key: 'battery_capacity_kwh',          label: 'Capacidad batería (kWh)',       type: 'number', min: 0, step: 0.01,
+            help: 'Fallback: manda la capacidad nominal configurada en el inversor (1.2, registro 40132).' },
           { key: 'average_daily_consumption_kwh', label: 'Consumo diario fallback (kWh)', type: 'number', min: 0, step: 0.1,
             help: 'Consumo total de 24 h. Solo se usa mientras el consumo diario dinámico no tenga días suficientes.' },
           { key: 'peak_power_kwp',                label: 'Potencia pico paneles (kWp)',   type: 'number', min: 0, step: 0.1 },

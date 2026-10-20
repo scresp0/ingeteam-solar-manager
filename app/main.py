@@ -73,6 +73,16 @@ def setup_logging(cfg: AppConfig) -> None:
     logging.basicConfig(level=level, format=fmt, handlers=handlers)
 
 
+def _battery_capacity_kwh(cfg: AppConfig, state: InverterState | None) -> float:
+    """Capacidad nominal: la del inversor (40132) si se leyó; si no, la de config/.env.
+
+    Manda el inversor porque es donde se actualiza al cambiar módulos del stack.
+    """
+    if state is not None and state.battery_capacity_kwh > 0:
+        return state.battery_capacity_kwh
+    return cfg.installation.battery_capacity_kwh
+
+
 def _collect_decision_inputs(
     cfg: AppConfig, logger: logging.Logger,
 ) -> tuple[DecisionInput, InverterState | None, list[dict]]:
@@ -125,6 +135,18 @@ def _collect_decision_inputs(
     if state is not None and state.min_soc_pct > 0:
         min_soc = state.min_soc_pct
         logger.info(f"SOC mínimo leído del inversor: {min_soc}% (config: {cfg.charging.min_soc_pct}%)")
+
+    # capacidad: del inversor si disponible, si no del config
+    battery_capacity = _battery_capacity_kwh(cfg, state)
+    if state is not None and state.battery_capacity_kwh > 0:
+        logger.info(
+            f"Capacidad batería leída del inversor: {battery_capacity} kWh "
+            f"(config: {cfg.installation.battery_capacity_kwh} kWh)"
+        )
+    else:
+        logger.warning(
+            f"Capacidad batería no disponible en el inversor — usando config: {battery_capacity} kWh"
+        )
 
     # 3. Consumo nocturno dinámico
     night_consumption_kwh = cfg.charging.night_consumption_kwh
@@ -226,7 +248,7 @@ def _collect_decision_inputs(
         forecast_day1=forecast_day1,
         forecast_day2=forecast_day2,
         soc_actual_pct=soc_actual,
-        battery_capacity_kwh=cfg.installation.battery_capacity_kwh,
+        battery_capacity_kwh=battery_capacity,
         daily_consumption_kwh=daily_consumption_kwh,
         night_consumption_kwh=night_consumption_kwh,
         risk_factor=risk_factor,
@@ -819,7 +841,7 @@ def _compute_target_charge_current(
     cc = cfg.charge_current
     soc = state.soc_pct
     v = state.battery_voltage_v if state.battery_voltage_v and state.battery_voltage_v > 30 else 50.0
-    cap = cfg.installation.battery_capacity_kwh
+    cap = _battery_capacity_kwh(cfg, state)
     max_soc = cfg.charging.max_soc_pct
 
     def amps_for(energy_kwh: float, hours: float, floor_a: int | None = None) -> tuple[int, int]:

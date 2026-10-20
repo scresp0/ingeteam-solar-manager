@@ -20,6 +20,11 @@ Registros usados:
 Los cuatro últimos no salen del PDF sino del mapa que publica el propio inversor
 (`GET /inverter/map/1`, firmware ABH1007AE, 2026-10-04): su `loggermap` declara de qué
 dirección MODBUS copia el datalogger cada campo, así que valor y signo son los mismos.
+
+Holding registers (función 0x03):
+  40087 — Corriente Máxima de Carga [A]
+  40126 — SOC mínimo                [%]
+  40132 — Capacidad Nominal         [kWh x10]  (sección web 1.2; mapa: `of: float(1)`)
 """
 
 import functools
@@ -100,6 +105,7 @@ class InverterState:
     battery_status: str        # Descripción del estado de la batería
     min_soc_pct: float = 0.0   # SOC mínimo configurado en el inversor (holding reg 40126)
     charge_current_max_a: float = 0.0  # Corriente máxima de carga configurada (holding reg 40087) [A]
+    battery_capacity_kwh: float = 0.0  # Capacidad nominal configurada (holding reg 40132) [kWh]; 0 = no leída
     pv_power_w: int = 0        # Producción solar instantánea, FV 1 + FV 2 [W]
     grid_power_w: int = 0      # Vatímetro externo [W] (+ importando de red, − exportando)
     house_power_w: int = 0     # Consumo de la vivienda [W] — ver `logger_reader.house_power_w`
@@ -197,6 +203,18 @@ def read_inverter_state(cfg: InverterConfig) -> InverterState:
         except Exception as e:
             logger.debug(f"No se pudo leer corriente máxima de carga (40087): {e}")
 
+        # Capacidad nominal de la batería (holding 40132 → address 131) [kWh x10]
+        # Es el valor que se configura en la web (1.2), no una medida del BMS.
+        battery_capacity = 0.0
+        try:
+            cap = client.read_holding_registers(address=131, count=1, slave=slave)
+            if not cap.isError():
+                battery_capacity = cap.registers[0] / 10.0
+            else:
+                logger.warning(f"Error leyendo holding register 40132: {cap}")
+        except Exception as e:
+            logger.warning(f"No se pudo leer capacidad nominal de la batería (40132): {e}")
+
         state = InverterState(
             soc_pct=float(soc),
             soh_pct=float(soh),
@@ -207,6 +225,7 @@ def read_inverter_state(cfg: InverterConfig) -> InverterState:
             battery_status=BATTERY_STATUS.get(battery_status_code, f"Unknown ({battery_status_code})"),
             min_soc_pct=min_soc,
             charge_current_max_a=charge_current_max,
+            battery_capacity_kwh=battery_capacity,
             pv_power_w=regs[33] + regs[36],
             grid_power_w=grid_power_w,
             house_power_w=round(house_power_w({"Pload": regs[78]})),
@@ -216,6 +235,7 @@ def read_inverter_state(cfg: InverterConfig) -> InverterState:
             f"Inversor: {state.inverter_status} | "
             f"Batería: {state.battery_status} | "
             f"SOC: {state.soc_pct}% (min={state.min_soc_pct}%) | SOH: {state.soh_pct}% | "
+            f"Capacidad: {state.battery_capacity_kwh} kWh | "
             f"Potencia: {state.battery_power_w}W | "
             f"Tensión: {state.battery_voltage_v}V | "
             f"Temp: {state.battery_temp_c}ºC"
