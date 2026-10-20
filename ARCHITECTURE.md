@@ -1059,10 +1059,17 @@ en tiempo real del consumo de la vivienda.
 
 ### 7.3 Playwright / Chromium — escritura (`automation.py`)
 
-Es el único canal de **escritura**, porque —según el propio código— la configuración de
-programación horaria (6.3.1/6.3.2) **no está expuesta por MODBUS**, ni en input
-registers ni en los holding documentados; y el registro 40087, aunque se lee por
-MODBUS, se escribe por web.
+Es el único canal de **escritura**: MODBUS se usa solo para leer. El registro 40087 se
+lee por MODBUS pero se escribe por web.
+
+⚠️ El código partía de que la programación horaria (6.3.1/6.3.2) no estaba expuesta
+por MODBUS. **Sí lo está** (comprobado el 2026-10-21 con el mapa `/inverter/map/1`): en
+holding registers empaquetados por bits —modos de Prog 1 de 6.3.1 y 6.3.2 en 40101
+(bits 5–6 / 10–11 / 12–13, compartido con campos de otras secciones), Prog 2 de 6.3.1
+en 40134 (bits 1–2), SOC Grid 1/2 en 40120/40064 y horas en `hora·256+minuto`
+(40118/40119). Ojo: 40125 es el «SOC Grid 1» de la sección 6.2 UPS, con el mismo texto.
+Verificado escribiendo SOC 75 % por web y leyéndolo en 40120/40064. La lectura sigue
+yendo por Playwright (`read_inverter_schedule`); pasarla a MODBUS queda pendiente.
 
 | Operación | Sección de la web | Función |
 |---|---|---|
@@ -1097,8 +1104,9 @@ MODBUS, se escribe por web.
 **Perfiles de etiquetas por firmware (`LabelProfile` / `FIRMWARE_PROFILES`):**
 la única etiqueta que cambia entre firmwares es la fila del SELECT "Programación
 Horaria N". Hay dos perfiles: `modo` (`"Programación Horaria N: Modo"`, firmware
-`ABH1007AD` y `ABH1007AE`, verificado en vivo — AE el 2026-10-03 con escrituras reales
-y restauración en 1.2, 6.3.1 y 6.3.2) y `legacy`
+`ABH1007AD`, `ABH1007AE` y `ABH1007AG`, verificado en vivo — AE el 2026-10-03 y AG el
+2026-10-21 con escrituras reales y restauración en 1.2, 6.3.1 y 6.3.2; AG vino con el DSP
+ABH1006AD y `scripts/inverter_map.py diff` no encontró cambios en lo que usa la app) y `legacy`
 (`"...: Carga de baterías desde la Red"` / `"...: Descarga de baterías"`, histórico sin
 verificar). Las etiquetas de `SOC Grid` y de `Hora/Minuto On/Off` son estables.
 
