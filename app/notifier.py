@@ -71,7 +71,7 @@ def _parse_decision(log: str) -> tuple:
             if m:
                 soc = float(m.group(1))
         # Solar efectiva (valor ponderado p10/p50 que usa el algoritmo)
-        m = re.search(r'solar efectiva ([\d.]+) kWh', line)
+        m = re.search(r'solar efectiva [\d.]+% \(([\d.]+) kWh\)', line)
         if m:
             forecast = float(m.group(1))
         # Fallback: p50 de Solcast (días valle, donde el one-liner no incluye solar efectiva)

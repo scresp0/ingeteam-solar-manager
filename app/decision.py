@@ -346,6 +346,11 @@ def discharge_summary(
 # One-liners para el log de producción (INFO level)
 # ---------------------------------------------------------------------------
 
+def _pct_kwh(kwh: float, capacity_kwh: float) -> str:
+    """Energía como «% de batería (kWh)», p.ej. «66% (14.8 kWh)»."""
+    return f"{round(kwh / capacity_kwh * 100)}% ({kwh} kWh)"
+
+
 def charge_oneliner(
     inp: DecisionInput,
     result: ChargeDecision,
@@ -356,25 +361,27 @@ def charge_oneliner(
     ref      = _ref_date if _ref_date is not None else reference_date(night_cutoff_hour)
     tomorrow = ref + timedelta(days=1)
     dia_es   = dias[tomorrow.weekday()]
+    cap      = inp.battery_capacity_kwh
+    soc      = f"SOC {inp.soc_actual_pct:g}% ({round(inp.soc_actual_pct * cap / 100, 1)} kWh)"
+    solar    = f"solar efectiva {_pct_kwh(result.solar_effective_kwh, cap)}"
 
     if result.valley_day_skip:
         return (
             f"[CARGA] NO · valle {dia_es} {tomorrow.strftime('%d/%m')} · "
-            f"SOC {inp.soc_actual_pct}% · "
-            f"solar efectiva {result.solar_effective_kwh} kWh "
+            f"{soc} · {solar} "
             f"(p10/p50 {inp.forecast_day1.p10}/{inp.forecast_day1.p50} kWh)"
         )
     if not result.charge_needed:
         return (
             f"[CARGA] NO · solar suficiente · "
-            f"SOC {inp.soc_actual_pct}% → alba {result.energy_at_dawn_kwh} kWh · "
-            f"solar efectiva {result.solar_effective_kwh} kWh · déficit 0 kWh"
+            f"{soc} → alba {_pct_kwh(result.energy_at_dawn_kwh, cap)} · "
+            f"{solar} · déficit {_pct_kwh(0, cap)}"
         )
     return (
         f"[CARGA] SÍ → SOC {result.target_soc_pct}% · "
         f"+{result.to_charge_kwh} kWh desde red · "
-        f"SOC {inp.soc_actual_pct}% → alba {result.energy_at_dawn_kwh} kWh · "
-        f"solar efectiva {result.solar_effective_kwh} kWh · déficit {result.deficit_kwh} kWh"
+        f"{soc} → alba {_pct_kwh(result.energy_at_dawn_kwh, cap)} · "
+        f"{solar} · déficit {_pct_kwh(result.deficit_kwh, cap)}"
     )
 
 
