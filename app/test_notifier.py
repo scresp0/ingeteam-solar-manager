@@ -265,6 +265,11 @@ def test_render_no_pierde_decisiones():
         check(f"SOC {soc} ref {ref}: {len(filas)} tarjetas y todas renderizadas",
               len(filas) == 2 and all(f[3] in cards for f in filas),
               [f[3] for f in filas])
+        check(f"SOC {soc} ref {ref}: un dato por línea (sin « · » en el HTML)",
+              " · " not in cards and all(
+                  seg.strip().replace("&", "&amp;").replace("<", "&lt;") in cards
+                  for f in filas for seg in f[4].split(" · ")),
+              cards[:200])
         tabla = _render_config_change(log)
         check(f"SOC {soc} ref {ref}: tabla de configuración renderizada",
               "6.3.1" in tabla or "ACTIVA" in tabla or "DESACTIVADA" in tabla, tabla[:80])

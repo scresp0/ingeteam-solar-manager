@@ -131,7 +131,7 @@ def _extract_decision_lines(log: str) -> list[tuple]:
 
         if body.startswith('[CARGA] SÍ'):
             tag, color, bg, badge = 'charge', *_DECISION_STYLES['charge']
-            text = re.sub(r'^\[CARGA\] SÍ ?·? ?', '→ ', body).strip()
+            text = re.sub(r'^\[CARGA\] SÍ ?·? ?', '', body).strip()
         elif body.startswith('[CARGA] NO'):
             tag, color, bg, badge = 'no-charge', *_DECISION_STYLES['no-charge']
             text = re.sub(r'^\[CARGA\] NO ?·? ?', '', body).strip()
@@ -267,16 +267,29 @@ def _render_decision_cards(log: str, success: bool) -> str:
             )
         return '<p style="color:#6b7a8d;font-size:13px;">Sin decisiones en el log.</p>'
 
+    def esc(s: str) -> str:
+        return s.replace("&", "&amp;").replace("<", "&lt;")
+
     html = ''
     for _, color, bg, badge, text in rows:
+        # El one-liner separa sus datos con « · »: el primero es el motivo y va
+        # junto al badge; el resto, uno por línea debajo para leer el porqué.
+        head, *details = [p.strip() for p in text.split(' · ') if p.strip()] or ['']
+        details_html = ''.join(
+            f'<div style="font-size:12.5px;color:#4a5a6d;padding:2px 0 2px 2px;">'
+            f'<span style="color:{color};margin-right:6px;">&#9656;</span>{esc(d)}</div>'
+            for d in details
+        )
         html += (
             f'<div style="border-left:3px solid {color};background:{bg};'
             f'border-radius:0 6px 6px 0;padding:10px 14px;margin:5px 0;">'
+            f'<div style="margin-bottom:{6 if details else 0}px;">'
             f'<span style="background:{color};color:#fff;font-size:10px;font-weight:700;'
             f'padding:2px 8px;border-radius:3px;letter-spacing:.5px;text-transform:uppercase;'
             f'margin-right:10px;font-family:monospace;">{badge}</span>'
-            f'<span style="font-size:12.5px;color:#2c3e50;">'
-            f'{text.replace("&","&amp;").replace("<","&lt;")}</span>'
+            f'<span style="font-size:13px;font-weight:600;color:#2c3e50;">{esc(head)}</span>'
+            f'</div>'
+            f'{details_html}'
             f'</div>\n'
         )
     return html
