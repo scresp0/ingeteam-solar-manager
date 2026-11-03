@@ -347,6 +347,15 @@ def run():
              window=plano(2.0, 8), current=40, esperado=6,
              espera=dict(modo="BALANCE (fino)", calc=1)),
 
+        # 3ª etapa opcional: con balance_soc_pct_3 definido el suelo baja a un
+        # cuarto (12//4 = 3 A). Sin definir (resto de escenarios) no se aplica.
+        dict(titulo="99.5% con 3ª etapa → suelo a un cuarto", modo="SOLAR",
+             cfg=_cfg(**{k: v for k, v in _BALANCE.items() if k not in _BASE},
+                      balance_soc_pct_3=99.5),
+             soc=99.5, temp=28, hour=14.0, solar_end=18.0,
+             window=plano(2.0, 8), current=40, esperado=3,
+             espera=dict(modo="BALANCE (extrafino)", calc=1)),
+
         # También balancea de noche, pero solo si el valle está cargando: el tope
         # real de carga lo marca 6.3.1, no la corriente.
         dict(titulo="98% en valle con carga programada → BALANCE", modo="VALLE",

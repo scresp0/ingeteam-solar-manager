@@ -103,6 +103,7 @@ _EDITABLE_FIELDS: dict[str, dict[str, tuple[str, str | None]]] = {
         "balance_soc_pct":                  ("float", None),
         "balance_soc_pct_2":                ("float", None),
         "balance_floor_a":                  ("int",   None),
+        "balance_soc_pct_3":                ("float_nullable", None),
     },
     # Backup externo por SCP. No hay secretos: la autenticación es por clave
     # SSH montada como fichero, así que la sección se expone entera.
@@ -163,6 +164,8 @@ def _cast_value(raw, typ: str):
         return str(raw)
     if typ == "str":
         return "" if raw is None else str(raw)
+    if typ == "float_nullable":
+        return None if raw is None or raw == "" else float(raw)
     if typ in ("int_list", "date_list"):
         return _cast_list(raw, typ)
     if raw is None or raw == "":

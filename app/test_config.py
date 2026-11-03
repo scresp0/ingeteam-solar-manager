@@ -288,6 +288,8 @@ def test_validadores():
             lambda: ChargeCurrentConfig(balance_floor_a=60, max_a=50))
     rechaza("charge_current: balance_soc_pct_2 < balance_soc_pct",
             lambda: ChargeCurrentConfig(balance_soc_pct=98, balance_soc_pct_2=97))
+    rechaza("charge_current: balance_soc_pct_3 < balance_soc_pct_2",
+            lambda: ChargeCurrentConfig(balance_soc_pct_2=99, balance_soc_pct_3=98.5))
     rechaza("charge_current: perfil histórico ventana < mínimo",
             lambda: ChargeCurrentConfig(house_profile_window_days=7,
                                         house_profile_min_days_in_window=14))

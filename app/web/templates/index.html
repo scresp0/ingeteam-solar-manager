@@ -1839,6 +1839,9 @@ const CONFIG_SCHEMA = [
             help: 'Debe ser menor que el SOC máximo de carga, o el modo nunca se alcanza.' },
           { key: 'balance_soc_pct_2', label: 'SOC 2ª etapa (%)',   type: 'number', min: 0, max: 100, step: 1,
             help: 'A partir de aquí el suelo de corriente baja a la mitad. Debe ser ≥ SOC de entrada.' },
+          { key: 'balance_soc_pct_3', label: 'SOC 3ª etapa (%)',   type: 'number', min: 0, max: 100, step: 1, nullable: true,
+            placeholder: 'sin 3ª etapa',
+            help: 'Opcional: a partir de aquí el suelo baja a un cuarto. Vacío = no se aplica. Debe ser ≥ SOC 2ª etapa.' },
           { key: 'balance_floor_a',   label: 'Corriente de balanceo (A)', type: 'number', min: 1, max: 66, step: 1,
             help: 'Suelo durante el balanceo, más bajo que la corriente mínima normal.' },
         ],
@@ -2286,6 +2289,10 @@ function _validateConfig(values) {
   const b1 = cur('charge_current', 'balance_soc_pct'), b2 = cur('charge_current', 'balance_soc_pct_2');
   if (b1 != null && b2 != null && b2 < b1) {
     fail('charge_current', 'balance_soc_pct_2', `El SOC de la 2ª etapa no puede ser menor que el de entrada (${b1}%).`);
+  }
+  const b3 = cur('charge_current', 'balance_soc_pct_3');
+  if (b3 != null && b2 != null && b3 < b2) {
+    fail('charge_current', 'balance_soc_pct_3', `El SOC de la 3ª etapa no puede ser menor que el de la 2ª (${b2}%).`);
   }
   if (cur('charge_current', 'battery_balance') === true && b1 != null && maxSoc != null && b1 >= maxSoc) {
     fail('charge_current', 'balance_soc_pct',

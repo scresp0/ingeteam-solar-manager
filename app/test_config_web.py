@@ -157,6 +157,9 @@ def test_cast_empty_string():
     assert _cast_value("", "str") == ""
     assert _cast_value(None, "str") == ""
     assert _cast_value("", "str_nullable") is None
+    assert _cast_value("", "float_nullable") is None
+    assert _cast_value(None, "float_nullable") is None
+    assert _cast_value("99.5", "float_nullable") == 99.5
     for typ in ("int", "float", "bool", "str_required"):
         try:
             _cast_value("", typ)
