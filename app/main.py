@@ -867,8 +867,11 @@ def _compute_target_charge_current(
     if (cc.battery_balance and window_end is not None
             and cc.balance_soc_pct <= soc < max_soc):
         energy = (max_soc - soc) / 100.0 * cap
+        # 3ª etapa opcional (balance_soc_pct_3): suelo a un cuarto.
         # 2ª etapa: aún más suave en el último tramo (balance_soc_pct_2, default 99%)
-        if soc >= cc.balance_soc_pct_2:
+        if cc.balance_soc_pct_3 is not None and soc >= cc.balance_soc_pct_3:
+            floor, label = max(1, cc.balance_floor_a // 4), "BALANCE (extrafino)"
+        elif soc >= cc.balance_soc_pct_2:
             floor, label = max(1, cc.balance_floor_a // 2), "BALANCE (fino)"
         else:
             floor, label = cc.balance_floor_a, "BALANCE"

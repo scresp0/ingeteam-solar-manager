@@ -489,6 +489,7 @@ El orden de evaluación es **BALANCE → VALLE → SOLAR → IDLE**; el primero 
 |---|---|---|---|
 | **BALANCE** | `battery_balance` **y** `window_end is not None` **y** `balance_soc_pct ≤ soc < max_soc_pct` | `amps_for((max_soc−soc)/100·cap, window_end−hour, floor=balance_floor_a)` | `BALANCE` |
 | **BALANCE (fino)** | igual, y además `soc ≥ balance_soc_pct_2` | igual pero `floor = max(1, balance_floor_a // 2)` | `BALANCE (fino)` |
+| **BALANCE (extrafino)** | igual, y además `balance_soc_pct_3` definido y `soc ≥ balance_soc_pct_3` (v1.99, opcional) | igual pero `floor = max(1, balance_floor_a // 4)` | `BALANCE (extrafino)` |
 | **VALLE** | `0 ≤ hour < 8` y `schedule_state.charge_needed` y energía pendiente > 0 | `amps_for((target_soc−soc)/100·cap, 8.0−hour)` | `VALLE` |
 | VALLE alcanzado | `0 ≤ hour < 8`, carga pedida, `energy ≤ 0` | **`current`** (no toca) | `VALLE (objetivo alcanzado — sin cambios)` |
 | IDLE de valle | `0 ≤ hour < 8` sin `charge_needed` (o sin fichero de estado) | **`current`** | `IDLE (valle sin carga — sin cambios)` |
@@ -720,6 +721,7 @@ Coste: 66 × 48 iteraciones por tick.
                      · floor_a                          en VALLE y SOLAR
                      · balance_floor_a                  en BALANCE
                      · max(1, balance_floor_a // 2)     en BALANCE (fino)
+                     · max(1, balance_floor_a // 4)     en BALANCE (extrafino)
                    Es lo que se persiste como `current_a` y se escribe.
                    Los modos "sin cambios" (IDLE, batería llena, objetivo alcanzado)
                    y la puerta de temperatura NO pasan por este clamp: devuelven
@@ -735,6 +737,7 @@ con `·lím`.
 
 - `floor_a ≤ max_a` y `balance_floor_a ≤ max_a`.
 - `balance_soc_pct_2 ≥ balance_soc_pct`.
+- Si se define, `balance_soc_pct_3 ≥ balance_soc_pct_2`.
 - Con `battery_balance=true`: `balance_soc_pct < charging.max_soc_pct` (si no, el modo
   BALANCE nunca se alcanzaría).
 
@@ -754,6 +757,7 @@ con `·lím`.
 | `productive_window_end_hour` | Ventana más larga en el fallback final → menos corriente, modo SOLAR activo hasta más tarde. Rango `[0, 24]`. | Ventana más corta → más corriente y salida antes a IDLE (que congela el valor). |
 | `balance_soc_pct` | El balanceo empieza más tarde (tramo más corto). Debe ser `< max_soc_pct`. | Empieza antes: más tiempo cargando muy suave. |
 | `balance_soc_pct_2` | La segunda etapa (mitad de suelo) entra más tarde. | Entra antes: el último tramo se hace aún más suave. |
+| `balance_soc_pct_3` | Opcional (sin definir = no hay 3ª etapa). La tercera etapa (un cuarto de suelo) entra más tarde. | Entra antes: tramo final aún más suave. |
 | `balance_floor_a` | Balanceo más rápido y caliente. | Balanceo más suave; si es demasiado bajo puede no llegar a `max_soc` antes del fin de ventana (el cálculo sube la corriente si hace falta, pero nunca por debajo del suelo). |
 | `enabled` | `false` desactiva el controlador salvo en modo simulación. | — |
 
@@ -871,6 +875,7 @@ Ver sección 5 para el detalle funcional.
 | `battery_balance` | bool | `false` | `false` |
 | `balance_soc_pct` | float `[0,100]`, `< charging.max_soc_pct` si `battery_balance` | 98.0 | 97 |
 | `balance_soc_pct_2` | float `[0,100]`, `≥ balance_soc_pct` | 99.0 | 99 |
+| `balance_soc_pct_3` | float `[0,100]` o `null`, `≥ balance_soc_pct_2` | `null` (sin 3ª etapa) | (comentado) |
 | `balance_floor_a` | int `[1, 66]`, `≤ max_a` | 10 | 12 |
 
 > Editable desde la pestaña Configuración (grupo «Corriente máxima de carga»)

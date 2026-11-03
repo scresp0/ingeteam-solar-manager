@@ -237,6 +237,7 @@ class ChargeCurrentConfig(BaseModel):
     balance_soc_pct: float = Field(default=98.0, ge=0.0, le=100.0)   # SOC a partir del cual entra el modo BALANCE
     balance_soc_pct_2: float = Field(default=99.0, ge=0.0, le=100.0) # 2ª etapa: SOC a partir del cual la corriente de balanceo baja a la mitad
     balance_floor_a: int = Field(default=10, ge=1, le=66)            # corriente mínima durante el balanceo (< floor_a normal)
+    balance_soc_pct_3: Optional[float] = Field(default=None, ge=0.0, le=100.0)  # 3ª etapa opcional: SOC a partir del cual el suelo baja a un cuarto (None = sin 3ª etapa)
 
     @model_validator(mode="after")
     def floor_not_above_max(self):
@@ -252,6 +253,11 @@ class ChargeCurrentConfig(BaseModel):
             raise ValueError(
                 f"charge_current.balance_soc_pct_2 ({self.balance_soc_pct_2}) no puede ser menor "
                 f"que balance_soc_pct ({self.balance_soc_pct})"
+            )
+        if self.balance_soc_pct_3 is not None and self.balance_soc_pct_3 < self.balance_soc_pct_2:
+            raise ValueError(
+                f"charge_current.balance_soc_pct_3 ({self.balance_soc_pct_3}) no puede ser menor "
+                f"que balance_soc_pct_2 ({self.balance_soc_pct_2})"
             )
         if self.house_profile_window_days < self.house_profile_min_days_in_window:
             raise ValueError(
