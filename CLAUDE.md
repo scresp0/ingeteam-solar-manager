@@ -32,7 +32,7 @@ en función de la previsión solar del día siguiente y el SOC actual.
 - **Inversor:** Ingeteam INGECON SUN STORAGE 1PLAY TL-M
 - **IP inversor:** `10.172.24.42` (MODBUS TCP puerto 502)
 - **Servidor producción:** Mac Studio (`macstudio.metafrase.net`), macOS, Apple Silicon (arm64), Docker. El repo de trabajo **es** el de producción (`~/contenedores/solar-manager`): no hay `git pull` que hacer, se despliega con `make build && make up` (reinicia el servicio — evitar hacerlo cerca de las 23:55 o de las horas de `schedule_recheck_at`).
-- **El Intel N150 (Manjaro) ya no es producción** (nov 2026). Lo que en este fichero hable de systemd o de rutas Linux del host (`/home/scresp0/...`) se refiere a esa máquina antigua.
+- **El Intel N150 (Manjaro) ya no es producción** (nov 2026). Lo que en este fichero hable de rutas Linux del host (`/home/scresp0/...`) se refiere a esa máquina antigua.
 
 ## Stack
 - Python + FastAPI + APScheduler
@@ -150,15 +150,16 @@ Usar siempre el helper `logger_reader.house_power_w(record)`, que aplica la fór
 - `shm_size: '256mb'` en el servicio `solar-manager` — necesario para Chromium
 - La imagen incluye la CLI `influx` (descargada en el Dockerfile según arquitectura: amd64/arm64) para el endpoint `GET /api/db/export`. El backup es **online** (no para el contenedor `influxdb`, no necesita el socket de Docker ni montar el data dir): el contenedor `solar-manager` habla con `influxdb:8086` por HTTP igual que el resto del código.
 - Servicio `influxdb` con healthcheck; `solar-manager` depende de él
+- Servicio `backup` (contenedor `solar-manager-backup`): backup diario de InfluxDB a la NAS. Ver "Backup diario a NAS por NFS"
 - **Arranque recomendado: `make up`** (no `docker compose up -d` directamente)
   - El `Makefile` inyecta `HOST_HOSTNAME=$(hostname)` antes de llamar a Docker
   - `$HOSTNAME` no está exportada en macOS; `$(hostname)` funciona en ambos sistemas
   - `docker-compose.yml` espera la variable `${HOST_HOSTNAME}`, que el Makefile provee
-  - Otros targets: `make down`, `make restart`, `make build`, `make logs`, `make shell`, `make migrate-config`
+  - Otros targets: `make down`, `make restart`, `make build`, `make logs`, `make shell`, `make migrate-config`, `make backup`, `make logs-backup`
 
 ## Copia de seguridad externa por SCP (v1.70, `app/backup.py`) — ⚠️ INACTIVO en producción
 
-> **Estado verificado (ago 2026):** `config.yaml` de producción **no tiene sección `backup:`** (confirmado con `grep -n "backup" config.yaml` → salida vacía). El mecanismo está implementado y programado en el código, pero nunca se ha configurado/activado. El backup real en producción es el **script NFS** documentado más abajo en "Backup diario a NAS por NFS". No asumir que este mecanismo SCP está corriendo sin verificar antes `backup.enabled` en `config.yaml`.
+> **Estado verificado (ago 2026):** `config.yaml` de producción **no tiene sección `backup:`** (confirmado con `grep -n "backup" config.yaml` → salida vacía). El mecanismo está implementado y programado en el código, pero nunca se ha configurado/activado. El backup real en producción es el **servicio `backup` (NFS)** documentado más abajo en "Backup diario a NAS por NFS". No asumir que este mecanismo SCP está corriendo sin verificar antes `backup.enabled` en `config.yaml`.
 
 Empaqueta en un `.tar.gz` el **backup online de InfluxDB** (mismo `influx backup` que `GET /api/db/export`), el **directorio de logs** y **`config.yaml`**, y lo sube por **SCP** a un servidor remoto. Todo se configura en la sección `backup` de `config.yaml` (no hay secretos: la autenticación es por **clave SSH** montada como fichero, no por contraseña).
 
@@ -172,33 +173,27 @@ Empaqueta en un `.tar.gz` el **backup online de InfluxDB** (mismo `influx backup
 
 ## Backup diario a NAS por NFS (activo en producción — verificado 2026-11-05)
 
-Mecanismo **independiente de la app** (no vive en `app/`, no usa la API ni `config.yaml`). Es el backup que realmente corre. Detalle completo, historia y verificación en ARCHITECTURE §9.6.2.
+Servicio **`backup`** de `docker-compose.yml` (contenedor `solar-manager-backup`), independiente de la app (no usa la API ni `config.yaml`). Es el backup que realmente corre. **Todo vive en Docker:** el host no programa nada (no hay launchd ni systemd), no monta la NAS y no necesita `sudo`. Detalle, historia y verificación en ARCHITECTURE §9.6.
 
-```
-scripts/
-├── backup_influxdb.sh                                # script (Linux y macOS, bash 3.2+)
-├── launchd/net.metafrase.solar-manager-backup.plist  # programación en macOS (producción)
-└── systemd/solar-manager-backup.{service,timer}      # programación en Linux (el N150)
-```
-
-- **Qué hace:** backup binario (`influx backup`, incluye los metadatos `.bolt`/`.sqlite`) + export line protocol comprimido (`influxd inspect export-lp --bucket-id fa2d32fca4e9f966 … --compress`), ambos generados con `docker exec` en `/tmp` del contenedor `solar-manager-influxdb` y extraídos con `docker cp` a `backups/tmp/`.
-- **La copia a la NAS y la rotación corren en un contenedor efímero**, no en el host: `docker run --rm` con la misma imagen que InfluxDB (sin descargas), la NAS como **volumen NFS de Docker** (`type=nfs`, `addr=<servidor>,nfsvers=4`) y el staging en solo lectura. **El host no monta nada: sin `mount`/`umount`, sin `sudo`, sin regla `sudoers`.** No volver a montar desde el host: en macOS, un `bash` lanzado por launchd no puede escribir en volúmenes de red (TCC «Volúmenes de red» → `Operation not permitted`; desde la terminal sí funciona, lo que lo enmascara al probar) y macOS deja ficheros AppleDouble `._*` junto a todo lo que escribe por NFS.
-- **Destino:** `numancia.metafrase.net:/volume4/APP-BACKUPS` (Synology, `172.24.2.20`) → `solar-manager-backup/{daily,weekly,monthly,yearly}/<YYYYMMDD_HHMMSS>/{binary/, export.lp.gz}`. Variables `NFS_SERVER`, `NFS_EXPORT`, `NFS_OPTS`, `NAS_SUBDIR` al principio del script. El export solo admite la IP del Mac (`172.24.3.34`): **un host nuevo exige añadir su IP en los permisos NFS del DSM**. Squash a admin (uid 1024): el uid del cliente no importa.
-- **⚠️ WriteOnce en el share:** cada fichero queda inmutable desde **2 h** tras su última escritura y durante **30 días**. Un backup escrito no se puede borrar pasado ese margen, y la rotación no puede borrar copias bloqueadas (`rm` falla → ERROR cada noche). Por eso las retenciones cumplen `RETENTION_DAILY ≥ días_bloqueo + 1` y `7·RETENTION_WEEKLY > días_bloqueo`. **Si cambia el bloqueo en el DSM, revisar las retenciones.**
-- **Rotación GFS** (ordena por nombre de directorio = cronológico):
+- **Script:** `scripts/backup_influxdb.sh`, montado en `/backup.sh`. Imagen `influxdb:2.7` (la misma que la BD, trae `influx` e `influxd`). Modos: `schedule` (proceso principal del contenedor), `run` (backup inmediato → **`make backup`**), `check` (healthcheck). Log: **`make logs-backup`**.
+- **Qué hace:** backup binario por HTTP contra `influxdb:8086` (`influx backup`, incluye los metadatos `.bolt`/`.sqlite`) + export line protocol (`influxd inspect export-lp --compress`), que lee el engine de `./influxdb/data` montado **en solo lectura**. El ID del bucket se resuelve por nombre en cada backup. Ambos en `/tmp` del contenedor; luego copia a la NAS y rota.
+- **Programación (bucle, no cron):** cada minuto compara el último diario de la NAS con la última franja de las 23:57 (`BACKUP_AT`) ya pasada; si falta, lo hace. La misma regla **recupera las noches perdidas** (Mac apagado o dormido, contenedor parado): al volver, hace el backup pendiente con las categorías GFS **de esa noche**, no de la hora real. Tras un fallo, 30 min sin reintentar. Se sondea cada minuto por reloj de pared y no con un `sleep` largo, que se alargaría si el equipo se suspende. Se valoró Ofelia (cron en Docker) y se descartó: no recupera noches perdidas y exige montar el socket de Docker.
+- **⚠️ `set -e` y subshells:** cada backup corre en un subshell para que un fallo no tumbe el bucle. **No** usar `if ! ( … )` ni `( … ) || …`: bash desactiva `set -e` dentro del subshell en esos contextos, y el `set +e` necesario para leer el código también se hereda. Por eso se ejecuta `( set -e; do_backup … )`. Sin eso, un fallo a mitad acababa en «completado correctamente» sin copiar nada (visto en las pruebas).
+- **Healthcheck:** el contenedor pasa a *unhealthy* si el último diario tiene más de 26 h o no hay ninguno. Es el único aviso de fallo: no hay email.
+- **Destino:** volumen NFS `nas-backups` → `numancia.metafrase.net:/volume4/APP-BACKUPS` (Synology, `172.24.2.20`) → `solar-manager-backup/{daily,weekly,monthly,yearly}/<YYYYMMDD_HHMMSS>/{binary/, export.lp.gz}`. El export solo admite la IP del Mac (`172.24.3.34`): **otro host exige añadir su IP en los permisos NFS del DSM**. Squash a admin (uid 1024). ⚠️ Docker guarda las opciones del volumen al **crearlo**: para cambiar de NAS, `docker compose rm -sf backup && docker volume rm solar-manager_nas-backups` y volver a levantar. Si la NAS no responde cuando arranca Docker, el contenedor no arranca: comprobar `docker ps`.
+- **⚠️ WriteOnce en el share:** cada fichero queda inmutable desde **2 h** tras su última escritura y durante **30 días**. Un backup no se puede borrar pasado ese margen, y la rotación no puede borrar copias bloqueadas (`rm` falla → ERROR cada noche). Por eso las retenciones cumplen `RETENTION_DAILY ≥ días_bloqueo + 1` y `7·RETENTION_WEEKLY > días_bloqueo`. **Si cambia el bloqueo en el DSM, revisar las retenciones.** `make backup` deja una copia real que tampoco se podrá borrar.
+- **Rotación GFS** (ordena por nombre de directorio, que es cronológico):
 
   | Categoría | Disparador | Retención |
   |---|---|---|
-  | `daily` | cada ejecución | 31 |
-  | `weekly` | domingo | 5 |
-  | `monthly` | último día del mes | 11 |
-  | `yearly` | último día de diciembre | 1 (solo año en curso) |
+  | `daily` | cada backup | 31 |
+  | `weekly` | franja de domingo | 5 |
+  | `monthly` | franja del último día del mes | 11 |
+  | `yearly` | franja del 31 de diciembre | 1 (solo año en curso) |
 
-- **Programación en macOS:** LaunchAgent `net.metafrase.solar-manager-backup` a las 23:57 (en la sesión del usuario, como Docker Desktop). Instalar/actualizar copiando el plist a `~/Library/LaunchAgents/` + `launchctl bootout`/`bootstrap` (comandos en la cabecera del plist; el instalado es una **copia**: tras editar el del repo hay que volver a copiarlo). Probar: `launchctl kickstart gui/$(id -u)/net.metafrase.solar-manager-backup`. Log: `~/Library/Logs/solar-manager-backup.log`. Si el Mac estaba **dormido** a las 23:57 se ejecuta al despertar; si estaba **apagado**, esa noche se pierde (no hay `Persistent=true`).
-- **Probar cambios del script:** ejecutarlo desde la terminal NO reproduce el entorno de launchd (PATH mínimo, permisos TCC distintos). La prueba válida es `launchctl kickstart`. Cada ejecución deja un backup real en la NAS que no podrá borrarse pasadas 2 h.
-- **Gotchas de InfluxDB:** `influxd inspect export-lp` es del **daemon**, no del CLI (no sale en `influx --help`) y exige `--bucket-id`; `--compress` no añade `.gz` al nombre (el script lo renombra); `INFLUXDB_TOKEN` no existe dentro del contenedor → se lee de `.env` del host y se pasa con `--token`.
-- **Sin fallbacks silenciosos:** `set -euo pipefail` en el host y dentro del contenedor + `trap cleanup EXIT` (borra el staging y los `/tmp` del contenedor de InfluxDB).
-- **Pendiente:** la rotación no se ha visto aún sobre la NAS real con más copias que el límite (la primera diaria se borrará a los 31 días). No hay notificación si el backup falla una noche — solo el log.
+- **Despliegue:** `make up` lo levanta con el resto. Tras editar el script basta `docker compose restart backup` (es un bind mount, no hay imagen que reconstruir).
+- **Gotchas de InfluxDB:** `influxd inspect export-lp` es del **daemon**, no del CLI (no sale en `influx --help`) y exige `--bucket-id`. `--compress` escribe gzip pero no añade `.gz` (se da el nombre final desde el principio). El token se pasa solo como `INFLUXDB_TOKEN` (interpolado desde `.env`), no con `env_file: .env`, que inyectaría todos los secretos.
+- **Pendiente:** la rotación no se ha visto aún sobre la NAS real con más copias que el límite (la primera diaria se borrará a los 31 días).
 
 ## Parámetros dinámicos (calibración automática desde InfluxDB)
 
