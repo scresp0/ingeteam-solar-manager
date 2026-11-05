@@ -4,11 +4,27 @@ set -euo pipefail
 # ============================================================
 # solar-manager - Backup diario de InfluxDB con rotación GFS
 # Backup binario (influx backup) + export line protocol (gzip)
-# Volcado a NAS Synology vía NFS (montaje efímero)
+# Volcado a NAS Synology vía NFS
+#
+# El host solo orquesta con `docker`; nada toca la NAS desde el sistema operativo:
+#   1-2. backup y export se generan DENTRO del contenedor de InfluxDB (docker exec)
+#        y se extraen a un staging local (docker cp);
+#   4.   la copia a la NAS y la rotación corren en un contenedor EFÍMERO con la NAS
+#        montada como volumen NFS de Docker.
+# Así no hay mount/umount ni sudo en el host, y funciona igual en Linux (systemd)
+# y en macOS (launchd, bash 3.2 de serie). En macOS además evita dos problemas de
+# montar desde el sistema: la protección TCC «Volúmenes de red» (un bash lanzado
+# por launchd no puede escribir en un volumen de red: `Operation not permitted`) y
+# los ficheros AppleDouble `._*` que macOS crea junto a todo lo que escribe en NFS.
 # ============================================================
 
+# launchd arranca con un PATH mínimo sin /usr/local/bin (docker de Docker
+# Desktop) ni Homebrew. Inocuo en Linux.
+export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
+
 # --- Configuración ---
-PROJECT_DIR="/home/scresp0/solar-manager"
+# El repo vive en rutas distintas en cada máquina: se deduce de la del script.
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${PROJECT_DIR}/.env"
 CONTAINER="solar-manager-influxdb"
 INFLUX_ORG="solar"
@@ -18,13 +34,19 @@ ENGINE_PATH_CONTAINER="/var/lib/influxdb2/engine"
 
 STAGING_DIR="${PROJECT_DIR}/backups/tmp"
 
-NFS_SERVER="172.24.0.6"
-NFS_EXPORT="/volume1/Intercambio"
-NFS_MOUNT_POINT="/mnt/nas-intercambio"
-NAS_BACKUP_BASE="${NFS_MOUNT_POINT}/solar-manager-backup"
+NFS_SERVER="numancia.metafrase.net"   # Synology (172.24.2.20)
+NFS_EXPORT="/volume4/APP-BACKUPS"
+NFS_OPTS="nfsvers=4"                  # el export solo admite la IP de este host
+NAS_SUBDIR="solar-manager-backup"     # carpeta dentro del export
 
-RETENTION_DAILY=7
-RETENTION_WEEKLY=4
+# El share APP-BACKUPS tiene WriteOnce (Synology): cada fichero queda inmutable
+# desde 2 h después de su última escritura y durante 30 días → no se puede borrar
+# hasta ~30 d 2 h después de crearlo. Si la rotación intenta borrar una copia aún
+# bloqueada, `rm` falla y el script acaba en ERROR cada noche. Regla al cambiar el
+# bloqueo en el DSM: RETENTION_DAILY ≥ días_bloqueo + 1 y 7·RETENTION_WEEKLY >
+# días_bloqueo (mensual y anual nunca chocan).
+RETENTION_DAILY=31    # ≥ 30 + 1
+RETENTION_WEEKLY=5    # 5·7 = 35 > 30
 RETENTION_MONTHLY=11
 RETENTION_YEARLY=1
 
@@ -41,7 +63,6 @@ err() {
 }
 
 # --- Estado para cleanup ---
-MOUNTED_BY_US=0
 CONTAINER_TMP_BIN=""
 CONTAINER_TMP_LP=""
 
@@ -53,11 +74,6 @@ cleanup() {
     fi
     if [[ -n "${CONTAINER_TMP_LP}" ]]; then
         docker exec "${CONTAINER}" rm -f "${CONTAINER_TMP_LP}" 2>/dev/null || true
-    fi
-
-    if [[ "${MOUNTED_BY_US}" -eq 1 ]]; then
-        log "Desmontando NFS de ${NFS_MOUNT_POINT}"
-        sudo umount "${NFS_MOUNT_POINT}" || err "No se pudo desmontar ${NFS_MOUNT_POINT} limpiamente"
     fi
 
     rm -rf "${STAGING_DIR:?}"/* 2>/dev/null || true
@@ -123,7 +139,11 @@ if [[ "${DOW}" -eq 7 ]]; then
     APPLY_WEEKLY=1
 fi
 
-TOMORROW_DAY="$(date -d tomorrow +%d)"
+if date -d tomorrow +%d >/dev/null 2>&1; then
+    TOMORROW_DAY="$(date -d tomorrow +%d)"     # GNU date
+else
+    TOMORROW_DAY="$(date -v+1d +%d)"           # BSD date (macOS)
+fi
 if [[ "${TOMORROW_DAY}" == "01" ]]; then
     APPLY_MONTHLY=1
     CURRENT_MONTH="$(date +%m)"
@@ -134,53 +154,62 @@ fi
 
 log "Categorías aplicables hoy -> diario:${APPLY_DAILY} semanal:${APPLY_WEEKLY} mensual:${APPLY_MONTHLY} anual:${APPLY_YEARLY}"
 
-# --- 4. Montar NFS (efímero) ---
-if mountpoint -q "${NFS_MOUNT_POINT}"; then
-    err "El punto de montaje ${NFS_MOUNT_POINT} ya estaba montado antes de empezar; abortando para no interferir"
-    exit 1
-fi
+# --- 4. Copia a la NAS y rotación, en un contenedor efímero ---
+# Misma imagen que el contenedor de InfluxDB: ya está descargada (no hay pull) y es
+# Debian con bash y coreutils de GNU. El volumen NFS es anónimo: `--rm` lo borra al
+# terminar, y el montaje vive y muere con el contenedor.
+HELPER_IMAGE="$(docker inspect -f '{{.Config.Image}}' "${CONTAINER}")"
+log "Copiando a ${NFS_SERVER}:${NFS_EXPORT}/${NAS_SUBDIR} desde un contenedor efímero (${HELPER_IMAGE})"
 
-log "Montando NFS ${NFS_SERVER}:${NFS_EXPORT} en ${NFS_MOUNT_POINT}"
-sudo mount -t nfs4 "${NFS_SERVER}:${NFS_EXPORT}" "${NFS_MOUNT_POINT}"
-MOUNTED_BY_US=1
+# `-e VAR` sin valor toma la variable del entorno del cliente docker: hay que exportarlas.
+export LOG_PREFIX TIMESTAMP APPLY_DAILY APPLY_WEEKLY APPLY_MONTHLY APPLY_YEARLY \
+       RETENTION_DAILY RETENTION_WEEKLY RETENTION_MONTHLY RETENTION_YEARLY
+docker run --rm -i \
+    --entrypoint bash \
+    -e TZ="Europe/Madrid" \
+    -e LOG_PREFIX -e TIMESTAMP \
+    -e APPLY_DAILY -e APPLY_WEEKLY -e APPLY_MONTHLY -e APPLY_YEARLY \
+    -e RETENTION_DAILY -e RETENTION_WEEKLY -e RETENTION_MONTHLY -e RETENTION_YEARLY \
+    -e BASE="/nas/${NAS_SUBDIR}" \
+    -v "${STAGING_DIR}:/staging:ro" \
+    --mount "type=volume,dst=/nas,volume-driver=local,volume-opt=type=nfs,\"volume-opt=o=addr=${NFS_SERVER},${NFS_OPTS}\",volume-opt=device=:${NFS_EXPORT}" \
+    "${HELPER_IMAGE}" -s <<'IN_CONTAINER'
+set -euo pipefail
 
-if ! mountpoint -q "${NFS_MOUNT_POINT}"; then
-    err "El montaje NFS no se completó correctamente"
-    exit 1
-fi
+log() { echo "${LOG_PREFIX} $(date '+%Y-%m-%d %H:%M:%S') - $*"; }
 
-mkdir -p "${NAS_BACKUP_BASE}"/{daily,weekly,monthly,yearly}
+mkdir -p "${BASE}"/{daily,weekly,monthly,yearly}
 
-# --- 5. Función de copia + rotación por categoría ---
 copy_and_rotate() {
     local category="$1"
     local retention="$2"
-    local dest_dir="${NAS_BACKUP_BASE}/${category}/${TIMESTAMP}"
+    local dest_dir="${BASE}/${category}/${TIMESTAMP}"
 
-    log "Copiando backup a categoría '${category}' (${dest_dir})"
+    log "Copiando backup a categoría '${category}' (${dest_dir#/nas/})"
     mkdir -p "${dest_dir}"
-    cp -r "${STAGING_DIR}/binary" "${dest_dir}/"
-    cp "${STAGING_DIR}/export.lp.gz" "${dest_dir}/"
+    cp -r /staging/binary "${dest_dir}/"
+    cp /staging/export.lp.gz "${dest_dir}/"
 
     local count
-    count="$(find "${NAS_BACKUP_BASE}/${category}" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+    count="$(find "${BASE}/${category}" -mindepth 1 -maxdepth 1 -type d | wc -l)"
     if [[ "${count}" -gt "${retention}" ]]; then
         local to_delete=$((count - retention))
         log "Rotando '${category}': ${count} backups presentes, reteniendo ${retention}, eliminando ${to_delete}"
-        find "${NAS_BACKUP_BASE}/${category}" -mindepth 1 -maxdepth 1 -type d -printf '%T@ %p\n' \
-            | sort -n \
+        # Los directorios se llaman YYYYMMDD_HHMMSS: orden alfabético = cronológico.
+        find "${BASE}/${category}" -mindepth 1 -maxdepth 1 -type d \
+            | sort \
             | head -n "${to_delete}" \
-            | cut -d' ' -f2- \
             | while read -r old_dir; do
-                log "Eliminando backup antiguo: ${old_dir}"
+                log "Eliminando backup antiguo: ${old_dir#/nas/}"
                 rm -rf "${old_dir}"
             done
     fi
 }
 
-[[ "${APPLY_DAILY}" -eq 1 ]]   && copy_and_rotate "daily"   "${RETENTION_DAILY}"
-[[ "${APPLY_WEEKLY}" -eq 1 ]]  && copy_and_rotate "weekly"  "${RETENTION_WEEKLY}"
-[[ "${APPLY_MONTHLY}" -eq 1 ]] && copy_and_rotate "monthly" "${RETENTION_MONTHLY}"
-[[ "${APPLY_YEARLY}" -eq 1 ]]  && copy_and_rotate "yearly"  "${RETENTION_YEARLY}"
+if [[ "${APPLY_DAILY}" -eq 1 ]];   then copy_and_rotate daily   "${RETENTION_DAILY}";   fi
+if [[ "${APPLY_WEEKLY}" -eq 1 ]];  then copy_and_rotate weekly  "${RETENTION_WEEKLY}";  fi
+if [[ "${APPLY_MONTHLY}" -eq 1 ]]; then copy_and_rotate monthly "${RETENTION_MONTHLY}"; fi
+if [[ "${APPLY_YEARLY}" -eq 1 ]];  then copy_and_rotate yearly  "${RETENTION_YEARLY}";  fi
+IN_CONTAINER
 
 log "Todas las categorías aplicables procesadas correctamente"
