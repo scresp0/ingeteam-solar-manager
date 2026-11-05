@@ -23,6 +23,8 @@ Guarda tres tipos de puntos por ciclo nocturno:
 """
 
 import logging
+import threading
+import time
 from datetime import date, datetime, timedelta, timezone
 
 from app.config import InfluxDBConfig
@@ -37,17 +39,44 @@ class StorageError(Exception):
     pass
 
 
-def _query(cfg: InfluxDBConfig, flux: str):
+# Caché de consultas de calibración (parámetros dinámicos, perfil de consumo,
+# ventana productiva). Agregan semanas de histórico que solo cambia cuando se
+# escribe un día nuevo, pero el controlador de corriente las pedía en cada tick
+# (cada minuto en producción): ~2000 consultas/día para obtener siempre lo mismo.
+# Cualquier escritura (`_write_points`) la vacía, así que nunca sirve un valor
+# anterior a datos ya guardados por este proceso.
+_QUERY_CACHE_TTL_S = 3600
+_query_cache: dict[tuple, tuple[float, object]] = {}
+_query_cache_lock = threading.Lock()
+
+
+def _query(cfg: InfluxDBConfig, flux: str, cache: bool = False):
     """
     Ejecuta una consulta Flux y devuelve las tablas resultado.
 
     Encapsula solo la apertura del cliente + la consulta — no envuelve excepciones,
     para que cada caller conserve su propio manejo (ImportError → StorageError,
     Exception genérica → warning/fallback), que ya difiere ligeramente entre ellos.
+
+    `cache=True` reutiliza el resultado durante `_QUERY_CACHE_TTL_S`. Solo para
+    consultas sobre días cerrados: nada que dependa del día en curso. Un fallo no
+    se cachea (la excepción sale antes de guardar).
     """
+    key = (cfg.url, cfg.org, flux)
+    if cache:
+        with _query_cache_lock:
+            hit = _query_cache.get(key)
+        if hit is not None and time.monotonic() - hit[0] < _QUERY_CACHE_TTL_S:
+            return hit[1]
+
     from influxdb_client import InfluxDBClient
     with InfluxDBClient(url=cfg.url, token=cfg.token, org=cfg.org) as client:
-        return client.query_api().query(flux, org=cfg.org)
+        tables = client.query_api().query(flux, org=cfg.org)
+
+    if cache:
+        with _query_cache_lock:
+            _query_cache[key] = (time.monotonic(), tables)
+    return tables
 
 
 def write_cycle(
@@ -245,7 +274,7 @@ from(bucket: "{cfg.bucket}")
 """
     try:
         from collections import defaultdict
-        tables = _query(cfg, query)
+        tables = _query(cfg, query, cache=True)
 
         slot_sum: dict[int, float] = defaultdict(float)
         dates: set = set()
@@ -311,7 +340,7 @@ from(bucket: "{cfg.bucket}")
   |> filter(fn: (r) => r._value > 0.5)
 """
     try:
-        tables = _query(cfg, query)
+        tables = _query(cfg, query, cache=True)
         values = [rec.get_value() for table in tables for rec in table.records]
 
         if len(values) < min_days:
@@ -397,7 +426,7 @@ from(bucket: "{cfg.bucket}")
   |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
 """
     try:
-        tables = _query(cfg, query)
+        tables = _query(cfg, query, cache=True)
         values = []
         for table in tables:
             for rec in table.records:
@@ -465,7 +494,7 @@ from(bucket: "{cfg.bucket}")
     try:
         from statistics import median
 
-        tables = _query(cfg, query)
+        tables = _query(cfg, query, cache=True)
         by_slot: dict[str, list[float]] = {}
         for table in tables:
             for rec in table.records:
@@ -527,8 +556,8 @@ from(bucket: "{cfg.bucket}")
     # y reimplementaba lo que `_query` encapsula. Cuesta una conexión más (corre
     # una o dos veces al día) y a cambio el JOIN queda cubierto por los tests, que
     # interceptan `_query` como único punto de entrada a InfluxDB.
-    ciclo_tables = _query(cfg, q_ciclo)
-    stats_tables = _query(cfg, q_stats)
+    ciclo_tables = _query(cfg, q_ciclo, cache=True)
+    stats_tables = _query(cfg, q_stats, cache=True)
 
     # date -> solar_kwh (timestamp de stats_diarias = medianoche UTC del día)
     solar_by_date: dict = {}
@@ -991,6 +1020,9 @@ from(bucket: "{cfg.bucket}")
 
 def _write_points(cfg: InfluxDBConfig, points: list[dict]) -> None:
     """Escribe una lista de puntos en InfluxDB en un único batch."""
+    # Datos nuevos → la caché de consultas de calibración deja de ser válida.
+    with _query_cache_lock:
+        _query_cache.clear()
     try:
         from influxdb_client import InfluxDBClient
         from influxdb_client.client.write_api import SYNCHRONOUS

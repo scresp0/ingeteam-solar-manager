@@ -79,7 +79,7 @@ def con_query(fn):
     class _Ctx:
         def __enter__(self):
             self.real = storage._query
-            storage._query = fn
+            storage._query = lambda cfg, flux, **_kw: fn(cfg, flux)   # ignora cache=
         def __exit__(self, *a):
             storage._query = self.real
     return _Ctx()
