@@ -735,7 +735,7 @@ def create_app(cfg: AppConfig) -> FastAPI:
         """Producción solar, consumo casa y flujo de red de hoy (datalogger del inversor, minuto a minuto)."""
         import asyncio
         from datetime import date as _date
-        from app.logger_reader import _fetch_records, LoggerReaderError
+        from app.logger_reader import _fetch_records, LoggerReaderError, MINUTE_KEY
 
         today = _date.today()
         date_str = today.isoformat()
@@ -761,10 +761,11 @@ def create_app(cfg: AppConfig) -> FastAPI:
             sum(r.get("Pdc1", 0) + r.get("Pdc2", 0) for r in records) / 1000 / 60, 2
         )
 
-        # Agrupar por hora: registro i → hora local i//60 (datalogger en hora local)
+        # Agrupar por la hora local de cada registro (no por su posición: un hueco
+        # del datalogger desplazaría las barras)
         by_hour: dict[int, list] = {}
-        for i, r in enumerate(records):
-            by_hour.setdefault(i // 60, []).append(r.get("Pdc1", 0) + r.get("Pdc2", 0))
+        for r in records:
+            by_hour.setdefault(r[MINUTE_KEY] // 60, []).append(r.get("Pdc1", 0) + r.get("Pdc2", 0))
 
         hours_out, solar_kw_out = [], []
         for h in sorted(by_hour):
