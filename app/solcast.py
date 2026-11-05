@@ -10,6 +10,7 @@ Endpoint usado:
 
 import json
 import logging
+import time
 from datetime import datetime, date, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -22,6 +23,12 @@ from app.decision import SolarForecast, reference_date
 logger = logging.getLogger(__name__)
 
 CACHE_PATH = Path("/app/logs/solcast_cache.json")
+
+# Tras un fallo de la API, si hay caché caducada que servir, no se reintenta durante
+# este tiempo: el controlador de corriente pide el forecast en cada tick (1 min en
+# producción) y con la cuota agotada (429) martillearía la API sin conseguir nada.
+_RETRY_AFTER_FAILURE_S = 15 * 60
+_last_failure: float | None = None   # time.monotonic() del último fallo de la API
 
 
 class SolcastError(Exception):
@@ -39,7 +46,7 @@ def _load_cache(ttl_hours: int) -> dict | None:
         if age_hours > ttl_hours:
             logger.debug(f"Caché Solcast expirada ({age_hours:.1f}h > {ttl_hours}h)")
             return None
-        logger.info(f"Usando caché Solcast ({age_hours:.1f}h de antigüedad, TTL={ttl_hours}h)")
+        logger.debug(f"Usando caché Solcast ({age_hours:.1f}h de antigüedad, TTL={ttl_hours}h)")
         return data
     except Exception as e:
         logger.debug(f"No se pudo leer caché Solcast: {e}")
@@ -57,12 +64,58 @@ def _save_cache(raw: dict) -> None:
         logger.warning(f"No se pudo guardar caché Solcast: {e}")
 
 
+def _cache_age_hours(data: dict) -> float:
+    return (datetime.now() - datetime.fromisoformat(data["cached_at"])).total_seconds() / 3600
+
+
+def _get_raw(cfg: SolcastConfig) -> dict:
+    """Respuesta de Solcast: caché vigente → API → caché caducada.
+
+    Si la API falla, se sirve la caché caducada antes que propagar el error: el
+    llamante caería a una previsión de 0 kWh, y en el ciclo nocturno eso significa
+    cargar hasta max_soc desde la red. Una previsión de hace unas horas es mucho
+    mejor que cero. Solo se acepta mientras siga cubriendo el día 1 entero: hasta
+    `forecast_hours − 24` h de antigüedad (24 h con el horizonte de 48 h).
+    """
+    global _last_failure
+    cached = _load_cache(cfg.cache_ttl_hours)
+    if cached:
+        return cached["raw"]
+
+    stale_max_h = max(0, cfg.forecast_hours - 24)
+    stale = _load_cache(stale_max_h) if stale_max_h > cfg.cache_ttl_hours else None
+
+    if (stale and _last_failure is not None
+            and time.monotonic() - _last_failure < _RETRY_AFTER_FAILURE_S):
+        logger.info(
+            f"Solcast falló hace menos de {_RETRY_AFTER_FAILURE_S // 60} min — usando "
+            f"caché caducada ({_cache_age_hours(stale):.1f}h de antigüedad)"
+        )
+        return stale["raw"]
+
+    try:
+        raw = _fetch_forecasts(cfg)
+    except SolcastError as e:
+        _last_failure = time.monotonic()
+        if not stale:
+            raise
+        logger.warning(
+            f"Solcast no disponible ({e}) — usando caché caducada "
+            f"({_cache_age_hours(stale):.1f}h de antigüedad, máx {stale_max_h}h)"
+        )
+        return stale["raw"]
+
+    _last_failure = None
+    _save_cache(raw)
+    return raw
+
+
 def get_two_day_forecast(
     cfg: SolcastConfig, timezone: str = "Europe/Madrid", night_cutoff_hour: int = 8
 ) -> tuple[SolarForecast, SolarForecast]:
     """
     Obtiene la previsión solar para los próximos 2 días.
-    Usa caché de hasta 12 horas para no consumir llamadas de la API.
+    Usa la caché local (solcast.cache_ttl_hours) para no consumir llamadas de la API.
 
     Los días se calculan desde reference_date(night_cutoff_hour), no desde
     datetime.now().date(), para que el recheck de madrugada (03:00, hora <
@@ -73,13 +126,7 @@ def get_two_day_forecast(
     Returns:
         (forecast_day1, forecast_day2) — día 1 = mañana, día 2 = pasado mañana
     """
-    # Intentar usar caché (TTL configurable en config.yaml bajo solcast.cache_ttl_hours)
-    cached = _load_cache(cfg.cache_ttl_hours)
-    if cached:
-        raw = cached["raw"]
-    else:
-        raw = _fetch_forecasts(cfg)
-        _save_cache(raw)
+    raw = _get_raw(cfg)
     forecasts = raw.get("forecasts", [])
     if not forecasts:
         raise SolcastError("La API de Solcast devolvió una lista de previsiones vacía")
@@ -128,12 +175,7 @@ def get_day1_intervals(
     Usa reference_date(night_cutoff_hour) por la misma razón que get_two_day_forecast:
     a las 03:00 el día 1 debe ser el mismo que ve decide_charge, no el siguiente.
     """
-    cached = _load_cache(cfg.cache_ttl_hours)
-    if cached:
-        raw = cached["raw"]
-    else:
-        raw = _fetch_forecasts(cfg)
-        _save_cache(raw)
+    raw = _get_raw(cfg)
 
     day1 = reference_date(night_cutoff_hour) + timedelta(days=1)
     return _filter_by_date(raw.get("forecasts", []), day1, timezone)
@@ -144,12 +186,7 @@ def get_today_intervals(cfg: SolcastConfig, timezone: str = "Europe/Madrid") -> 
     Devuelve los intervalos de 30 min de Solcast para HOY (los que aún quedan,
     ya que el forecast solo cubre de ahora en adelante). Reutiliza la caché.
     """
-    cached = _load_cache(cfg.cache_ttl_hours)
-    if cached:
-        raw = cached["raw"]
-    else:
-        raw = _fetch_forecasts(cfg)
-        _save_cache(raw)
+    raw = _get_raw(cfg)
 
     tz = ZoneInfo(timezone)
     today = datetime.now(tz).date()
@@ -182,8 +219,10 @@ def _fetch_forecasts(cfg: SolcastConfig) -> dict:
         raise SolcastError(f"Error HTTP {status} al llamar a Solcast: {e}") from e
     except requests.exceptions.ConnectionError as e:
         raise SolcastError(f"No se pudo conectar con la API de Solcast: {e}") from e
-    except requests.exceptions.Timeout:
+    except requests.exceptions.Timeout as e:
         raise SolcastError("Timeout al llamar a la API de Solcast (>30s)") from e
+    except requests.exceptions.RequestException as e:   # incluye respuesta no-JSON
+        raise SolcastError(f"Error al llamar a Solcast: {e}") from e
 
 
 def _get_tomorrow(timezone: str) -> date:

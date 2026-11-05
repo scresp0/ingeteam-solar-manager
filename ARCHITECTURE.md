@@ -61,11 +61,11 @@ un `None` que fuerce la ruta segura, nunca un valor por defecto plausible. Ver
 | `main.py` | Orquestación. Contiene `run` (ciclo nocturno), `run_recheck` (re-evaluación), `backfill_solar_history`, `run_charge_current_controller` (control de corriente) y `main()` (arranque del proceso). |
 | `scheduler.py` | APScheduler `BlockingScheduler`: registra los jobs (ciclo nocturno, re-evaluaciones, backfill 00:30, control de corriente por intervalo, backup SCP) y maneja SIGTERM/SIGINT. `reschedule()` vuelve a registrarlos cuando la configuración se recarga en caliente. |
 | `decision.py` | Algoritmo puro, sin E/S: `decide_charge`, `decide_discharge`, `is_valley_day`, `reference_date` y los formateadores de log (`*_oneliner`, `*_summary`). |
-| `solcast.py` | Cliente HTTP de la API de Solcast + caché JSON en disco. Agrega intervalos de 30 min a kWh/día (p10/p50/p90) y expone los intervalos de día 1 y de hoy. |
+| `solcast.py` | Cliente HTTP de la API de Solcast + caché JSON en disco. Agrega intervalos de 30 min a kWh/día (p10/p50/p90) y expone los intervalos de día 1 y de hoy. Si la API falla sirve la caché caducada mientras cubra el día 1 (v1.100, ver `cache_ttl_hours` en §6.1). |
 | `inverter.py` | Lectura MODBUS TCP del estado del inversor (SOC, SOH, tensión, potencia, temperatura, estados, SOC mínimo, corriente máxima de carga). Serializado con un lock global. |
 | `automation.py` | Playwright/Chromium contra la web Vue.js del inversor: escribe 6.3.1 (carga), 6.3.2 (descarga) y 1.2 (corriente máxima); lee 6.3.1/6.3.2 y la versión de firmware. Perfiles de etiquetas por firmware. Serializado con un lock global. |
 | `logger_reader.py` | Cliente HTTP del datalogger del inversor (registros minuto a minuto) y cálculo de los acumulados diarios y del perfil por franjas de 30 min. Define `house_power_w`. |
-| `storage.py` | Escrituras y consultas en InfluxDB 2.x: 4 measurements, los cuatro parámetros dinámicos, el historial para la web y el último día con dato para el backfill. |
+| `storage.py` | Escrituras y consultas en InfluxDB 2.x: 4 measurements, los cuatro parámetros dinámicos, el historial para la web y el último día con dato para el backfill. Las consultas de calibración (dinámicos, perfil de consumo, ventana productiva) se cachean 1 h (`_query(..., cache=True)`, v1.100); cualquier escritura vacía la caché. |
 | `notifier.py` | Handler de logging en memoria que acumula el log de un ciclo y lo envía como email HTML (+ texto plano) por SMTP al terminar. |
 | `backup.py` | Copia de seguridad por SCP a un servidor externo (DB + logs + config). **Implementado pero desactivado por defecto** (`backup.enabled: false`). |
 | `web/server.py` | Aplicación FastAPI: dashboard + API JSON (estado, forecast, parámetros, historial, logs, config, export de BD, lanzamiento de ciclos/tests por SSE). |
@@ -791,7 +791,7 @@ difiere).
 | `resource_id` | str, **requerido** | — | ID del emplazamiento. Override: `SOLCAST_RESOURCE_ID`. |
 | `base_url` | str | `https://api.solcast.com.au` | Base de la API. |
 | `forecast_hours` | int | 48 | Horizonte pedido a la API (`?hours=`). |
-| `cache_ttl_hours` | int | 4 | Validez de la caché local `/app/logs/solcast_cache.json`. Superado el TTL se vuelve a llamar a la API. |
+| `cache_ttl_hours` | int | 4 | Validez de la caché local `/app/logs/solcast_cache.json`. Superado el TTL se vuelve a llamar a la API. **Si la API falla** (v1.100) se sirve la caché caducada con un WARNING, siempre que tenga como mucho `forecast_hours − 24` h (24 h con el horizonte de 48 h: lo justo para que siga cubriendo el día 1 entero); más vieja, o sin caché, el llamante recibe `SolcastError` y cae a la previsión de 0 kWh como antes. Tras un fallo no se reintenta en 15 min mientras haya caché caducada que servir, para que el controlador de corriente no martillee la API (p. ej. con la cuota agotada). |
 
 ### 6.2 `inverter`
 
@@ -892,7 +892,7 @@ Ver sección 5 para el detalle funcional.
 | Clave | Tipo / rango | Defecto | Significado |
 |---|---|---|---|
 | `log_level` | `DEBUG`/`INFO`/`WARNING`/`ERROR` | `INFO` | Se normaliza a mayúsculas; otro valor es error de validación. Override: `LOG_LEVEL`. |
-| `log_file` | str | `/app/logs/solar-manager.log` | El directorio se crea si no existe. `GET /api/logs` y el backup SCP leen de aquí. |
+| `log_file` | str | `/app/logs/solar-manager.log` | El directorio se crea si no existe. `GET /api/logs` y el backup SCP leen de aquí. Rota por tamaño desde v1.100 (10 MB, 5 copias `.1`…`.5`; constantes `LOG_MAX_BYTES`/`LOG_BACKUP_COUNT` de `main.py`). El stdout que guarda Docker está limitado aparte en `docker-compose.yml` (`max-size: 10m`, 3 ficheros). |
 | `dry_run` | bool | `false` | Ver sección 8.4. Override: `DRY_RUN`. |
 | `timezone` | str (IANA) | `Europe/Madrid` | Zona del scheduler y de todos los cálculos horarios. |
 | `web_port` | int | 8080 | Puerto de uvicorn (dentro del contenedor). |
@@ -1284,7 +1284,7 @@ risk factor usa `solar_kwh`, que es un campo original y acumula datos antes.
 
 ```
 1. load_config()            → error de config = sys.exit(1)
-2. setup_logging()          → StreamHandler(stdout) + FileHandler(log_file)
+2. setup_logging()          → StreamHandler(stdout) + RotatingFileHandler(log_file, 10 MB × 6)
 3. log de arranque:  "solar-manager v1.79 arrancando en <host> (dry_run=…)"
 4. WARNING por cada clave de config obsoleta encontrada
 5. si system.web_enabled → hilo daemon con uvicorn en 0.0.0.0:web_port
@@ -1362,13 +1362,13 @@ measurement se queda corto.
 |---|---|---|
 | `GET /` | — | Dashboard HTML; sustituye `{{VERSION}}` y `{{HOSTNAME}}`. |
 | `GET /api/version` | — | Versión. |
-| `GET /api/status` | — | Estado MODBUS (SOC, SOH, potencia, tensión, temperatura, estados, corriente máx.) y, desde v1.89, `solar_power_w` / `house_power_w` / `grid_power_w` instantáneos. |
+| `GET /api/status` | — | Estado MODBUS (SOC, SOH, potencia, tensión, temperatura, estados, corriente máx.) y, desde v1.89, `solar_power_w` / `house_power_w` / `grid_power_w` instantáneos. Es `def` (no `async def`) desde v1.100: la lectura MODBUS bloquea y, en el event loop, congelaba toda la web mientras esperaba el lock o el timeout. |
 | `GET /api/forecast` | — | Forecast de mañana por hora + total crudo y calibrado. |
 | `GET /api/today_solar` | — | Producción de hoy (acumulado y perfil por hora), del datalogger. Requiere `device_id` (si no, 503). Si el datalogger no tiene el día (`code != ok`) devuelve 502, no ceros. |
 | `GET /api/params` | — | Parámetros dinámicos activos, su origen y los días válidos. |
 | `GET /api/solar_history` | — | Historial forecast vs real (`view=day|week|month`). |
 | `GET /api/charge_current_today` | — | Cambios de corriente registrados hoy. |
-| `GET /api/logs` | — | Últimas N líneas del fichero de log. |
+| `GET /api/logs` | — | Últimas N líneas del fichero de log (lectura en streaming, sin cargar el fichero entero). |
 | `GET /api/config` | — | Config editable + `env_overrides` + `legacy_keys` + `default_keys` (claves ausentes del YAML, devueltas con el default del modelo). No expone secretos. |
 | `POST /api/config` | ✔ | Aplica cambios con `ruamel.yaml` (round-trip: preserva comentarios y orden), valida el YAML completo contra `AppConfig` antes de escribir; si falla, 400 sin tocar el fichero. Tras escribir, recarga la config en el proceso vivo y reprograma los jobs (§6.11): devuelve `reloaded`, `rescheduled` y `restart_required`. |
 | `POST /api/cycle` | ✔ | Lanza `python -m app.run_cycle` como subproceso (`--write` si no es dry_run) y devuelve un `job_id`. |
@@ -1572,7 +1572,7 @@ tests cuando la red de seguridad real eran seis. v1.84 los separa por prefijo:
 | `diag_*` | Necesita inversor o internet; imprime, no afirma | El equipo no responde |
 | `run_cycle` | Camino de producción (`POST /api/cycle`) | Depende de qué falle |
 
-`make test` ejecuta los nueve deterministas en un solo contenedor (`--no-deps`: ninguno
+`make test` ejecuta todos los deterministas en un solo contenedor (`--no-deps`: ninguno
 necesita InfluxDB) y devuelve código de salida agregado. No hay CI.
 
 **Qué está cubierto:**
@@ -1589,6 +1589,7 @@ necesita InfluxDB) y devuelve código de salida agregado. No hay CI.
 | `test_notifier` | 54 | El email: parseo de las líneas de decisión y de configuración, tarjetas, tabla ANTES/DESPUÉS, HTML y texto plano |
 | `test_scheduler` | 25 | `_parse_hhmm`, qué jobs registra `_register_jobs` para cada config, el fail-safe del `schedule_at` inválido y la reprogramación en caliente |
 | `test_schedule_modbus` | 11 | `inverter.decode_schedule`: valores reales de AG, estados canónicos y no reconocidos, e independencia de los bits ajenos de 40101/40134 |
+| `test_solcast` | 18 | `_fetch_forecasts` convierte todo fallo de `requests` (timeouts, no-JSON…) en `SolcastError`; `_get_raw`: caché vigente → API → caché caducada, límite de antigüedad y pausa de reintentos (v1.100) |
 
 **Cómo se prueban `storage` y `notifier` sin sus dependencias** (v1.86):
 
@@ -1610,9 +1611,11 @@ necesita InfluxDB) y devuelve código de salida agregado. No hay CI.
   `start_scheduler` —arranca un `BlockingScheduler` real— y los wrappers `_run_*_job`.
 - **`backup.py`** y la parte pura de `automation.py` (perfiles de etiquetas por firmware),
   que sería testeable sin inversor.
-- **`solcast.py`**: la incoherencia **I-5** (el `NameError` del timeout) ilustra el
-  patrón — un test unitario trivial la habría cazado, pero `diag_solcast` llama a la API
-  real y solo recorre el camino feliz.
+- ~~**`solcast.py`**~~ — cubierto desde v1.100 por `test_solcast`. La incoherencia
+  **I-5** (el `NameError` del timeout) ilustraba el patrón: un test unitario trivial la
+  habría cazado, pero `diag_solcast` llama a la API real y solo recorre el camino feliz.
+  Verificado por mutación: con el `solcast.py` de v1.99 el test da `UnboundLocalError`.
+- Los wrappers de notificación de `run`/`run_recheck` (`main._with_notifier`, v1.100).
 
 **Dos ficheros reescritos en v1.85:**
 
@@ -1684,7 +1687,13 @@ qué `target_soc`. El fichero solo se actualiza tras una escritura **real** (nun
 que sí hay que cargar el controlador se queda en `IDLE (valle sin carga — sin cambios)`
 y no baja ni sube la corriente durante todo el valle.
 
-### I-5 · `NameError` en el manejo de timeout de Solcast
+### I-5 · `NameError` en el manejo de timeout de Solcast — ✅ resuelto en v1.100
+
+`except Timeout as e`, más una rama final `except RequestException` que cubre también la
+respuesta no-JSON (antes salía como `JSONDecodeError`, igual de letal). Además, desde
+v1.100 `run`/`run_recheck` van envueltos en `main._with_notifier`: una excepción no
+prevista ya no deja el ciclo sin email ni el handler del notifier colgado del logger
+raíz. Texto original:
 
 `solcast.py:185-186`:
 
@@ -1731,8 +1740,8 @@ sin captación, sino que simplemente no existe. El efecto es pequeño (son franj
 
 ### I-10 · Documentación desalineada con el código
 
-- El docstring de `get_two_day_forecast` dice "Usa caché de hasta 12 horas"; el TTL real
-  es `solcast.cache_ttl_hours` (4 en la plantilla).
+- ~~El docstring de `get_two_day_forecast` dice "Usa caché de hasta 12 horas"~~ —
+  corregido en v1.100.
 - `CLAUDE.md` afirma que "Battery Status (30022)"; en el código, 30022 es **SOH** y el
   Battery Status es **30027** (`inverter.py`, `regs[26]`).
 - `CLAUDE.md` afirma que el caché JSON "ya no condiciona ninguna escritura — solo se

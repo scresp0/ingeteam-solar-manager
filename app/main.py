@@ -57,6 +57,10 @@ from app.storage import (
 # LAN para los 59 días, así que no hay razón para quedarse corto.
 MAX_BACKFILL_DAYS = 59
 
+# Rotación del fichero de log: 10 MB × (1 + 5 copias) ≈ 60 MB como máximo.
+LOG_MAX_BYTES = 10 * 1024 * 1024
+LOG_BACKUP_COUNT = 5
+
 
 def setup_logging(cfg: AppConfig) -> None:
     """Configura el sistema de logging a fichero y consola."""
@@ -66,9 +70,13 @@ def setup_logging(cfg: AppConfig) -> None:
     fmt = "%(asctime)s %(levelname)s %(name)s — %(message)s"
     level = getattr(logging, cfg.system.log_level, logging.INFO)
 
+    # Rotado por tamaño: sin límite crecía indefinidamente (el controlador de
+    # corriente escribe cada minuto) y `/api/logs` lo lee en cada carga del dashboard.
+    from logging.handlers import RotatingFileHandler
     handlers = [
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(log_file, encoding="utf-8"),
+        RotatingFileHandler(log_file, maxBytes=LOG_MAX_BYTES,
+                            backupCount=LOG_BACKUP_COUNT, encoding="utf-8"),
     ]
     logging.basicConfig(level=level, format=fmt, handlers=handlers)
 
@@ -358,6 +366,24 @@ def _apply_inverter_decisions(
     return True
 
 
+def _with_notifier(cfg: AppConfig, body, what: str) -> bool:
+    """Ejecuta `body` con el notifier enganchado al log y garantiza que se suelta.
+
+    Sin esto, una excepción no prevista dejaba el ciclo sin email (no te enterabas
+    del fallo) y el handler del notifier colgado del logger raíz para siempre,
+    acumulando en memoria cada línea de log posterior.
+    """
+    logger = logging.getLogger(__name__)
+    notifier = CycleEmailNotifier(cfg.system.email)
+    notifier.attach()
+    try:
+        return body(cfg, logger, notifier)
+    except Exception:
+        logger.exception(f"Error inesperado en {what} — se aborta")
+        notifier.send(success=False)
+        return False
+
+
 def run(cfg: AppConfig) -> bool:
     """
     Ciclo completo nocturno (schedule_at, p.ej. 23:55).
@@ -367,11 +393,10 @@ def run(cfg: AppConfig) -> bool:
     Returns:
         True si todo fue bien, False si hubo algún error no fatal.
     """
-    logger = logging.getLogger(__name__)
+    return _with_notifier(cfg, _run, "el ciclo")
 
-    notifier = CycleEmailNotifier(cfg.system.email)
-    notifier.attach()
 
+def _run(cfg: AppConfig, logger: logging.Logger, notifier: CycleEmailNotifier) -> bool:
     logger.info("=== Iniciando ciclo de gestión de carga ===")
     if cfg.system.dry_run:
         logger.info("Modo DRY RUN activo — no se modificará el inversor")
@@ -444,11 +469,10 @@ def run_recheck(cfg: AppConfig) -> bool:
     Returns:
         True si todo fue bien (con o sin cambios aplicados), False si hubo error.
     """
-    logger = logging.getLogger(__name__)
+    return _with_notifier(cfg, _run_recheck, "la re-evaluación")
 
-    notifier = CycleEmailNotifier(cfg.system.email)
-    notifier.attach()
 
+def _run_recheck(cfg: AppConfig, logger: logging.Logger, notifier: CycleEmailNotifier) -> bool:
     logger.info("=== Re-evaluación nocturna de la decisión de carga ===")
     if cfg.system.dry_run:
         logger.info("Modo DRY RUN activo — no se modificará el inversor")

@@ -371,8 +371,14 @@ def create_app(cfg: AppConfig) -> FastAPI:
         return {"version": VERSION, "hostname": _HOSTNAME}
 
     @app.get("/api/status")
-    async def status():
-        """Lee el estado actual del inversor vía MODBUS."""
+    def status():
+        """Lee el estado actual del inversor vía MODBUS.
+
+        `def` y no `async def`: la lectura MODBUS es bloqueante (hasta el timeout,
+        y espera el lock que comparte con el controlador de corriente). Síncrona,
+        FastAPI la ejecuta en su pool de hilos en vez de congelar el event loop y,
+        con él, todos los demás endpoints y los streams SSE.
+        """
         try:
             from app.inverter import read_inverter_state
             state = read_inverter_state(cfg.inverter)
@@ -1179,12 +1185,16 @@ def create_app(cfg: AppConfig) -> FastAPI:
         return {"status": "ok", "file": fname}
 
     @app.get("/api/logs")
-    async def get_logs(lines: int = 100):
+    def get_logs(lines: int = 100):
         """Devuelve las últimas N líneas del fichero de log."""
+        from collections import deque
         log_file = Path(cfg.system.log_file)
         if not log_file.exists():
             return {"lines": []}
-        all_lines = log_file.read_text(encoding="utf-8").splitlines()
-        return {"lines": all_lines[-lines:]}
+        # Recorre el fichero en streaming guardando solo las últimas `lines`
+        # (antes lo cargaba entero en memoria en cada petición).
+        with log_file.open(encoding="utf-8", errors="replace") as f:
+            tail = deque(f, maxlen=max(0, lines))
+        return {"lines": [ln.rstrip("\n") for ln in tail]}
 
     return app

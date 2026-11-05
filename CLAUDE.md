@@ -89,6 +89,8 @@ La versión se muestra en el log de arranque, en el header de la web (`/`) y en 
 
 ### Solcast (solcast.py)
 - `api_key` va como **parámetro de URL** (`?api_key=...`), no como Bearer token
+- **Fallback a caché caducada (v1.100):** todo acceso pasa por `_get_raw` (caché vigente → API → caché caducada). Si la API falla se sirve la caché caducada con WARNING mientras tenga ≤ `forecast_hours − 24` h (cubre aún el día 1); si no, `SolcastError` → previsión 0 kWh como antes. Tras un fallo, 15 min sin reintentar si hay caducada que servir (el controlador pide el forecast cada tick).
+- Todo error de `requests` sale como `SolcastError` — hasta v1.99 un `ReadTimeout` daba `UnboundLocalError` y abortaba el ciclo nocturno.
 
 ### ⚠️ El datalogger cambió de endpoint con el firmware del DSP ABH1006AC (logger_reader.py, v1.90)
 
@@ -122,6 +124,7 @@ Usar siempre el helper `logger_reader.house_power_w(record)`, que aplica la fór
 - ⚠️ **Sigue pendiente**: `grid_exported_kwh` diario se calcula del contador `EPvToGrid`, que no cuadra con ∫`PacMeter` — probablemente mide "PV entregado a AC", no lo vertido a red. Los campos de media hora `grid_export_kwh` usan ∫`PacMeter`, que sí cuadra con el balance. Sin relación con el bug de arriba.
 
 ### InfluxDB (storage.py / logger_reader.py)
+- **Caché de consultas de calibración (v1.100):** `_query(cfg, flux, cache=True)` reutiliza el resultado 1 h; lo usan los dinámicos, el perfil de consumo y la ventana productiva (el controlador las pedía cada minuto). `_write_points` vacía la caché. **No** usar `cache=True` en consultas que dependan del día en curso. Los dobles de `test_storage` aceptan y descartan el kwarg.
 - Nunca leer el día actual del datalogger **para stats diarias** (datos incompletos) — siempre ayer o antes
 - Leer el día actual del datalogger **sí está permitido** para visualización en tiempo real (`/api/today_solar`)
 - Backfill incremental: consultar último timestamp almacenado antes de pedir más datos
@@ -479,7 +482,7 @@ El campo `night_consumption_kwh` en `stats_diarias` se añadió en v1.25. Regist
 
 Dos familias con propósitos distintos; el prefijo lo dice:
 
-- **`test_*`** — deterministas: no tocan inversor, Solcast ni InfluxDB. **Un fallo es siempre una regresión del código.** Son `decision`, `charge_current`, `charge_current_scenarios`, `logger_reader`, `config`, `config_web`, `storage`, `notifier`, `scheduler` y `schedule_modbus` (decodificación de los bits de 6.3.1/6.3.2, v1.96).
+- **`test_*`** — deterministas: no tocan inversor, Solcast ni InfluxDB. **Un fallo es siempre una regresión del código.** Son `decision`, `charge_current`, `charge_current_scenarios`, `logger_reader`, `config`, `config_web`, `storage`, `notifier`, `scheduler`, `schedule_modbus` (decodificación de los bits de 6.3.1/6.3.2, v1.96) y `solcast` (errores de red y fallback a caché caducada, v1.100).
 - **`diag_*`** — necesitan hardware o internet y solo imprimen lo que encuentran (`diag_inverter`, `diag_solcast`, `diag_automation`, más el ya existente `diag_forecast_bias`). No afirman nada: un fallo suyo significa que el equipo no responde. **No los uses como red de seguridad.**
 - **`run_cycle.py`** (antes `test_main.py`) — no es un test: `POST /api/cycle` lo lanza como subproceso, así que es camino de producción.
 
@@ -487,7 +490,7 @@ Dos familias con propósitos distintos; el prefijo lo dice:
 
 Las claves de `POST /api/run/{test}` se mantienen estables aunque el módulo se renombre (`inverter` → `app.diag_inverter`). La única que cambió es `main` → `cycle`.
 
-**Huecos conocidos** (ver ARCHITECTURE §9.7): `backup.py`, la parte pura de `automation.py` y `solcast.py` no tienen ningún test. De `scheduler.py` quedan fuera `start_scheduler` (arranca un `BlockingScheduler` real) y los wrappers `_run_*_job`; el resto lo cubre `test_scheduler` desde v1.87 con un doble que solo apunta las llamadas a `add_job`.
+**Huecos conocidos** (ver ARCHITECTURE §9.7): `backup.py` y la parte pura de `automation.py` no tienen ningún test. De `scheduler.py` quedan fuera `start_scheduler` (arranca un `BlockingScheduler` real) y los wrappers `_run_*_job`; el resto lo cubre `test_scheduler` desde v1.87 con un doble que solo apunta las llamadas a `add_job`.
 
 **El email depende del FORMATO del log.** `notifier.py` monta las tarjetas parseando las líneas `[CARGA]`/`[DESCARGA]` de `decision.py` y la tabla ANTES/DESPUÉS de las de `main.py`, con expresiones regulares. No es una interfaz declarada: cambiar un prefijo, una tilde o un separador deja el email mudo sin que falle nada. `test_notifier` genera el log con los generadores reales para que ese cambio rompa el test — comprobado por mutación: `[CARGA] SÍ` → `[CARGA] SI` basta para perder la tarjeta.
 

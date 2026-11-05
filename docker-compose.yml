@@ -27,6 +27,13 @@ services:
 
     shm_size: '256mb'
 
+    # Limita el log de stdout que guarda Docker (json-file): sin esto crece sin fin.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
     ports:
       - "${WEB_PORT:-8080}:${WEB_PORT:-8080}"
 
