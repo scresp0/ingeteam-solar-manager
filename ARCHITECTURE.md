@@ -1336,7 +1336,8 @@ Tres servicios:
 - **`influxdb`**: imagen `influxdb:2.7`, bind mounts `./influxdb/{data,config}`,
   inicialización por `DOCKER_INFLUXDB_INIT_*`, puerto 8086, healthcheck `influx ping`.
 - **`backup`** (contenedor `solar-manager-backup`): imagen `influxdb:2.7` con
-  `entrypoint` `bash /backup.sh schedule`. Monta el script, `./influxdb/data` en solo
+  `entrypoint` `bash /scripts/backup_influxdb.sh schedule`. Monta la carpeta `./scripts`
+  (no el fichero suelto: ver §9.6.2), `./influxdb/data` en solo
   lectura, el volumen NFS `nas-backups` y `./logs` (compartido con `solar-manager`, para
   dejar el resultado de cada backup). Solo recibe `INFLUXDB_TOKEN` (no `env_file`).
   Healthcheck `backup.sh check` (último diario de hace menos de 26 h). Ver §9.6.
@@ -1469,7 +1470,7 @@ añade `.gz` al nombre.
 tiene sección `backup` (comprobado en agosto de 2026). Comprobar `backup.enabled` antes de
 asumir cuál está activo en futuras revisiones.
 
-**Componentes**: `scripts/backup_influxdb.sh` (montado como `/backup.sh`) y el servicio
+**Componentes**: `scripts/backup_influxdb.sh` y el servicio
 `backup` de `docker-compose.yml` (§9.3). El script tiene tres modos: `schedule` (proceso
 principal), `run` (`make backup`) y `check` (healthcheck). Log: `make logs-backup`.
 
@@ -1535,6 +1536,13 @@ bucle y lo mataría.
 
 **Healthcheck de Docker**: *unhealthy* si el último diario tiene más de 26 h o no hay
 ninguno. Complementa la vigilancia de la app.
+
+**Se monta la carpeta `./scripts`, no el fichero.** Un bind mount de un fichero suelto
+queda atado a su inode. Git, al cambiar de rama o hacer merge, reescribe el fichero con
+un inode nuevo, y el contenedor se queda apuntando al borrado: `No such file or
+directory`, healthcheck *unhealthy* y `make backup` roto. Pasó el 2026-11-05, la misma
+noche del despliegue. El bucle en marcha no lo nota, porque bash ya había cargado las
+funciones. El montaje de la carpeta resuelve el nombre en cada acceso.
 
 **Destino y WriteOnce**
 

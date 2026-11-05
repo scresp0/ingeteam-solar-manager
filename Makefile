@@ -22,7 +22,7 @@ logs:
 
 # Backup de InfluxDB a la NAS ahora mismo (servicio `backup`, ver docker-compose.yml)
 backup:
-	docker compose exec backup bash /backup.sh run
+	docker compose exec backup bash /scripts/backup_influxdb.sh run
 
 logs-backup:
 	docker compose logs -f backup

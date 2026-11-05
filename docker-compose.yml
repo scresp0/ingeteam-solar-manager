@@ -83,7 +83,7 @@ services:
     image: influxdb:2.7        # trae `influx` (backup por HTTP) e `influxd` (export-lp)
     container_name: solar-manager-backup
     restart: unless-stopped
-    entrypoint: ["bash", "/backup.sh", "schedule"]
+    entrypoint: ["bash", "/scripts/backup_influxdb.sh", "schedule"]
 
     environment:
       - TZ=Europe/Madrid
@@ -94,7 +94,10 @@ services:
       - INFLUX_BUCKET=${INFLUXDB_BUCKET:-solar-manager}
 
     volumes:
-      - ./scripts/backup_influxdb.sh:/backup.sh:ro
+      # La CARPETA, no el fichero suelto: un bind mount de fichero queda atado a su
+      # inode, y git (checkout, merge) reescribe el fichero con otro → el contenedor
+      # se queda con el borrado («No such file or directory»; pasó el 2026-11-05).
+      - ./scripts:/scripts:ro
       # export-lp lee el engine directamente: datos de InfluxDB en SOLO LECTURA
       - ./influxdb/data:/var/lib/influxdb2:ro
       - nas-backups:/nas
@@ -109,7 +112,7 @@ services:
 
     # Unhealthy si el último backup diario de la NAS tiene más de 26 h
     healthcheck:
-      test: ["CMD", "bash", "/backup.sh", "check"]
+      test: ["CMD", "bash", "/scripts/backup_influxdb.sh", "check"]
       interval: 10m
       timeout: 1m
       start_period: 15m

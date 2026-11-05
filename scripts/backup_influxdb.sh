@@ -7,10 +7,10 @@
 # que trae `influx` e `influxd`). El host no interviene: ni programador del
 # sistema (launchd/systemd), ni montajes, ni sudo.
 #
-#   bash /backup.sh schedule  → proceso principal del contenedor: cada minuto
-#                               comprueba si toca backup (ver `last_slot_epoch`)
-#   bash /backup.sh run       → un backup ahora mismo (`make backup`)
-#   bash /backup.sh check     → healthcheck: falla si el último diario es viejo
+#   bash /scripts/backup_influxdb.sh schedule  → proceso principal del contenedor:
+#                                cada minuto comprueba si toca backup (`last_slot_epoch`)
+#   bash /scripts/backup_influxdb.sh run    → un backup ahora mismo (`make backup`)
+#   bash /scripts/backup_influxdb.sh check  → healthcheck: falla si el último diario es viejo
 #
 # Montajes (docker-compose.yml):
 #   /var/lib/influxdb2  ← ./influxdb/data en SOLO LECTURA (para export-lp)
