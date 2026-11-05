@@ -1,4 +1,4 @@
-.PHONY: up down restart build logs shell migrate-config test
+.PHONY: up down restart build logs shell migrate-config test backup logs-backup
 
 # Tests deterministas: no tocan el inversor, ni Solcast, ni InfluxDB, así que un
 # fallo aquí SIEMPRE es una regresión del código. Los módulos `diag_*` quedan
@@ -19,6 +19,13 @@ build:
 
 logs:
 	docker compose logs -f solar-manager
+
+# Backup de InfluxDB a la NAS ahora mismo (servicio `backup`, ver docker-compose.yml)
+backup:
+	docker compose exec backup bash /backup.sh run
+
+logs-backup:
+	docker compose logs -f backup
 
 shell:
 	docker exec -it solar-manager bash

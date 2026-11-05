@@ -74,7 +74,59 @@ services:
       timeout: 5s
       retries: 10
 
+  # Backup diario de InfluxDB a la NAS (scripts/backup_influxdb.sh): backup binario
+  # + export line protocol, rotación GFS. Todo dentro del contenedor: el host no
+  # programa nada (ni launchd ni systemd) ni monta la NAS. Log: `make logs-backup`;
+  # backup inmediato: `make backup`. Detalle en ARCHITECTURE §9.6.
+  backup:
+    image: influxdb:2.7        # trae `influx` (backup por HTTP) e `influxd` (export-lp)
+    container_name: solar-manager-backup
+    restart: unless-stopped
+    entrypoint: ["bash", "/backup.sh", "schedule"]
+
+    environment:
+      - TZ=Europe/Madrid
+      - BACKUP_AT=23:57
+      # Solo el token (no `env_file: .env`, que inyectaría todos los secretos)
+      - INFLUXDB_TOKEN=${INFLUXDB_TOKEN}
+      - INFLUX_ORG=${INFLUXDB_ORG:-solar}
+      - INFLUX_BUCKET=${INFLUXDB_BUCKET:-solar-manager}
+
+    volumes:
+      - ./scripts/backup_influxdb.sh:/backup.sh:ro
+      # export-lp lee el engine directamente: datos de InfluxDB en SOLO LECTURA
+      - ./influxdb/data:/var/lib/influxdb2:ro
+      - nas-backups:/nas
+
+    depends_on:
+      influxdb:
+        condition: service_healthy
+
+    # Unhealthy si el último backup diario de la NAS tiene más de 26 h
+    healthcheck:
+      test: ["CMD", "bash", "/backup.sh", "check"]
+      interval: 10m
+      timeout: 1m
+      start_period: 15m
+      retries: 1
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
 volumes:
+  # NAS de backups (Synology, WriteOnce 2 h / 30 días). El export solo admite la IP
+  # del host. ⚠️ Docker guarda estas opciones al CREAR el volumen: para cambiar de
+  # NAS, `docker compose rm -sf backup && docker volume rm solar-manager_nas-backups`
+  # y volver a levantar.
+  nas-backups:
+    driver: local
+    driver_opts:
+      type: nfs
+      o: "addr=numancia.metafrase.net,nfsvers=4"
+      device: ":/volume4/APP-BACKUPS"
   solar-manager-logs:
   influxdb-data:
   influxdb-config:

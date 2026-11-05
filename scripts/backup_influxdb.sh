@@ -1,48 +1,37 @@
 #!/usr/bin/env bash
+# ============================================================
+# solar-manager - Backup diario de InfluxDB a la NAS, con rotación GFS
+# Backup binario (influx backup) + export line protocol (gzip)
+#
+# Corre DENTRO del servicio `backup` de docker-compose.yml (imagen influxdb:2.7,
+# que trae `influx` e `influxd`). El host no interviene: ni programador del
+# sistema (launchd/systemd), ni montajes, ni sudo.
+#
+#   bash /backup.sh schedule  → proceso principal del contenedor: cada minuto
+#                               comprueba si toca backup (ver `last_slot_epoch`)
+#   bash /backup.sh run       → un backup ahora mismo (`make backup`)
+#   bash /backup.sh check     → healthcheck: falla si el último diario es viejo
+#
+# Montajes (docker-compose.yml):
+#   /var/lib/influxdb2  ← ./influxdb/data en SOLO LECTURA (para export-lp)
+#   /nas                ← volumen NFS `nas-backups` (la NAS)
+# ============================================================
 set -euo pipefail
 
-# ============================================================
-# solar-manager - Backup diario de InfluxDB con rotación GFS
-# Backup binario (influx backup) + export line protocol (gzip)
-# Volcado a NAS Synology vía NFS
-#
-# El host solo orquesta con `docker`; nada toca la NAS desde el sistema operativo:
-#   1-2. backup y export se generan DENTRO del contenedor de InfluxDB (docker exec)
-#        y se extraen a un staging local (docker cp);
-#   4.   la copia a la NAS y la rotación corren en un contenedor EFÍMERO con la NAS
-#        montada como volumen NFS de Docker.
-# Así no hay mount/umount ni sudo en el host, y funciona igual en Linux (systemd)
-# y en macOS (launchd, bash 3.2 de serie). En macOS además evita dos problemas de
-# montar desde el sistema: la protección TCC «Volúmenes de red» (un bash lanzado
-# por launchd no puede escribir en un volumen de red: `Operation not permitted`) y
-# los ficheros AppleDouble `._*` que macOS crea junto a todo lo que escribe en NFS.
-# ============================================================
+INFLUX_HOST="${INFLUX_HOST:-http://influxdb:8086}"
+INFLUX_ORG="${INFLUX_ORG:-solar}"
+INFLUX_BUCKET="${INFLUX_BUCKET:-solar-manager}"
+ENGINE_PATH="/var/lib/influxdb2/engine"
+NAS_BASE="/nas/solar-manager-backup"
+BACKUP_AT="${BACKUP_AT:-23:57}"         # hora local (TZ del contenedor)
 
-# launchd arranca con un PATH mínimo sin /usr/local/bin (docker de Docker
-# Desktop) ni Homebrew. Inocuo en Linux.
-export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
+RETRY_AFTER_FAILURE_S=1800              # tras un fallo, no reintentar en 30 min
+HEALTH_MAX_AGE_H=26                     # healthcheck: margen sobre las 24 h
 
-# --- Configuración ---
-# El repo vive en rutas distintas en cada máquina: se deduce de la del script.
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-ENV_FILE="${PROJECT_DIR}/.env"
-CONTAINER="solar-manager-influxdb"
-INFLUX_ORG="solar"
-INFLUX_BUCKET="solar-manager"
-INFLUX_BUCKET_ID="fa2d32fca4e9f966"
-ENGINE_PATH_CONTAINER="/var/lib/influxdb2/engine"
-
-STAGING_DIR="${PROJECT_DIR}/backups/tmp"
-
-NFS_SERVER="numancia.metafrase.net"   # Synology (172.24.2.20)
-NFS_EXPORT="/volume4/APP-BACKUPS"
-NFS_OPTS="nfsvers=4"                  # el export solo admite la IP de este host
-NAS_SUBDIR="solar-manager-backup"     # carpeta dentro del export
-
-# El share APP-BACKUPS tiene WriteOnce (Synology): cada fichero queda inmutable
+# El share de la NAS tiene WriteOnce (Synology): cada fichero queda inmutable
 # desde 2 h después de su última escritura y durante 30 días → no se puede borrar
 # hasta ~30 d 2 h después de crearlo. Si la rotación intenta borrar una copia aún
-# bloqueada, `rm` falla y el script acaba en ERROR cada noche. Regla al cambiar el
+# bloqueada, `rm` falla y el backup acaba en ERROR cada noche. Regla al cambiar el
 # bloqueo en el DSM: RETENTION_DAILY ≥ días_bloqueo + 1 y 7·RETENTION_WEEKLY >
 # días_bloqueo (mensual y anual nunca chocan).
 RETENTION_DAILY=31    # ≥ 30 + 1
@@ -50,153 +39,55 @@ RETENTION_WEEKLY=5    # 5·7 = 35 > 30
 RETENTION_MONTHLY=11
 RETENTION_YEARLY=1
 
-TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-
 LOG_PREFIX="[solar-manager-backup]"
-
-log() {
-    echo "${LOG_PREFIX} $(date '+%Y-%m-%d %H:%M:%S') - $*"
-}
-
-err() {
-    echo "${LOG_PREFIX} $(date '+%Y-%m-%d %H:%M:%S') - ERROR: $*" >&2
-}
-
-# --- Estado para cleanup ---
-CONTAINER_TMP_BIN=""
-CONTAINER_TMP_LP=""
-
-cleanup() {
-    local exit_code=$?
-
-    if [[ -n "${CONTAINER_TMP_BIN}" ]]; then
-        docker exec "${CONTAINER}" rm -rf "${CONTAINER_TMP_BIN}" 2>/dev/null || true
-    fi
-    if [[ -n "${CONTAINER_TMP_LP}" ]]; then
-        docker exec "${CONTAINER}" rm -f "${CONTAINER_TMP_LP}" 2>/dev/null || true
-    fi
-
-    rm -rf "${STAGING_DIR:?}"/* 2>/dev/null || true
-
-    if [[ ${exit_code} -ne 0 ]]; then
-        err "El script terminó con errores (exit code ${exit_code})"
-    else
-        log "Backup completado correctamente"
-    fi
-
-    exit "${exit_code}"
-}
-trap cleanup EXIT
-
-# --- Leer token desde .env (sin exponerlo en logs) ---
-if [[ ! -f "${ENV_FILE}" ]]; then
-    err "No se encuentra el archivo .env en ${ENV_FILE}"
-    exit 1
-fi
-
-INFLUXDB_TOKEN="$(grep -E '^INFLUXDB_TOKEN=' "${ENV_FILE}" | head -n1 | cut -d'=' -f2-)"
-if [[ -z "${INFLUXDB_TOKEN}" ]]; then
-    err "No se pudo leer INFLUXDB_TOKEN desde ${ENV_FILE}"
-    exit 1
-fi
-
-# --- Preparar staging local ---
-mkdir -p "${STAGING_DIR}"
-
-# --- 1. Backup binario ---
-CONTAINER_TMP_BIN="/tmp/influx-backup-${TIMESTAMP}"
-log "Generando backup binario en el contenedor: ${CONTAINER_TMP_BIN}"
-docker exec "${CONTAINER}" influx backup \
-    --org "${INFLUX_ORG}" \
-    --bucket "${INFLUX_BUCKET}" \
-    --token "${INFLUXDB_TOKEN}" \
-    "${CONTAINER_TMP_BIN}"
-
-log "Copiando backup binario a staging local"
-docker cp "${CONTAINER}:${CONTAINER_TMP_BIN}" "${STAGING_DIR}/binary"
-
-# --- 2. Export line protocol (comprimido con gzip) ---
-CONTAINER_TMP_LP="/tmp/influx-export-${TIMESTAMP}.lp"
-log "Generando export line protocol en el contenedor: ${CONTAINER_TMP_LP}"
-docker exec "${CONTAINER}" influxd inspect export-lp \
-    --bucket-id "${INFLUX_BUCKET_ID}" \
-    --engine-path "${ENGINE_PATH_CONTAINER}" \
-    --output-path "${CONTAINER_TMP_LP}" \
-    --compress
-
-log "Copiando export line protocol a staging local"
-# El contenido ya está en formato gzip aunque el nombre no lleve .gz; lo renombramos al copiar
-docker cp "${CONTAINER}:${CONTAINER_TMP_LP}" "${STAGING_DIR}/export.lp.gz"
-
-# --- 3. Determinar qué categorías de retención aplican hoy ---
-APPLY_DAILY=1
-APPLY_WEEKLY=0
-APPLY_MONTHLY=0
-APPLY_YEARLY=0
-
-DOW="$(date +%u)"  # 1=lunes ... 7=domingo
-if [[ "${DOW}" -eq 7 ]]; then
-    APPLY_WEEKLY=1
-fi
-
-if date -d tomorrow +%d >/dev/null 2>&1; then
-    TOMORROW_DAY="$(date -d tomorrow +%d)"     # GNU date
-else
-    TOMORROW_DAY="$(date -v+1d +%d)"           # BSD date (macOS)
-fi
-if [[ "${TOMORROW_DAY}" == "01" ]]; then
-    APPLY_MONTHLY=1
-    CURRENT_MONTH="$(date +%m)"
-    if [[ "${CURRENT_MONTH}" == "12" ]]; then
-        APPLY_YEARLY=1
-    fi
-fi
-
-log "Categorías aplicables hoy -> diario:${APPLY_DAILY} semanal:${APPLY_WEEKLY} mensual:${APPLY_MONTHLY} anual:${APPLY_YEARLY}"
-
-# --- 4. Copia a la NAS y rotación, en un contenedor efímero ---
-# Misma imagen que el contenedor de InfluxDB: ya está descargada (no hay pull) y es
-# Debian con bash y coreutils de GNU. El volumen NFS es anónimo: `--rm` lo borra al
-# terminar, y el montaje vive y muere con el contenedor.
-HELPER_IMAGE="$(docker inspect -f '{{.Config.Image}}' "${CONTAINER}")"
-log "Copiando a ${NFS_SERVER}:${NFS_EXPORT}/${NAS_SUBDIR} desde un contenedor efímero (${HELPER_IMAGE})"
-
-# `-e VAR` sin valor toma la variable del entorno del cliente docker: hay que exportarlas.
-export LOG_PREFIX TIMESTAMP APPLY_DAILY APPLY_WEEKLY APPLY_MONTHLY APPLY_YEARLY \
-       RETENTION_DAILY RETENTION_WEEKLY RETENTION_MONTHLY RETENTION_YEARLY
-docker run --rm -i \
-    --entrypoint bash \
-    -e TZ="Europe/Madrid" \
-    -e LOG_PREFIX -e TIMESTAMP \
-    -e APPLY_DAILY -e APPLY_WEEKLY -e APPLY_MONTHLY -e APPLY_YEARLY \
-    -e RETENTION_DAILY -e RETENTION_WEEKLY -e RETENTION_MONTHLY -e RETENTION_YEARLY \
-    -e BASE="/nas/${NAS_SUBDIR}" \
-    -v "${STAGING_DIR}:/staging:ro" \
-    --mount "type=volume,dst=/nas,volume-driver=local,volume-opt=type=nfs,\"volume-opt=o=addr=${NFS_SERVER},${NFS_OPTS}\",volume-opt=device=:${NFS_EXPORT}" \
-    "${HELPER_IMAGE}" -s <<'IN_CONTAINER'
-set -euo pipefail
-
 log() { echo "${LOG_PREFIX} $(date '+%Y-%m-%d %H:%M:%S') - $*"; }
+err() { echo "${LOG_PREFIX} $(date '+%Y-%m-%d %H:%M:%S') - ERROR: $*" >&2; }
 
-mkdir -p "${BASE}"/{daily,weekly,monthly,yearly}
+# Epoch del diario más reciente en la NAS (0 si no hay ninguno). Los directorios
+# se llaman YYYYMMDD_HHMMSS: el orden alfabético es el cronológico.
+newest_daily_epoch() {
+    local newest
+    newest="$(find "${NAS_BASE}/daily" -mindepth 1 -maxdepth 1 -type d \
+                   -name '[0-9]*_[0-9]*' 2>/dev/null | sort | tail -n 1 || true)"
+    if [[ -z "${newest}" ]]; then
+        echo 0
+        return
+    fi
+    newest="$(basename "${newest}")"
+    date -d "${newest:0:8} ${newest:9:2}:${newest:11:2}:${newest:13:2}" +%s
+}
+
+# Epoch de la franja programada más reciente que ya ha pasado: hoy a BACKUP_AT si
+# ya es esa hora, si no ayer a BACKUP_AT. Toca backup cuando el último diario es
+# anterior a esa franja. Esta única regla cubre el horario normal y la recuperación
+# de una noche perdida (equipo apagado o dormido a esa hora, contenedor parado):
+# en cuanto el contenedor vuelve a correr, ve la franja sin backup y lo hace.
+last_slot_epoch() {
+    local now today_slot
+    now="$(date +%s)"
+    today_slot="$(date -d "today ${BACKUP_AT}" +%s)"
+    if (( now >= today_slot )); then
+        echo "${today_slot}"
+    else
+        date -d "yesterday ${BACKUP_AT}" +%s
+    fi
+}
 
 copy_and_rotate() {
-    local category="$1"
-    local retention="$2"
-    local dest_dir="${BASE}/${category}/${TIMESTAMP}"
+    local work="$1" ts="$2" category="$3" retention="$4"
+    local dest_dir="${NAS_BASE}/${category}/${ts}"
 
     log "Copiando backup a categoría '${category}' (${dest_dir#/nas/})"
     mkdir -p "${dest_dir}"
-    cp -r /staging/binary "${dest_dir}/"
-    cp /staging/export.lp.gz "${dest_dir}/"
+    cp -r "${work}/binary" "${dest_dir}/"
+    cp "${work}/export.lp.gz" "${dest_dir}/"
 
     local count
-    count="$(find "${BASE}/${category}" -mindepth 1 -maxdepth 1 -type d | wc -l)"
-    if [[ "${count}" -gt "${retention}" ]]; then
+    count="$(find "${NAS_BASE}/${category}" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+    if (( count > retention )); then
         local to_delete=$((count - retention))
         log "Rotando '${category}': ${count} backups presentes, reteniendo ${retention}, eliminando ${to_delete}"
-        # Los directorios se llaman YYYYMMDD_HHMMSS: orden alfabético = cronológico.
-        find "${BASE}/${category}" -mindepth 1 -maxdepth 1 -type d \
+        find "${NAS_BASE}/${category}" -mindepth 1 -maxdepth 1 -type d \
             | sort \
             | head -n "${to_delete}" \
             | while read -r old_dir; do
@@ -206,10 +97,134 @@ copy_and_rotate() {
     fi
 }
 
-if [[ "${APPLY_DAILY}" -eq 1 ]];   then copy_and_rotate daily   "${RETENTION_DAILY}";   fi
-if [[ "${APPLY_WEEKLY}" -eq 1 ]];  then copy_and_rotate weekly  "${RETENTION_WEEKLY}";  fi
-if [[ "${APPLY_MONTHLY}" -eq 1 ]]; then copy_and_rotate monthly "${RETENTION_MONTHLY}"; fi
-if [[ "${APPLY_YEARLY}" -eq 1 ]];  then copy_and_rotate yearly  "${RETENTION_YEARLY}";  fi
-IN_CONTAINER
+# Un backup completo. Se ejecuta SIEMPRE en un subshell `( do_backup … )`: aísla
+# el `set -e` y el trap de limpieza, de modo que un fallo termina este backup sin
+# tumbar el bucle de `schedule`.
+#
+# $1 = epoch de la franja a la que corresponde: decide las categorías GFS. En una
+# recuperación (p. ej. el lunes a las 08:00 por la franja del domingo perdida) las
+# categorías son las del DOMINGO, no las del momento de ejecución.
+do_backup() {
+    local slot="$1"
+    local ts work bucket_id
+    ts="$(date +%Y%m%d_%H%M%S)"
 
-log "Todas las categorías aplicables procesadas correctamente"
+    exec 9>/tmp/backup.lock
+    if ! flock -n 9; then
+        err "Ya hay un backup en curso"
+        return 1
+    fi
+
+    work="$(mktemp -d /tmp/backup-XXXXXX)"
+    trap 'rc=$?; rm -rf "'"${work}"'"; if (( rc != 0 )); then err "El backup terminó con errores (exit code ${rc})"; fi' EXIT
+
+    if [[ -z "${INFLUXDB_TOKEN:-}" ]]; then
+        err "Falta INFLUXDB_TOKEN en el entorno del contenedor"
+        return 1
+    fi
+
+    # El ID del bucket (lo exige export-lp) se resuelve por nombre en cada backup.
+    bucket_id="$(influx bucket list --host "${INFLUX_HOST}" --org "${INFLUX_ORG}" \
+                    --token "${INFLUXDB_TOKEN}" --name "${INFLUX_BUCKET}" --hide-headers \
+                 | awk '{print $1}')"
+    if [[ -z "${bucket_id}" ]]; then
+        err "No se encontró el bucket '${INFLUX_BUCKET}' en ${INFLUX_HOST}"
+        return 1
+    fi
+
+    # 1. Backup binario, online por HTTP (incluye los metadatos .bolt/.sqlite)
+    log "Generando backup binario (${INFLUX_BUCKET} vía ${INFLUX_HOST})"
+    # Su log (una línea INFO por shard, por stderr) solo se muestra si falla.
+    if ! influx backup --host "${INFLUX_HOST}" --org "${INFLUX_ORG}" \
+            --bucket "${INFLUX_BUCKET}" --token "${INFLUXDB_TOKEN}" \
+            "${work}/binary" >"${work}/backup.log" 2>&1; then
+        cat "${work}/backup.log" >&2
+        return 1
+    fi
+
+    # 2. Export line protocol. `influxd inspect export-lp` es del daemon, no del CLI
+    # (no sale en `influx --help`), exige --bucket-id y lee el engine directamente,
+    # de ahí el montaje de ./influxdb/data en solo lectura. --compress escribe gzip
+    # pero no añade `.gz`: se le da el nombre final desde el principio.
+    log "Generando export line protocol (bucket ${bucket_id})"
+    # Igual que arriba: su log (JSON por stderr) solo se muestra si falla.
+    if ! influxd inspect export-lp --bucket-id "${bucket_id}" --engine-path "${ENGINE_PATH}" \
+            --output-path "${work}/export.lp.gz" --compress 2>"${work}/export-lp.log"; then
+        cat "${work}/export-lp.log" >&2
+        return 1
+    fi
+
+    # 3. Categorías GFS de la franja
+    local day dow apply_weekly=0 apply_monthly=0 apply_yearly=0
+    day="$(date -d "@${slot}" +%F)"
+    dow="$(date -d "${day}" +%u)"   # 1=lunes … 7=domingo
+    if (( dow == 7 )); then apply_weekly=1; fi
+    if [[ "$(date -d "${day} + 1 day" +%d)" == "01" ]]; then
+        apply_monthly=1
+        if [[ "$(date -d "${day}" +%m)" == "12" ]]; then apply_yearly=1; fi
+    fi
+    log "Franja ${day} -> diario:1 semanal:${apply_weekly} mensual:${apply_monthly} anual:${apply_yearly}"
+
+    # 4. Copia a la NAS y rotación
+    mkdir -p "${NAS_BASE}"/{daily,weekly,monthly,yearly}
+    copy_and_rotate "${work}" "${ts}" daily "${RETENTION_DAILY}"
+    if (( apply_weekly ));  then copy_and_rotate "${work}" "${ts}" weekly  "${RETENTION_WEEKLY}";  fi
+    if (( apply_monthly )); then copy_and_rotate "${work}" "${ts}" monthly "${RETENTION_MONTHLY}"; fi
+    if (( apply_yearly ));  then copy_and_rotate "${work}" "${ts}" yearly  "${RETENTION_YEARLY}";  fi
+
+    log "Backup completado correctamente (${ts})"
+}
+
+schedule() {
+    log "Programador activo: backup diario a las ${BACKUP_AT} (${TZ:-UTC}) en ${NAS_BASE#/nas/}"
+    local last_failure=0 now slot
+    while true; do
+        now="$(date +%s)"
+        slot="$(last_slot_epoch)"
+        if (( $(newest_daily_epoch) < slot && now - last_failure >= RETRY_AFTER_FAILURE_S )); then
+            log "Backup pendiente de la franja $(date -d "@${slot}" '+%Y-%m-%d %H:%M')"
+            # Ojo con `set -e`: ni `if ! ( do_backup … )` ni `( … ) || …` sirven,
+            # porque bash lo desactiva DENTRO del subshell cuando es la condición de
+            # un `if` o un operando de `||`; y el `set +e` necesario para recoger el
+            # código también lo hereda el subshell. Por eso se reactiva dentro.
+            # Sin esto, un paso fallido no paraba el backup y acababa en
+            # «completado correctamente» sin haber copiado nada (probado).
+            set +e
+            ( set -e; do_backup "${slot}" )
+            local rc=$?
+            set -e
+            if (( rc != 0 )); then
+                last_failure="${now}"
+                err "Se reintentará en $((RETRY_AFTER_FAILURE_S / 60)) min"
+            fi
+        fi
+        # Sondeo por reloj de pared en vez de un único `sleep` largo: si el equipo
+        # se suspende, un sleep largo se alarga con él y el backup llegaría tarde.
+        sleep 60
+    done
+}
+
+check() {
+    local newest age_h
+    newest="$(newest_daily_epoch)"
+    if (( newest == 0 )); then
+        echo "No hay ningún backup diario en ${NAS_BASE#/nas/}"
+        exit 1
+    fi
+    age_h=$(( ($(date +%s) - newest) / 3600 ))
+    if (( age_h > HEALTH_MAX_AGE_H )); then
+        echo "Último backup diario hace ${age_h} h (máx ${HEALTH_MAX_AGE_H} h)"
+        exit 1
+    fi
+    echo "Último backup diario hace ${age_h} h"
+}
+
+case "${1:-}" in
+    schedule) schedule ;;
+    run)      ( do_backup "$(date +%s)" ) ;;
+    check)    check ;;
+    *)
+        echo "Uso: $0 {schedule|run|check}" >&2
+        exit 2
+        ;;
+esac
