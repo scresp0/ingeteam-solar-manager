@@ -15,12 +15,19 @@ import sys
 import time
 from datetime import date
 
-from app.logger_reader import house_power_w, _calculate_stats
+from app.logger_reader import house_power_w, _calculate_stats, MINUTE_KEY
 
 
 def _rec(pac=0, pacmeter=0, pdc1=0, pdc2=0, sbatt=50, pbatt=0):
     return {"Pac": pac, "PacMeter": pacmeter, "Pdc1": pdc1, "Pdc2": pdc2,
             "Sbatt": sbatt, "EPvToGrid": 0, "Pbatt": pbatt}
+
+
+def _timed(recs, start_minute=0):
+    """Añade a cada registro su minuto del día, consecutivos desde `start_minute`,
+    como hace `_merge_loggers`. Copia cada dict: los días sintéticos repiten el
+    MISMO dict con `[_rec(...)] * n`."""
+    return [{**r, MINUTE_KEY: start_minute + i} for i, r in enumerate(recs)]
 
 
 def main():
@@ -54,7 +61,7 @@ def main():
     # produciendo 3000 W con la casa a 1200 W y el resto exportado.
     night = [_rec(pac=0, pacmeter=600, sbatt=40, pbatt=500)] * 480
     day = [_rec(pac=3000, pacmeter=-1800, pdc1=1500, pdc2=1500, sbatt=90, pbatt=-1000)] * 960
-    stats = _calculate_stats(night + day, date(2026, 8, 16), "TEST")
+    stats = _calculate_stats(_timed(night + day), date(2026, 8, 16), "TEST")
 
     # Noche: 600 W × 8 h = 4.8 kWh. Con PacGrid+PacMeter (≤v1.79) daría 0.0.
     check("night_consumption_kwh", stats.night_consumption_kwh, 4.8)
@@ -132,15 +139,46 @@ def main():
 
     # Sin EPvToGrid la exportación se integra de PacMeter: 60 min a −1200 W = 1.2 kWh.
     sdo_day = [lr._sdo_to_legacy({**sdo_val, "L-660": -1200.0})] * 60
-    check("export sin contador EPvToGrid", _calculate_stats(sdo_day, date(2026, 10, 4), "TEST").grid_exported_kwh, 1.2)
+    check("export sin contador EPvToGrid", _calculate_stats(_timed(sdo_day), date(2026, 10, 4), "TEST").grid_exported_kwh, 1.2)
     # Temperatura media por franja: 30 min a 26.0 y 30 a 28.0 en el mismo slot → 27.0.
     temp_day = ([lr._sdo_to_legacy({**sdo_val, "L-152": 26.0})] * 15
                 + [lr._sdo_to_legacy({**sdo_val, "L-152": 28.0})] * 15)
     check("temperatura media de la franja",
-          _calculate_stats(temp_day, date(2026, 10, 4), "TEST").half_hour_battery_temp_c[0], 27.0)
+          _calculate_stats(_timed(temp_day), date(2026, 10, 4), "TEST").half_hour_battery_temp_c[0], 27.0)
+
+    print("=== agrupación por la HORA de cada registro, no por su posición (v1.102) ===")
+    # Hueco de una hora (02:00–02:59 sin registros): lo posterior no debe desplazarse.
+    gap_night = _timed([_rec(pacmeter=600)] * 120) + _timed([_rec(pacmeter=600)] * 300, 180)
+    gap_day = _timed([_rec(pac=3000, pacmeter=-1800, pdc1=1500, pdc2=1500)] * 960, 480)
+    g = _calculate_stats(gap_night + gap_day, date(2026, 10, 20), "TEST")
+    check("franja 02:00 vacía (hueco)", g.half_hour_house_kwh[4], 0.0)
+    check("franja 08:00 sigue siendo día (sin desplazar)", g.half_hour_solar_kwh[16], 1.5)
+    check("franja 07:30 sigue siendo noche", g.half_hour_solar_kwh[15], 0.0)
+    # Noche: 7 h medidas a 600 W = 4.2 kWh, prorrateadas a las 8 h → 4.8
+    check("consumo nocturno prorrateado por los minutos que faltan", g.night_consumption_kwh, 4.8)
+    # Minuto repetido (cambio de hora de otoño): no cuenta como minuto nuevo para
+    # prorratear, y su energía va a su franja.
+    dup = _timed([_rec(pacmeter=600)] * 480) + [{**_rec(pacmeter=600), MINUTE_KEY: 120}]
+    d = _calculate_stats(dup, date(2026, 10, 25), "TEST")
+    check("minuto repetido: la noche no se prorratea", d.night_consumption_kwh, 4.81)
+    check("minuto repetido: su energía va a la franja 02:00", d.half_hour_house_kwh[4], 0.31)
+    try:
+        _calculate_stats([_rec()] * 10, date(2026, 10, 4), "TEST")
+        check("registros sin hora → error, no se agrupan por posición", "sin excepción", "LoggerReaderError")
+    except lr.LoggerReaderError:
+        check("registros sin hora → error, no se agrupan por posición", "LoggerReaderError", "LoggerReaderError")
+
+    check("_merge_loggers pone el minuto del día", [r[MINUTE_KEY] for r in merged], [1299, 1300, 1305])
+    check("_merge_loggers no modifica los dicts de la respuesta", MINUTE_KEY in legacy[0]["val"], False)
+    for malo in ("24:00:00", "7:05:00", "", None):
+        try:
+            lr._merge_loggers([{"time": malo, "val": _rec()}], [])
+            check(f"hora ilegible {malo!r} → error", "sin excepción", "LoggerReaderError")
+        except lr.LoggerReaderError:
+            check(f"hora ilegible {malo!r} → error", "LoggerReaderError", "LoggerReaderError")
 
     calls = {"n": 0}
-    fake = [_rec(pac=1000, pacmeter=200)] * 60
+    fake = _timed([_rec(pac=1000, pacmeter=200)] * 60, 600)
 
     def fake_fetch(cfg, target_date):
         calls["n"] += 1
@@ -184,6 +222,15 @@ def main():
         f2 = lr.get_recent_house_power(None, 60, cache_min=15)
         check("fallo devuelve None", f1, None)
         check("fallo no se cachea → reintenta", calls["n"], 2)
+
+        # Ventana de los últimos N MINUTOS, no N registros: con un hueco de 30 min,
+        # los 60 últimos registros abarcarían 90 min y meterían consumo viejo.
+        hueco = (_timed([_rec(pac=5000, pacmeter=0)] * 30, 600)      # 10:00–10:29, horno
+                 + _timed([_rec(pac=300, pacmeter=0)] * 30, 660))    # 11:00–11:29
+        lr._fetch_records = lambda cfg, d: (hueco, "TEST")
+        lr._house_power_cache = None
+        check("ventana por minutos: ignora lo anterior al hueco",
+              lr.get_recent_house_power(None, 60, cache_min=0), 300.0)
     finally:
         lr._fetch_records = real_fetch
         lr._house_power_cache = None

@@ -1620,7 +1620,7 @@ necesita InfluxDB) y devuelve código de salida agregado. No hay CI.
 | `test_config` | 64 | Carga, precedencia entorno > YAML > default, alias de claves renombradas, tarifas y festivos, `get_modbus_host`, todos los validadores cruzados |
 | `test_decision` | 45 | `decide_charge`, `decide_discharge`, `reference_date`, `is_valley_day`, resúmenes |
 | `test_charge_current` | 44 | `_compute_target_charge_current` (con y sin ventana), `_min_current_for_surplus`, perfil histórico, guards de v1.79 |
-| `test_logger_reader` | 30 | `house_power_w`, `_calculate_stats`, caché de consumo |
+| `test_logger_reader` | 65 | `house_power_w`, `_calculate_stats`, caché de consumo, datalogger SDO, agrupación por hora de registro con huecos y minutos repetidos (v1.102) |
 | `test_charge_current_scenarios` | 22 | Informe narrado: excedente franja a franja, puerta de temperatura, fallback lineal, valle y BALANCE |
 | `test_config_web` | 15 | Modelo ↔ `_EDITABLE_FIELDS` ↔ `CONFIG_SCHEMA`, casteos |
 | `test_storage` | 59 | Los cuatro dinámicos, el JOIN `ciclo_carga`↔`stats_diarias`, el perfil de consumo por franja y los puntos que se escriben |
@@ -1762,7 +1762,29 @@ siempre de `LABEL_SOC_1`. Si el inversor quedara con solo la Programación 2 act
 configuración que el sistema nunca escribe, pero que un cambio manual podría dejar),
 `charge_soc_pct` reflejaría un valor equivocado y `_needs_update` podría decidir mal.
 
-### I-8 · `get_recent_house_power` asume un registro por minuto
+### I-8 · `get_recent_house_power` asume un registro por minuto — ✅ resuelto en v1.102
+
+Desde v1.102 cada registro lleva su minuto del día (`MINUTE_KEY`, de la hora
+`HH:MM:SS` que trae el datalogger) y todo lo que agrupa por tiempo lo usa: la ventana
+de `get_recent_house_power`, la noche y las franjas de `_calculate_stats` y las barras
+horarias de `/api/today_solar`. Antes, cualquier hueco desplazaba todo lo posterior.
+Una hora ilegible lanza `LoggerReaderError`; nunca se vuelve a agrupar por posición.
+
+**Alcance medido el 2026-11-05** sobre los 59 días del datalogger:
+
+- 8 días con huecos o minutos repetidos, de 1 a 8 minutos.
+- Recalculados con ambos códigos: totales diarios idénticos y como mucho 0,013 kWh en
+  el consumo nocturno y 0,195 kWh en una franja de 30 min. No se recalculó el
+  histórico.
+- El cambio de hora de otoño **no** graba la hora repetida: el 2026-10-25 tuvo 1442
+  registros.
+
+El arreglo protege contra huecos largos (por ejemplo, la tarjeta de comunicaciones
+una hora sin grabar); con los datos actuales no corrige un error medible. Además, el
+prorrateo de la noche cuenta minutos distintos, así que un hueco nocturno ya se
+compensa. Antes nunca se aplicaba, porque los 480 primeros registros siempre existían.
+
+Texto original:
 
 `records[-minutes:]` toma los últimos *N registros*, no los últimos *N minutos*. Es
 correcto mientras el datalogger entregue exactamente un registro por minuto; con huecos,

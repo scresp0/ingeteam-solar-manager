@@ -100,6 +100,16 @@ def house_power_w(record: dict) -> float:
 
 _NIGHT_MINUTES = 480  # 00:00–07:59 (8 h × 60 min)
 
+# Minuto del día (0–1439) de cada registro, sacado de su hora "HH:MM:SS". Todo lo
+# que agrupa por franja u hora usa esta clave y no la POSICIÓN en la lista: un
+# hueco del datalogger desplazaría todo lo posterior (v1.102). Medido sobre los 59
+# días disponibles el 2026-11-05: 8 días con huecos o repetidos de 1–8 min y efecto
+# despreciable (totales idénticos, ≤0,13 kWh en una franja), así que es protección
+# para huecos largos —p. ej. la tarjeta de comunicaciones una hora sin grabar—, no
+# la corrección de un error medible. El cambio de hora de otoño NO graba la hora
+# repetida (el 2026-10-25 tuvo 1442 registros, con 2 minutos repetidos).
+MINUTE_KEY = "_minute"
+
 # Caché de `get_recent_house_power`: (instante monotónico, vatios). El controlador
 # de corriente corre en un hilo de APScheduler, de ahí el lock.
 _house_power_cache: tuple[float, float] | None = None
@@ -179,15 +189,29 @@ def _get_logger_json(cfg: InverterConfig, url: str) -> dict:
         raise LoggerReaderError(f"Error inesperado leyendo logger: {e}") from e
 
 
+def _minute_of_day(t) -> int:
+    """"HH:MM:SS" → minuto del día. Una hora ilegible es un error, nunca se adivina."""
+    try:
+        h, m = int(t[0:2]), int(t[3:5])
+        if t[2] != ":" or not (0 <= h < 24 and 0 <= m < 60):
+            raise ValueError
+    except (TypeError, ValueError, IndexError):
+        raise LoggerReaderError(f"Hora inesperada en el datalogger: {t!r}") from None
+    return h * 60 + m
+
+
 def _merge_loggers(legacy: list[dict], sdo: list[dict]) -> list[dict]:
-    """Une las entradas `{time, val}` de los dos dataloggers en una lista de registros.
+    """Une las entradas `{time, val}` de los dos dataloggers en una lista de registros,
+    cada uno con su minuto del día en `MINUTE_KEY`.
 
     Del SDO solo se toman las posteriores a la última del antiguo: en el día del
-    cambio el antiguo cubre hasta las 21:40 y el SDO desde las 21:45.
+    cambio el antiguo cubre hasta las 21:40 y el SDO desde las 21:45. Cada registro
+    es un dict NUEVO: nunca se escribe en el de la respuesta.
     """
     last = legacy[-1]["time"] if legacy else ""
-    return [e["val"] for e in legacy] + [
-        _sdo_to_legacy(e["val"]) for e in sdo if e["time"] > last
+    return [{**e["val"], MINUTE_KEY: _minute_of_day(e["time"])} for e in legacy] + [
+        {**_sdo_to_legacy(e["val"]), MINUTE_KEY: _minute_of_day(e["time"])}
+        for e in sdo if e["time"] > last
     ]
 
 
@@ -272,7 +296,10 @@ def get_recent_house_power(
         logger.warning(f"No se pudo leer el consumo reciente de la vivienda: {e}")
         return None
 
-    recent = records[-minutes:]
+    # Los últimos `minutes` MINUTOS, no los últimos `minutes` registros: con huecos,
+    # contar registros alargaba la ventana más de lo pedido.
+    last_minute = records[-1][MINUTE_KEY]
+    recent = [r for r in records if r[MINUTE_KEY] > last_minute - minutes]
     if not recent:
         return None
 
@@ -340,9 +367,17 @@ def _get_device_id(cfg: InverterConfig, host: str, date_str: str) -> str:
 
 
 def _calculate_stats(records: list[dict], target_date: date, device_id: str) -> DailyStats:
-    """Calcula los acumulados diarios a partir de los registros minuto a minuto."""
+    """Calcula los acumulados diarios a partir de los registros minuto a minuto.
+
+    Cada registro debe traer su minuto del día en `MINUTE_KEY` (lo pone
+    `_merge_loggers`): la noche y las franjas se deciden por la hora del registro,
+    no por su posición en la lista.
+    """
     INTERVAL_H = 1 / 60  # cada registro = 1 minuto = 1/60 hora
     SLOT_MINUTES = 30
+
+    if any(MINUTE_KEY not in r for r in records):
+        raise LoggerReaderError("Registros del datalogger sin hora (falta MINUTE_KEY)")
 
     # Producción solar (Pdc1 + Pdc2 en W → kWh)
     solar_kwh = sum(
@@ -371,13 +406,15 @@ def _calculate_stats(records: list[dict], target_date: date, device_id: str) -> 
     # (corregido en v1.80, ver docstring de `house_power_w`).
     consumption_kwh = sum(house_power_w(r) * INTERVAL_H for r in records) / 1000
 
-    # Consumo nocturno 00:00–07:59: primeros _NIGHT_MINUTES registros.
-    night_recs = records[:_NIGHT_MINUTES]
+    # Consumo nocturno 00:00–07:59: los registros con hora anterior a las 08:00.
+    night_recs = [r for r in records if r[MINUTE_KEY] < _NIGHT_MINUTES]
     if night_recs:
         raw_night = sum(house_power_w(r) * INTERVAL_H for r in night_recs) / 1000
-        # Prorratear si el día tiene menos registros de los esperados
-        if len(night_recs) < _NIGHT_MINUTES:
-            raw_night *= _NIGHT_MINUTES / len(night_recs)
+        # Prorratear si faltan minutos de la noche (huecos del datalogger). Se cuentan
+        # minutos distintos, no registros: un minuto repetido no es un minuto más.
+        night_minutes = len({r[MINUTE_KEY] for r in night_recs})
+        if night_minutes < _NIGHT_MINUTES:
+            raw_night *= _NIGHT_MINUTES / night_minutes
         night_consumption_kwh = max(0.0, raw_night)
     else:
         night_consumption_kwh = 0.0
@@ -417,8 +454,11 @@ def _calculate_stats(records: list[dict], target_date: date, device_id: str) -> 
     half_hour_charge: list[float] = []
     half_hour_discharge: list[float] = []
     half_hour_temp: list[float | None] = []
+    by_slot: list[list[dict]] = [[] for _ in range(48)]
+    for r in records:
+        by_slot[r[MINUTE_KEY] // SLOT_MINUTES].append(r)
     for slot in range(48):
-        slot_recs = records[slot * SLOT_MINUTES : (slot + 1) * SLOT_MINUTES]
+        slot_recs = by_slot[slot]
         half_hour.append(round(sum(
             (r.get("Pdc1", 0) + r.get("Pdc2", 0)) * INTERVAL_H for r in slot_recs) / 1000, 4))
         half_hour_house.append(round(sum(
