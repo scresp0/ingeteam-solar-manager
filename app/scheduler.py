@@ -125,6 +125,27 @@ def _register_jobs(scheduler: BlockingScheduler, cfg: AppConfig, timezone: str) 
     )
     logger.info(f"Backfill de producción histórica programado a las 00:30 ({timezone})")
 
+    # Vigilancia del backup a la NAS (servicio `backup` del compose, otro
+    # contenedor): registra en el log cada resultado y avisa por email si falla o
+    # si deja de hacerse. Primera comprobación ~30 s tras el arranque, para que el
+    # log diga enseguida cómo está el backup.
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+    from apscheduler.triggers.interval import IntervalTrigger
+    from app.backup_watch import CHECK_INTERVAL_MIN
+    scheduler.add_job(
+        func=_run_backup_watch_job,
+        trigger=IntervalTrigger(minutes=CHECK_INTERVAL_MIN, timezone=timezone),
+        args=[cfg],
+        id="backup_watch",
+        name=f"Vigilancia del backup a la NAS (cada {CHECK_INTERVAL_MIN} min)",
+        misfire_grace_time=120,
+        max_instances=1,
+        coalesce=True,
+        replace_existing=True,
+        next_run_time=datetime.now(ZoneInfo(timezone)) + timedelta(seconds=30),
+    )
+
     # Control de corriente máxima de carga: ajusta los amperios al mínimo necesario
     # (menos calor) garantizando llegar al tope a tiempo (valle de red / ventana solar).
     if cfg.charge_current.enabled:
@@ -272,6 +293,15 @@ def _run_charge_current_job(cfg: AppConfig) -> None:
         run_charge_current_controller(cfg)
     except Exception as e:
         logger.exception(f"Scheduler: error inesperado en el control de corriente de carga: {e}")
+
+
+def _run_backup_watch_job(cfg: AppConfig) -> None:
+    """Vigilancia del backup a la NAS — llamado por el scheduler cada pocos minutos."""
+    from app.backup_watch import check_backup
+    try:
+        check_backup(cfg)
+    except Exception as e:
+        logger.exception(f"Scheduler: error inesperado vigilando el backup: {e}")
 
 
 def _run_backup_job(cfg: AppConfig) -> None:

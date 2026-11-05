@@ -15,6 +15,8 @@
 # Montajes (docker-compose.yml):
 #   /var/lib/influxdb2  ← ./influxdb/data en SOLO LECTURA (para export-lp)
 #   /nas                ← volumen NFS `nas-backups` (la NAS)
+#   /logs               ← ./logs, compartido con la app: aquí se deja el resultado
+#                         de cada backup para que la app lo vigile (app/backup_watch.py)
 # ============================================================
 set -euo pipefail
 
@@ -39,9 +41,44 @@ RETENTION_WEEKLY=5    # 5·7 = 35 > 30
 RETENTION_MONTHLY=11
 RETENTION_YEARLY=1
 
+# Resultado para la app (app/backup_watch.py). Sin el montaje (pruebas sueltas) no
+# se escribe nada.
+STATUS_DIR="/logs"
+STATUS_FILE="${STATUS_DIR}/backup_status.json"   # último intento: ok | error
+LAST_OK_FILE="${STATUS_DIR}/backup_last_ok"      # hora del último backup correcto
+RC_BUSY=75                                       # otro backup en curso: no es un fallo
+
 LOG_PREFIX="[solar-manager-backup]"
 log() { echo "${LOG_PREFIX} $(date '+%Y-%m-%d %H:%M:%S') - $*"; }
 err() { echo "${LOG_PREFIX} $(date '+%Y-%m-%d %H:%M:%S') - ERROR: $*" >&2; }
+
+json_escape() {
+    local s="$1"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\t'/ }"
+    s="${s//$'\n'/\\n}"
+    printf '%s' "${s}"
+}
+
+# Deja el resultado para la app. Escritura atómica (tmp + mv): la app nunca lee un
+# fichero a medias. Un fallo aquí se avisa pero no cambia el resultado del backup.
+#   $1 = ok | error   $2 = nombre del backup   $3 = mensaje (error)
+write_status() {
+    [[ -d "${STATUS_DIR}" ]] || return 0
+    local now
+    now="$(date -Iseconds)"
+    if printf '{"status": "%s", "at": "%s", "backup": "%s", "message": "%s"}\n' \
+            "$1" "${now}" "$2" "$(json_escape "$3")" > "${STATUS_FILE}.tmp" \
+        && mv "${STATUS_FILE}.tmp" "${STATUS_FILE}"; then
+        if [[ "$1" == "ok" ]]; then
+            echo "${now}" > "${LAST_OK_FILE}.tmp" && mv "${LAST_OK_FILE}.tmp" "${LAST_OK_FILE}" \
+                || err "No se pudo escribir ${LAST_OK_FILE}"
+        fi
+    else
+        err "No se pudo escribir ${STATUS_FILE}"
+    fi
+}
 
 # Epoch del diario más reciente en la NAS (0 si no hay ninguno). Los directorios
 # se llaman YYYYMMDD_HHMMSS: el orden alfabético es el cronológico.
@@ -105,14 +142,13 @@ copy_and_rotate() {
 # recuperación (p. ej. el lunes a las 08:00 por la franja del domingo perdida) las
 # categorías son las del DOMINGO, no las del momento de ejecución.
 do_backup() {
-    local slot="$1"
-    local ts work bucket_id
-    ts="$(date +%Y%m%d_%H%M%S)"
+    local slot="$1" ts="$2"
+    local work bucket_id
 
     exec 9>/tmp/backup.lock
     if ! flock -n 9; then
         err "Ya hay un backup en curso"
-        return 1
+        return "${RC_BUSY}"
     fi
 
     work="$(mktemp -d /tmp/backup-XXXXXX)"
@@ -175,25 +211,61 @@ do_backup() {
     log "Backup completado correctamente (${ts})"
 }
 
+# Ejecuta un backup y deja el resultado para la app. Su código de salida queda en
+# RUN_RC y la función devuelve SIEMPRE 0: como reactiva `set -e` (que es global),
+# un `return` distinto de 0 haría saltar `set -e` en el llamante y mataría el bucle.
+# $1 = epoch de la franja
+RUN_RC=0
+run_one() {
+    local slot="$1" ts errfile rc
+    ts="$(date +%Y%m%d_%H%M%S)"
+    errfile="$(mktemp /tmp/backup-stderr-XXXXXX)"
+
+    # Ojo con `set -e`: ni `if ! ( do_backup … )` ni `( … ) || …` sirven, porque
+    # bash lo desactiva DENTRO del subshell cuando es la condición de un `if` o un
+    # operando de `||`; y el `set +e` necesario para recoger el código también lo
+    # hereda el subshell. Por eso se reactiva dentro. Sin esto, un paso fallido no
+    # paraba el backup y acababa en «completado correctamente» sin haber copiado
+    # nada (probado). stderr se guarda aparte para enviar el motivo a la app.
+    set +e
+    ( set -e; do_backup "${slot}" "${ts}" ) 2>"${errfile}"
+    rc=$?
+    set -e
+    cat "${errfile}" >&2
+
+    if (( rc == 0 )); then
+        write_status ok "${ts}" ""
+    elif (( rc != RC_BUSY )); then
+        # Las últimas líneas de stderr: el mensaje de la herramienta que falló y el
+        # ERROR del trap con el código de salida.
+        write_status error "${ts}" "$(grep -v '^[[:space:]]*$' "${errfile}" | tail -n 4 \
+            | sed 's/^\[solar-manager-backup\] [0-9-]* [0-9:]* - //')"
+    fi
+    rm -f "${errfile}"
+    RUN_RC="${rc}"
+}
+
 schedule() {
     log "Programador activo: backup diario a las ${BACKUP_AT} (${TZ:-UTC}) en ${NAS_BASE#/nas/}"
+
+    # Primer arranque con resultado para la app: si aún no hay `backup_last_ok`
+    # pero la NAS ya tiene diarios, se toma la hora del más reciente. Sin esto la
+    # app avisaría de «ningún backup» hasta el siguiente backup.
+    local newest
+    newest="$(newest_daily_epoch)"
+    if [[ -d "${STATUS_DIR}" && ! -f "${LAST_OK_FILE}" ]] && (( newest > 0 )); then
+        date -d "@${newest}" -Iseconds > "${LAST_OK_FILE}"
+        log "Inicializado ${LAST_OK_FILE#/logs/} con el último diario de la NAS"
+    fi
+
     local last_failure=0 now slot
     while true; do
         now="$(date +%s)"
         slot="$(last_slot_epoch)"
         if (( $(newest_daily_epoch) < slot && now - last_failure >= RETRY_AFTER_FAILURE_S )); then
             log "Backup pendiente de la franja $(date -d "@${slot}" '+%Y-%m-%d %H:%M')"
-            # Ojo con `set -e`: ni `if ! ( do_backup … )` ni `( … ) || …` sirven,
-            # porque bash lo desactiva DENTRO del subshell cuando es la condición de
-            # un `if` o un operando de `||`; y el `set +e` necesario para recoger el
-            # código también lo hereda el subshell. Por eso se reactiva dentro.
-            # Sin esto, un paso fallido no paraba el backup y acababa en
-            # «completado correctamente» sin haber copiado nada (probado).
-            set +e
-            ( set -e; do_backup "${slot}" )
-            local rc=$?
-            set -e
-            if (( rc != 0 )); then
+            run_one "${slot}"
+            if (( RUN_RC != 0 && RUN_RC != RC_BUSY )); then
                 last_failure="${now}"
                 err "Se reintentará en $((RETRY_AFTER_FAILURE_S / 60)) min"
             fi
@@ -221,7 +293,7 @@ check() {
 
 case "${1:-}" in
     schedule) schedule ;;
-    run)      ( do_backup "$(date +%s)" ) ;;
+    run)      run_one "$(date +%s)"; exit "${RUN_RC}" ;;
     check)    check ;;
     *)
         echo "Uso: $0 {schedule|run|check}" >&2

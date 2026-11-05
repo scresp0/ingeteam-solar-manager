@@ -67,6 +67,7 @@ un `None` que fuerce la ruta segura, nunca un valor por defecto plausible. Ver
 | `logger_reader.py` | Cliente HTTP del datalogger del inversor (registros minuto a minuto) y cálculo de los acumulados diarios y del perfil por franjas de 30 min. Define `house_power_w`. |
 | `storage.py` | Escrituras y consultas en InfluxDB 2.x: 4 measurements, los cuatro parámetros dinámicos, el historial para la web y el último día con dato para el backfill. Las consultas de calibración (dinámicos, perfil de consumo, ventana productiva) se cachean 1 h (`_query(..., cache=True)`, v1.100); cualquier escritura vacía la caché. |
 | `notifier.py` | Handler de logging en memoria que acumula el log de un ciclo y lo envía como email HTML (+ texto plano) por SMTP al terminar. |
+| `backup_watch.py` | Vigila el backup a la NAS del servicio `backup` (otro contenedor): lee el resultado que deja en `./logs`, lo registra en el log con prefijo `[BACKUP]` y avisa por email si falla o se para (§9.6.2, v1.101). |
 | `backup.py` | Copia de seguridad por SCP a un servidor externo (DB + logs + config). **Implementado pero desactivado por defecto** (`backup.enabled: false`). |
 | `web/server.py` | Aplicación FastAPI: dashboard + API JSON (estado, forecast, parámetros, historial, logs, config, export de BD, lanzamiento de ciclos/tests por SSE). |
 | `web/templates/index.html` | Dashboard de una sola página (~2350 líneas): tiles, gráficos, tabla de corriente, visor de logs y formulario de configuración generado desde `CONFIG_SCHEMA` (6 grupos colapsables, 73 campos). |
@@ -1303,6 +1304,7 @@ risk factor usa `solar_kwh`, que es un campo original y acumula datos antes.
 | `solar_backfill` | Cron 00:30 | 3600 s | Fijo en el código, no configurable. |
 | `charge_current` | Interval `interval_min` | 120 s | `max_instances=1`, `coalesce=True`, y **`next_run_time` ≈ 20 s tras el arranque**, porque `IntervalTrigger` no dispara al inicio: sin eso, un `make restart` dejaría el inversor con el tope anterior hasta `interval_min` minutos. |
 | `external_backup` | Cron a `backup.schedule_at` | 3600 s | Solo si `backup.enabled`. |
+| `backup_watch` | Interval 5 min | 120 s | Vigilancia del backup a la NAS (`backup_watch.check_backup`, v1.101). `max_instances=1`, `coalesce=True`, primera comprobación ~30 s tras el arranque. Siempre registrado. |
 
 El registro vive en `_register_jobs(scheduler, cfg, timezone)`, separado de
 `start_scheduler` para poder repetirlo: `reschedule(cfg)` hace `remove_all_jobs()` +
@@ -1335,8 +1337,9 @@ Tres servicios:
   inicialización por `DOCKER_INFLUXDB_INIT_*`, puerto 8086, healthcheck `influx ping`.
 - **`backup`** (contenedor `solar-manager-backup`): imagen `influxdb:2.7` con
   `entrypoint` `bash /backup.sh schedule`. Monta el script, `./influxdb/data` en solo
-  lectura y el volumen NFS `nas-backups`. Solo recibe `INFLUXDB_TOKEN` (no
-  `env_file`). Healthcheck `backup.sh check` (último diario de hace menos de 26 h). Ver §9.6.
+  lectura, el volumen NFS `nas-backups` y `./logs` (compartido con `solar-manager`, para
+  dejar el resultado de cada backup). Solo recibe `INFLUXDB_TOKEN` (no `env_file`).
+  Healthcheck `backup.sh check` (último diario de hace menos de 26 h). Ver §9.6.
 
 `solar-manager` y `backup` limitan su log de Docker (`json-file`, 10 MB × 3). En
 `volumes:` está `nas-backups` (driver `local`, `type: nfs`) y quedan declarados
@@ -1501,8 +1504,37 @@ de salida también lo hereda el subshell. La forma correcta es
 fallo a mitad de la copia terminaba en «completado correctamente» sin haber copiado
 nada: se vio en las pruebas con la NAS en solo lectura.
 
-**Healthcheck**: *unhealthy* si el último diario tiene más de 26 h o no hay ninguno. Es
-el único aviso de fallo: no hay email.
+**Vigilancia desde la app** (`app/backup_watch.py`, v1.101). El contenedor deja en
+`./logs` (`/logs` allí, `/app/logs` en la app):
+
+- `backup_status.json`, con el último intento: `status` `ok`/`error`, `at`, `backup` y
+  `message` (las últimas líneas de stderr). Se escribe de forma atómica (tmp + `mv`).
+- `backup_last_ok`, con la hora del último correcto. Al arrancar, si no existe, se
+  inicializa desde el diario más reciente de la NAS.
+
+El job `backup_watch` (cada 5 min) registra en el log de la app cada resultado nuevo,
+con prefijo `[BACKUP]`: INFO si fue bien y ERROR con el motivo si falló. La primera
+comprobación tras arrancar resume el estado. Avisa por email con el mismo mecanismo
+que `scheduler._notify_config_error`:
+
+1. Cuando el backup **pasa** a error. Los reintentos que siguen fallando van al log sin
+   repetir el email.
+2. Cuando el último correcto tiene **más de 26 h** o no hay ninguno, como mucho una vez
+   cada 24 h. Es lo que cubre los fallos que el contenedor no puede contar: que no
+   arranque (Docker no monta el volumen si la NAS no responde; comprobado, falla en
+   ~8 s), que se cuelgue en el montaje NFS (`hard`, espera sin dar error) o que esté
+   parado.
+
+«Ya hay un backup en curso» (código 75, un `make backup` mientras corre el programado)
+no cuenta como fallo y no toca el estado. La app nunca se bloquea por el backup: es
+otro contenedor y `solar-manager` no depende de él.
+
+`run_one` reactiva `set -e`, que es una opción global de bash. Por eso devuelve siempre
+0 y deja el código en `RUN_RC`: un `return` distinto de 0 haría saltar `set -e` en el
+bucle y lo mataría.
+
+**Healthcheck de Docker**: *unhealthy* si el último diario tiene más de 26 h o no hay
+ninguno. Complementa la vigilancia de la app.
 
 **Destino y WriteOnce**
 
@@ -1595,6 +1627,7 @@ necesita InfluxDB) y devuelve código de salida agregado. No hay CI.
 | `test_notifier` | 54 | El email: parseo de las líneas de decisión y de configuración, tarjetas, tabla ANTES/DESPUÉS, HTML y texto plano |
 | `test_scheduler` | 25 | `_parse_hhmm`, qué jobs registra `_register_jobs` para cada config, el fail-safe del `schedule_at` inválido y la reprogramación en caliente |
 | `test_schedule_modbus` | 11 | `inverter.decode_schedule`: valores reales de AG, estados canónicos y no reconocidos, e independencia de los bits ajenos de 40101/40134 |
+| `test_backup_watch` | 22 | Vigilancia del backup: resumen al arrancar, resultado nuevo a INFO/ERROR, un único email por incidencia (los reintentos no repiten), aviso de backup parado y su repetición cada 24 h, recuperación, fallo previo al arranque, fichero corrupto (v1.101) |
 | `test_solcast` | 18 | `_fetch_forecasts` convierte todo fallo de `requests` (timeouts, no-JSON…) en `SolcastError`; `_get_raw`: caché vigente → API → caché caducada, límite de antigüedad y pausa de reintentos (v1.100) |
 
 **Cómo se prueban `storage` y `notifier` sin sus dependencias** (v1.86):
