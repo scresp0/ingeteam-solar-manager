@@ -77,7 +77,8 @@ services:
   # Backup diario de InfluxDB a la NAS (scripts/backup_influxdb.sh): backup binario
   # + export line protocol, rotación GFS. Todo dentro del contenedor: el host no
   # programa nada (ni launchd ni systemd) ni monta la NAS. Log: `make logs-backup`;
-  # backup inmediato: `make backup`. Detalle en ARCHITECTURE §9.6.
+  # backup inmediato: `make backup`. La app vigila el resultado (app/backup_watch.py).
+  # Detalle en ARCHITECTURE §9.6.
   backup:
     image: influxdb:2.7        # trae `influx` (backup por HTTP) e `influxd` (export-lp)
     container_name: solar-manager-backup
@@ -97,6 +98,10 @@ services:
       # export-lp lee el engine directamente: datos de InfluxDB en SOLO LECTURA
       - ./influxdb/data:/var/lib/influxdb2:ro
       - nas-backups:/nas
+      # Compartido con solar-manager (/app/logs): aquí deja el resultado de cada
+      # backup (backup_status.json, backup_last_ok) para que la app lo vigile
+      # (app/backup_watch.py) y lo registre en su log
+      - ./logs/:/logs
 
     depends_on:
       influxdb:

@@ -118,7 +118,7 @@ def test_registro_de_jobs(tmp):
     sched._register_jobs(s, cfg, cfg.system.timezone)
 
     esperados = {"charge_schedule", "charge_recheck_1", "charge_recheck_2",
-                 "solar_backfill", "charge_current"}
+                 "solar_backfill", "charge_current", "backup_watch"}
     check("se registran los jobs esperados", set(s.jobs) == esperados, sorted(s.jobs))
     check("el ciclo nocturno usa tariff.schedule_at",
           s.horario("charge_schedule") == "23:55", s.horario("charge_schedule"))
@@ -131,6 +131,8 @@ def test_registro_de_jobs(tmp):
           all(j["args"][0] is cfg for j in s.jobs.values()))
     check("el control de corriente arranca con un primer tick inmediato",
           s.jobs["charge_current"]["kw"].get("next_run_time") is not None)
+    check("la vigilancia del backup arranca con una comprobación inmediata",
+          s.jobs["backup_watch"]["kw"].get("next_run_time") is not None)
 
     # charge_current deshabilitado y backup habilitado
     cfg2 = carga(tmp, YAML_BASE.replace("enabled: true", "enabled: false") + """

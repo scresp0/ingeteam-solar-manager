@@ -48,7 +48,7 @@ en función de la previsión solar del día siguiente y el SOC actual.
 app/
 ├── version.py       # fuente de verdad del número de versión — editar solo aquí
 ├── main.py          # orquestación del ciclo nocturno (run + run_recheck)
-├── scheduler.py     # APScheduler — lanza run a las 23:55 y run_recheck en cada schedule_recheck_at (19:00, 03:00); reschedule() reprograma tras recargar config
+├── scheduler.py     # APScheduler — lanza run a las 23:55 y run_recheck en cada schedule_recheck_at (19:00, 03:00); backup_watch cada 5 min; reschedule() reprograma tras recargar config
 ├── decision.py      # algoritmo decide_charge + decide_discharge
 ├── solcast.py       # cliente Solcast API
 ├── inverter.py      # lector MODBUS TCP
@@ -56,6 +56,7 @@ app/
 ├── logger_reader.py # lee datalogger HTTP del inversor
 ├── storage.py       # escribe en InfluxDB
 ├── notifier.py      # email HTML con resultado del ciclo
+├── backup_watch.py  # vigila el backup a la NAS (servicio `backup`): log [BACKUP] + email si falla o se para
 └── web/             # frontend multi-tab (SSE, dark mode)
 ```
 
@@ -179,7 +180,8 @@ Servicio **`backup`** de `docker-compose.yml` (contenedor `solar-manager-backup`
 - **Qué hace:** backup binario por HTTP contra `influxdb:8086` (`influx backup`, incluye los metadatos `.bolt`/`.sqlite`) + export line protocol (`influxd inspect export-lp --compress`), que lee el engine de `./influxdb/data` montado **en solo lectura**. El ID del bucket se resuelve por nombre en cada backup. Ambos en `/tmp` del contenedor; luego copia a la NAS y rota.
 - **Programación (bucle, no cron):** cada minuto compara el último diario de la NAS con la última franja de las 23:57 (`BACKUP_AT`) ya pasada; si falta, lo hace. La misma regla **recupera las noches perdidas** (Mac apagado o dormido, contenedor parado): al volver, hace el backup pendiente con las categorías GFS **de esa noche**, no de la hora real. Tras un fallo, 30 min sin reintentar. Se sondea cada minuto por reloj de pared y no con un `sleep` largo, que se alargaría si el equipo se suspende. Se valoró Ofelia (cron en Docker) y se descartó: no recupera noches perdidas y exige montar el socket de Docker.
 - **⚠️ `set -e` y subshells:** cada backup corre en un subshell para que un fallo no tumbe el bucle. **No** usar `if ! ( … )` ni `( … ) || …`: bash desactiva `set -e` dentro del subshell en esos contextos, y el `set +e` necesario para leer el código también se hereda. Por eso se ejecuta `( set -e; do_backup … )`. Sin eso, un fallo a mitad acababa en «completado correctamente» sin copiar nada (visto en las pruebas).
-- **Healthcheck:** el contenedor pasa a *unhealthy* si el último diario tiene más de 26 h o no hay ninguno. Es el único aviso de fallo: no hay email.
+- **La app vigila el backup** (`app/backup_watch.py`, job `backup_watch` cada 5 min, v1.101). El contenedor deja en `./logs` (montado en `/logs`, compartido con la app) `backup_status.json` (último intento: `ok`/`error`, hora, nombre, motivo con las últimas líneas de stderr) y `backup_last_ok`; la app registra en **su** log cada resultado nuevo con prefijo `[BACKUP]` (INFO si va bien, ERROR con el motivo si falla) y avisa por **email** (mismo mecanismo que `scheduler._notify_config_error`, así que el asunto dice «Ciclo ERROR»): (1) al **pasar** a error — los reintentos cada 30 min van al log sin repetir email —, y (2) si el último correcto tiene **> 26 h** o no hay ninguno, como mucho una vez cada 24 h mientras dure. El punto (2) es el que cubre lo que el contenedor no puede contar: que no arranque (NAS caída al levantar Docker), que se cuelgue en el montaje NFS (`hard`: espera sin error) o que esté parado. «Ya hay un backup en curso» (código 75, `make backup` mientras corre el programado) **no** cuenta como fallo. Al arrancar, si no existe `backup_last_ok`, el contenedor lo inicializa desde el diario más reciente de la NAS (si no, la app avisaría de «ningún backup» hasta el siguiente). ⚠️ `run_one` devuelve siempre 0 y deja el código en `RUN_RC`: reactiva `set -e`, que es global, y un `return` distinto de 0 mataría el bucle.
+- **Healthcheck de Docker:** el contenedor pasa a *unhealthy* si el último diario tiene más de 26 h o no hay ninguno. Complementa la vigilancia de la app.
 - **Destino:** volumen NFS `nas-backups` → `numancia.metafrase.net:/volume4/APP-BACKUPS` (Synology, `172.24.2.20`) → `solar-manager-backup/{daily,weekly,monthly,yearly}/<YYYYMMDD_HHMMSS>/{binary/, export.lp.gz}`. El export solo admite la IP del Mac (`172.24.3.34`): **otro host exige añadir su IP en los permisos NFS del DSM**. Squash a admin (uid 1024). ⚠️ Docker guarda las opciones del volumen al **crearlo**: para cambiar de NAS, `docker compose rm -sf backup && docker volume rm solar-manager_nas-backups` y volver a levantar. Si la NAS no responde cuando arranca Docker, el contenedor no arranca: comprobar `docker ps`.
 - **⚠️ WriteOnce en el share:** cada fichero queda inmutable desde **2 h** tras su última escritura y durante **30 días**. Un backup no se puede borrar pasado ese margen, y la rotación no puede borrar copias bloqueadas (`rm` falla → ERROR cada noche). Por eso las retenciones cumplen `RETENTION_DAILY ≥ días_bloqueo + 1` y `7·RETENTION_WEEKLY > días_bloqueo`. **Si cambia el bloqueo en el DSM, revisar las retenciones.** `make backup` deja una copia real que tampoco se podrá borrar.
 - **Rotación GFS** (ordena por nombre de directorio, que es cronológico):
@@ -475,7 +477,7 @@ El campo `night_consumption_kwh` en `stats_diarias` se añadió en v1.25. Regist
 
 Dos familias con propósitos distintos; el prefijo lo dice:
 
-- **`test_*`** — deterministas: no tocan inversor, Solcast ni InfluxDB. **Un fallo es siempre una regresión del código.** Son `decision`, `charge_current`, `charge_current_scenarios`, `logger_reader`, `config`, `config_web`, `storage`, `notifier`, `scheduler`, `schedule_modbus` (decodificación de los bits de 6.3.1/6.3.2, v1.96) y `solcast` (errores de red y fallback a caché caducada, v1.100).
+- **`test_*`** — deterministas: no tocan inversor, Solcast ni InfluxDB. **Un fallo es siempre una regresión del código.** Son `decision`, `charge_current`, `charge_current_scenarios`, `logger_reader`, `config`, `config_web`, `storage`, `notifier`, `scheduler`, `schedule_modbus` (decodificación de los bits de 6.3.1/6.3.2, v1.96) `solcast` (errores de red y fallback a caché caducada, v1.100) y `backup_watch` (vigilancia del backup: un email por incidencia, aviso de backup parado, recuperación; v1.101).
 - **`diag_*`** — necesitan hardware o internet y solo imprimen lo que encuentran (`diag_inverter`, `diag_solcast`, `diag_automation`, más el ya existente `diag_forecast_bias`). No afirman nada: un fallo suyo significa que el equipo no responde. **No los uses como red de seguridad.**
 - **`run_cycle.py`** (antes `test_main.py`) — no es un test: `POST /api/cycle` lo lanza como subproceso, así que es camino de producción.
 
