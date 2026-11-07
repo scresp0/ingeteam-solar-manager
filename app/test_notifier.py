@@ -31,8 +31,9 @@ from app.decision import (
     DecisionInput, SolarForecast, charge_oneliner, decide_charge,
     decide_discharge, discharge_oneliner,
 )
+from app.version import VERSION
 from app.notifier import (
-    _build_html, _build_plain, _extract_config_change, _extract_decision_lines,
+    _build_html, _build_plain, _extract_config_change, _extract_decision_lines, _label_detail,
     _parse_decision, _render_config_change, _render_decision_cards,
 )
 
@@ -176,6 +177,29 @@ def test_tarjetas_decision():
     check("una línea que no es decisión se ignora",
           _extract_decision_lines(_linea("Backfill completado")) == [])
 
+    print("\n=== _render_decision_cards: datos como «Etiqueta: valor» ===")
+    escenarios = {
+        "carga":         dict(soc=30.0, p10=2.0, p50=4.0, ref=date(2026, 8, 20)),
+        "sin carga":     dict(soc=90.0, p10=18.0, p50=25.0, ref=date(2026, 8, 20)),
+        "día valle":     dict(soc=90.0, p10=4.0, p50=6.0, ref=date(2026, 8, 21)),
+        "valle + bajo":  dict(soc=45.0, p10=1.0, p50=2.0, ref=date(2026, 8, 21)),
+    }
+    for nombre, kw in escenarios.items():
+        html = _render_decision_cards(log_de_ciclo(**kw)[0], True)
+        check(f"{nombre}: «SOC: »", "SOC: " in html, html)
+        check(f"{nombre}: «Solar Efectiva: »", "Solar Efectiva: " in html, html)
+        check(f"{nombre}: no queda ninguna etiqueta sin «: »",
+              not re.search(r"▸</span>(SOC|solar efectiva|déficit|energía fin) ", html.replace("&#9656;", "▸")),
+              html)
+    check("alba", _label_detail("SOC 88% (19.2 kWh) → alba 75% (16.35 kWh)")
+          == "SOC: 88% (19.2 kWh) → Alba: 75% (16.35 kWh)")
+    check("objetivo de carga", _label_detail("→ SOC 85%") == "→ SOC: 85%")
+    check("déficit", _label_detail("déficit 0% (0 kWh)") == "Déficit: 0% (0 kWh)")
+    check("déficit día2", _label_detail("déficit día2 1.2 kWh") == "Déficit Día2: 1.2 kWh")
+    check("energía fin día1", _label_detail("energía fin día1 15.73 kWh") == "Energía Fin Día1: 15.73 kWh")
+    check("lo que no es etiqueta conocida no se toca",
+          _label_detail("+3.1 kWh desde red") == "+3.1 kWh desde red")
+
 
 def test_tabla_configuracion():
     print("\n=== _extract_config_change: tabla ANTES/DESPUÉS ===")
@@ -218,6 +242,7 @@ def test_html_completo():
 
     check("es HTML", html.lstrip().startswith("<!DOCTYPE") or "<html" in html)
     check("incluye el hostname en la cabecera", "n40" in html)
+    check("pie con versión y host", f"solar-manager v{VERSION} @ n40" in html)
     check("incluye la tarjeta de carga", "CARGA" in html)
     check("incluye la tabla de configuración", "6.3.1" in html or "ACTIVA" in html)
     check("incluye el badge dinámico", "dinámico" in html.lower())
@@ -282,7 +307,7 @@ def test_render_no_pierde_decisiones():
               [f[3] for f in filas])
         check(f"SOC {soc} ref {ref}: un dato por línea (sin « · » en el HTML)",
               " · " not in cards and all(
-                  seg.strip().replace("&", "&amp;").replace("<", "&lt;") in cards
+                  _label_detail(seg.strip()).replace("&", "&amp;").replace("<", "&lt;") in cards
                   for f in filas for seg in f[4].split(" · ")),
               cards[:200])
         tabla = _render_config_change(log)

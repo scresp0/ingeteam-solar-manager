@@ -32,6 +32,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from io import StringIO
 
+from app.version import VERSION
 from app.config import EmailConfig, get_host_hostname
 
 logger = logging.getLogger(__name__)
@@ -250,6 +251,25 @@ def _render_config_change(log: str) -> str:
     )
 
 
+# Etiquetas de los datos de cada tarjeta, como se muestran en el email: «Etiqueta: valor».
+# El one-liner del log conserva su formato («SOC 88%», «solar efectiva 78%»…) porque lo
+# parsean _parse_decision y la web; aquí solo se cambia lo que se pinta.
+_DETAIL_LABELS = [
+    (re.compile(r'^(→ )?SOC (?=[\d.])'),         r'\1SOC: '),
+    (re.compile(r'→ alba (?=[\d.])'),            '→ Alba: '),
+    (re.compile(r'^solar efectiva (?=[\d.])'),   'Solar Efectiva: '),
+    (re.compile(r'^déficit día2 (?=[-\d.])'),    'Déficit Día2: '),
+    (re.compile(r'^déficit (?=[-\d.])'),         'Déficit: '),
+    (re.compile(r'^energía fin día1 (?=[-\d.])'), 'Energía Fin Día1: '),
+]
+
+
+def _label_detail(detail: str) -> str:
+    for pattern, label in _DETAIL_LABELS:
+        detail = pattern.sub(label, detail, count=1)
+    return detail
+
+
 def _render_decision_cards(log: str, success: bool) -> str:
     """
     Renderiza las líneas de decisión como tarjetas HTML con badge de color.
@@ -282,7 +302,7 @@ def _render_decision_cards(log: str, success: bool) -> str:
         head, *details = [p.strip() for p in text.split(' · ') if p.strip()] or ['']
         details_html = ''.join(
             f'<div style="font-size:12.5px;color:#4a5a6d;padding:2px 0 2px 2px;">'
-            f'<span style="color:{color};margin-right:6px;">&#9656;</span>{esc(d)}</div>'
+            f'<span style="color:{color};margin-right:6px;">&#9656;</span>{esc(_label_detail(d))}</div>'
             for d in details
         )
         html += (
@@ -292,7 +312,7 @@ def _render_decision_cards(log: str, success: bool) -> str:
             f'<span style="background:{color};color:#fff;font-size:10px;font-weight:700;'
             f'padding:2px 8px;border-radius:3px;letter-spacing:.5px;text-transform:uppercase;'
             f'margin-right:10px;font-family:monospace;">{badge}</span>'
-            f'<span style="font-size:13px;font-weight:600;color:#2c3e50;">{esc(head)}</span>'
+            f'<span style="font-size:13px;font-weight:600;color:#2c3e50;">{esc(_label_detail(head))}</span>'
             f'</div>'
             f'{details_html}'
             f'</div>\n'
@@ -484,7 +504,7 @@ def _build_html(
   <tr>
     <td style="padding:24px 0 4px;text-align:center;">
       <p style="margin:0;font-size:11px;color:{_C['muted']};">
-        Ingeteam INGECON SUN STORAGE 1PLAY TL-M &nbsp;·&nbsp; solar-manager{f" &nbsp;·&nbsp; {hostname}" if hostname else ""}
+        Ingeteam INGECON SUN STORAGE 1PLAY TL-M &nbsp;·&nbsp; solar-manager v{VERSION}{f" @ {hostname}" if hostname else ""}
       </p>
     </td>
   </tr>
