@@ -109,7 +109,7 @@ def test_parse_decision():
     # SOC bajo y forecast pobre → el algoritmo decide cargar.
     log, carga, _ = log_de_ciclo(soc=30.0, p10=2.0, p50=4.0)
     (soc, forecast, charge, night, night_din,
-     rf, rf_din, bias, bias_din) = _parse_decision(log)
+     rf, rf_din, bias, bias_din, dawn) = _parse_decision(log)
 
     check("lee el SOC del log", soc == 30.0, soc)
     check("la decisión coincide con decide_charge",
@@ -119,16 +119,25 @@ def test_parse_decision():
     check("consumo nocturno dinámico", night == 4.81 and night_din is True, (night, night_din))
     check("risk factor dinámico", rf == 0.62 and rf_din is True, (rf, rf_din))
     check("sesgo solar dinámico", bias == 0.81 and bias_din is True, (bias, bias_din))
+    alba = round(carga.energy_at_dawn_kwh / 22.55 * 100)
+    check("SOC esperado al alba del one-liner [CARGA]", dawn == alba, (dawn, alba))
 
     # Con sol de sobra el algoritmo decide NO cargar; el parseo debe seguirlo.
     log, carga, _ = log_de_ciclo(soc=90.0, p10=18.0, p50=25.0)
-    _, _, charge, *_ = _parse_decision(log)
+    _, _, charge, *_, dawn = _parse_decision(log)
     check("NO cargar se parsea como False",
           charge is False and carga.charge_needed is False, (charge, carga.charge_needed))
+    alba = round(carga.energy_at_dawn_kwh / 22.55 * 100)
+    check("SOC al alba también cuando no se carga", dawn == alba, (dawn, alba))
+
+    # Mañana día valle (sábado 22/08): el one-liner no trae el alba → sin fila.
+    log, carga, _ = log_de_ciclo(ref=date(2026, 8, 21))
+    *_, dawn = _parse_decision(log)
+    check("día valle → sin SOC al alba", carga.valley_day_skip and dawn is None, dawn)
 
     # Sin días suficientes en InfluxDB, los badges van a "config".
     log, _, _ = log_de_ciclo(dinamicos=False)
-    _, _, _, night, night_din, rf, rf_din, bias, bias_din = _parse_decision(log)
+    _, _, _, night, night_din, rf, rf_din, bias, bias_din, _ = _parse_decision(log)
     check("valores de config sin badge dinámico",
           (night, night_din, rf, rf_din, bias, bias_din) == (3.5, False, 0.7, False, 1.0, False),
           (night, night_din, rf, rf_din, bias, bias_din))
@@ -136,7 +145,7 @@ def test_parse_decision():
     # Un log vacío no debe reventar el email: todo None y el HTML se genera igual.
     vacio = _parse_decision("")
     check("log vacío → todo None sin excepción",
-          vacio == (None, None, None, None, False, None, False, None, False), vacio)
+          vacio == (None, None, None, None, False, None, False, None, False, None), vacio)
 
 
 def test_tarjetas_decision():
@@ -214,6 +223,12 @@ def test_html_completo():
     check("incluye el badge dinámico", "dinámico" in html.lower())
     # El SOC del log llega al indicador del email.
     check("muestra el SOC", "30" in html)
+    check("etiqueta y % de la barra separados por «: »", "Estado batería:&nbsp;</span>" in html)
+    alba = round(carga.energy_at_dawn_kwh / 22.55 * 100)
+    check("fila SOC esperado al alba con su valor",
+          "SOC esperado al alba" in html and f"{alba}%<span" in html, alba)
+    check("la fila del alba va justo tras el consumo nocturno",
+          html.index("Consumo nocturno") < html.index("SOC esperado al alba") < html.index("Risk factor"))
     # El HTML es un RESUMEN por diseño: el log íntegro solo viaja en la parte de
     # texto plano del multipart, no en el cuerpo HTML.
     check("el HTML no arrastra el log crudo", "23:55:01,123" not in html)

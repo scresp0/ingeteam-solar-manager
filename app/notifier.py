@@ -60,9 +60,10 @@ _C = {
 def _parse_decision(log: str) -> tuple:
     """
     Extrae del log: soc, forecast, charge, night_kwh, night_dynamic, rf_value, rf_dynamic,
-    bias_value, bias_dynamic. Compatible con el formato one-liner [CARGA]/[DESCARGA].
+    bias_value, bias_dynamic, dawn_soc (SOC esperado al alba del one-liner [CARGA]; None en
+    días valle, cuyo one-liner no lo trae). Compatible con el formato one-liner [CARGA]/[DESCARGA].
     """
-    soc = charge = forecast = night_kwh = rf_value = bias_value = None
+    soc = charge = forecast = night_kwh = rf_value = bias_value = dawn_soc = None
     night_dynamic = rf_dynamic = bias_dynamic = False
     for line in log.splitlines():
         # SOC desde la línea del inversor (primer match)
@@ -101,6 +102,10 @@ def _parse_decision(log: str) -> tuple:
             charge = True
         elif body.startswith('[CARGA] NO'):
             charge = False
+        if body.startswith('[CARGA]'):
+            m = re.search(r'→ alba (\d+)%', body)
+            if m:
+                dawn_soc = int(m.group(1))
         # Compatibilidad con formato anterior
         if charge is None:
             if re.search(r'charge_needed\s*=\s*True', line):
@@ -108,7 +113,7 @@ def _parse_decision(log: str) -> tuple:
             elif re.search(r'charge_needed\s*=\s*False', line):
                 charge = False
     return (soc, forecast, charge, night_kwh, night_dynamic,
-            rf_value, rf_dynamic, bias_value, bias_dynamic)
+            rf_value, rf_dynamic, bias_value, bias_dynamic, dawn_soc)
 
 
 _DECISION_STYLES = {
@@ -304,7 +309,7 @@ def _soc_bar(soc: float | None) -> str:
       <div style="margin:0 0 20px;">
         <div style="display:flex;justify-content:space-between;margin-bottom:5px;">
           <span style="font-size:12px;color:{_C['muted']};font-weight:600;
-                       text-transform:uppercase;letter-spacing:.5px;">Estado batería</span>
+                       text-transform:uppercase;letter-spacing:.5px;">Estado batería:&nbsp;</span>
           <span style="font-size:12px;font-weight:700;color:{color};">{pct}%</span>
         </div>
         <div style="background:{_C['border']};border-radius:99px;height:10px;overflow:hidden;">
@@ -334,7 +339,7 @@ def _build_html(
     hostname: str = "",
 ) -> str:
     (soc, forecast, charge, night_kwh, night_dynamic,
-     rf_value, rf_dynamic, bias_value, bias_dynamic) = _parse_decision(log_content)
+     rf_value, rf_dynamic, bias_value, bias_dynamic, dawn_soc) = _parse_decision(log_content)
 
     # Cabecera semántica
     if not success:
@@ -369,6 +374,13 @@ def _build_html(
             f'letter-spacing:.3px;margin-left:6px;">config</span>'
         )
         rows += _kv_row("Consumo nocturno", f"{night_kwh:.2f} kWh{source_badge}")
+    if dawn_soc is not None:
+        calc_badge = (
+            f'<span style="background:#f5f5f5;color:#888;font-size:10px;'
+            f'font-weight:700;padding:1px 6px;border-radius:3px;'
+            f'letter-spacing:.3px;margin-left:6px;">calculado</span>'
+        )
+        rows += _kv_row("SOC esperado al alba", f"{dawn_soc}%{calc_badge}")
     if rf_value is not None:
         rf_badge = (
             f'<span style="background:#e8f4fd;color:#2980b9;font-size:10px;'

@@ -1638,7 +1638,7 @@ necesita InfluxDB) y devuelve código de salida agregado. No hay CI.
 | `test_charge_current_scenarios` | 22 | Informe narrado: excedente franja a franja, puerta de temperatura, fallback lineal, valle y BALANCE |
 | `test_config_web` | 15 | Modelo ↔ `_EDITABLE_FIELDS` ↔ `CONFIG_SCHEMA`, casteos |
 | `test_storage` | 59 | Los cuatro dinámicos, el JOIN `ciclo_carga`↔`stats_diarias`, el perfil de consumo por franja y los puntos que se escriben |
-| `test_notifier` | 54 | El email: parseo de las líneas de decisión y de configuración, tarjetas, tabla ANTES/DESPUÉS, HTML y texto plano |
+| `test_notifier` | 64 | El email: parseo de las líneas de decisión y de configuración (incluido el «→ alba N%» del one-liner `[CARGA]`, que alimenta la fila «SOC esperado al alba», v1.104), tarjetas, tabla ANTES/DESPUÉS, HTML y texto plano |
 | `test_scheduler` | 25 | `_parse_hhmm`, qué jobs registra `_register_jobs` para cada config, el fail-safe del `schedule_at` inválido y la reprogramación en caliente |
 | `test_schedule_modbus` | 11 | `inverter.decode_schedule`: valores reales de AG, estados canónicos y no reconocidos, e independencia de los bits ajenos de 40101/40134 |
 | `test_backup_watch` | 22 | Vigilancia del backup: resumen al arrancar, resultado nuevo a INFO/ERROR, un único email por incidencia (los reintentos no repiten), aviso de backup parado y su repetición cada 24 h, recuperación, fallo previo al arranque, fichero corrupto (v1.101) |
