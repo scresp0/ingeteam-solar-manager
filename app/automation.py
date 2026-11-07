@@ -560,34 +560,35 @@ def set_discharge_schedule(
 
     with _browser_page(cfg) as page:
         try:
+            writes = _capture_holding_writes(page)
             _login(page, cfg)
             _navigate_to_discharge_schedule(page)
             _read_current_values(page)
-
-            if not discharge_blocked:
-                _set_select_by_exact_label(page, prof.disc_prog_1, SCHEDULE_DISABLED)
-                _set_select_by_exact_label(page, prof.disc_prog_2, SCHEDULE_DISABLED)
-            else:
-                # La franja Hora On→Off = horas en que la descarga está PERMITIDA.
-                # Prog 1 — Entre semana (L-V): permitir 08:00–23:59 (bloquea el valle 00:00–08:00)
-                _set_select_by_exact_label(page, prof.disc_prog_1, SCHEDULE_WEEKDAY)
-                _set_input_by_index(page, "Hora On",    0, str(DISC_WEEKDAY_ON_H))
-                _set_input_by_index(page, "Minuto On",  0, str(DISC_WEEKDAY_ON_M))
-                _set_input_by_index(page, "Hora Off",   0, str(DISC_WEEKDAY_OFF_H))
-                _set_input_by_index(page, "Minuto Off", 0, str(DISC_WEEKDAY_OFF_M))
-
-                # Prog 2 — Fin de semana (S-D): franja nula 00:00–00:01 (bloquea todo el día)
-                _set_select_by_exact_label(page, prof.disc_prog_2, SCHEDULE_WEEKEND)
-                _set_input_by_index(page, "Hora On",    1, str(DISC_WEEKEND_ON_H))
-                _set_input_by_index(page, "Minuto On",  1, str(DISC_WEEKEND_ON_M))
-                _set_input_by_index(page, "Hora Off",   1, str(DISC_WEEKEND_OFF_H))
-                _set_input_by_index(page, "Minuto Off", 1, str(DISC_WEEKEND_OFF_M))
+            _fill_discharge_form(page, prof, discharge_blocked)
 
             if dry_run:
                 logger.info("[DRY RUN] Valores descarga rellenados — NO se pulsa Escribir")
             else:
                 _click_write(page)
-                _verify_discharge_written(page, discharge_blocked, prof)
+                try:
+                    _verify_discharge_written(page, discharge_blocked, prof)
+                except AutomationError as e:
+                    # Un fallo puntual ya visto (2026-11-07 16:00): el inversor no guardó
+                    # los modos y el mismo código funcionó a la primera 1,5 h después.
+                    # Se registra qué contestó el inversor y se reintenta una vez; tras
+                    # la verificación la página ya está releída ("Leer"), así que basta
+                    # con volver a rellenar y escribir.
+                    logger.warning(f"{e} — respuesta del inversor: {_describe_writes(writes)}. Reintentando")
+                    writes.clear()
+                    _fill_discharge_form(page, prof, discharge_blocked)
+                    _click_write(page)
+                    try:
+                        _verify_discharge_written(page, discharge_blocked, prof)
+                    except AutomationError as e2:
+                        raise AutomationError(
+                            f"{e2} (también tras reintentar) — respuesta del inversor: "
+                            f"{_describe_writes(writes)}"
+                        ) from e2
                 state = _load_schedule_state() or _ScheduleState()
                 state.discharge_blocked = discharge_blocked
                 _save_schedule_state(state)
@@ -599,6 +600,53 @@ def set_discharge_schedule(
             raise
         except Exception as e:
             raise AutomationError(f"Error inesperado en automatización descarga: {e}") from e
+
+
+def _fill_discharge_form(page: Page, prof: LabelProfile, discharge_blocked: bool) -> None:
+    """Rellena 6.3.2 con la configuración canónica (libre o bloqueo). No escribe."""
+    if not discharge_blocked:
+        _set_select_by_exact_label(page, prof.disc_prog_1, SCHEDULE_DISABLED)
+        _set_select_by_exact_label(page, prof.disc_prog_2, SCHEDULE_DISABLED)
+        return
+    # La franja Hora On→Off = horas en que la descarga está PERMITIDA.
+    # Prog 1 — Entre semana (L-V): permitir 08:00–23:59 (bloquea el valle 00:00–08:00)
+    _set_select_by_exact_label(page, prof.disc_prog_1, SCHEDULE_WEEKDAY)
+    _set_input_by_index(page, "Hora On",    0, str(DISC_WEEKDAY_ON_H))
+    _set_input_by_index(page, "Minuto On",  0, str(DISC_WEEKDAY_ON_M))
+    _set_input_by_index(page, "Hora Off",   0, str(DISC_WEEKDAY_OFF_H))
+    _set_input_by_index(page, "Minuto Off", 0, str(DISC_WEEKDAY_OFF_M))
+
+    # Prog 2 — Fin de semana (S-D): franja nula 00:00–00:01 (bloquea todo el día)
+    _set_select_by_exact_label(page, prof.disc_prog_2, SCHEDULE_WEEKEND)
+    _set_input_by_index(page, "Hora On",    1, str(DISC_WEEKEND_ON_H))
+    _set_input_by_index(page, "Minuto On",  1, str(DISC_WEEKEND_ON_M))
+    _set_input_by_index(page, "Hora Off",   1, str(DISC_WEEKEND_OFF_H))
+    _set_input_by_index(page, "Minuto Off", 1, str(DISC_WEEKEND_OFF_M))
+
+
+def _capture_holding_writes(page: Page) -> list[str]:
+    """
+    Apunta cada respuesta a `POST /inverter/holding/write/...` (lo que manda el botón
+    Escribir: solo los campos que cambian) con su cuerpo de petición y de respuesta.
+    Devuelve la lista, que se va llenando mientras la página vive.
+    """
+    writes: list[str] = []
+
+    def on_response(resp) -> None:
+        if "/holding/write" not in resp.url:
+            return
+        try:
+            body = resp.text()[:500]
+        except Exception as e:
+            body = f"<sin cuerpo: {e}>"
+        writes.append(f"HTTP {resp.status} {(resp.request.post_data or '')[:500]} → {body}")
+
+    page.on("response", on_response)
+    return writes
+
+
+def _describe_writes(writes: list[str]) -> str:
+    return " | ".join(writes) if writes else "ninguna petición de escritura enviada"
 
 
 # ---------------------------------------------------------------------------
