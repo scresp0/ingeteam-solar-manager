@@ -256,7 +256,13 @@ Valores que el código escribe (constantes `DISC_*` en `automation.py`):
 
 **Verificación read-back:** tras pulsar "Escribir", `_verify_discharge_written` vuelve a
 pulsar "Leer" y comprueba que 6.3.2 quedó exactamente en la configuración pretendida;
-si no coincide, lanza `AutomationError`. La lectura (`_read_discharge_state`) devuelve
+si no coincide, **reintenta una vez** (rellenar + Escribir + verificar) y solo si vuelve a
+fallar lanza `AutomationError` (v1.103). Durante toda la sesión se capturan las respuestas a
+`POST /inverter/holding/write/…` (`_capture_holding_writes`) y, ante un fallo de verificación,
+el WARNING y el error incluyen la petición enviada y lo que contestó el inversor (o «ninguna
+petición de escritura enviada»). Motivo: el 2026-11-07 a las 16:00 la escritura del bloqueo
+no persistió y el mismo código funcionó a la primera 1,5 h después, sin rastro de la causa.
+La lectura (`_read_discharge_state`) devuelve
 además `recognized=False` cuando la configuración activa no es ninguna de las dos
 canónicas, lo que fuerza una reescritura correctiva.
 
