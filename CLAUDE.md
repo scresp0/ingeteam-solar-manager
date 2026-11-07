@@ -148,7 +148,7 @@ Usar siempre el helper `logger_reader.house_power_w(record)`, que aplica la fór
 ### SMTP (notifier.py)
 - Usar **hostname** (no IP) para que TLS funcione
 - `verify_ssl: false` para relay interno
-- El hostname del servidor se incluye en el asunto (`[solar-manager@host]`), en la cabecera HTML y en el pie. Se obtiene con `_get_hostname()`: `HOST_HOSTNAME` env var (inyectada por Docker/Makefile) o `socket.gethostname()` como fallback.
+- El hostname del servidor se incluye en el asunto (`[solar-manager@host]`), en la cabecera HTML y en el pie (`solar-manager v<versión> @ host`, v1.105). Se obtiene con `_get_hostname()`: `HOST_HOSTNAME` env var (inyectada por Docker/Makefile) o `socket.gethostname()` como fallback.
 
 ### Docker
 - `shm_size: '256mb'` en el servicio `solar-manager` — necesario para Chromium
@@ -490,7 +490,7 @@ Las claves de `POST /api/run/{test}` se mantienen estables aunque el módulo se 
 
 **Huecos conocidos** (ver ARCHITECTURE §9.7): `backup.py` y la parte pura de `automation.py` no tienen ningún test. De `scheduler.py` quedan fuera `start_scheduler` (arranca un `BlockingScheduler` real) y los wrappers `_run_*_job`; el resto lo cubre `test_scheduler` desde v1.87 con un doble que solo apunta las llamadas a `add_job`.
 
-**El email depende del FORMATO del log.** `notifier.py` monta las tarjetas parseando las líneas `[CARGA]`/`[DESCARGA]` de `decision.py` (y de `[CARGA]` saca también el `→ alba N%` de la fila «SOC esperado al alba», v1.104) y la tabla ANTES/DESPUÉS de las de `main.py`, con expresiones regulares. No es una interfaz declarada: cambiar un prefijo, una tilde o un separador deja el email mudo sin que falle nada. `test_notifier` genera el log con los generadores reales para que ese cambio rompa el test — comprobado por mutación: `[CARGA] SÍ` → `[CARGA] SI` basta para perder la tarjeta.
+**El email depende del FORMATO del log.** `notifier.py` monta las tarjetas parseando las líneas `[CARGA]`/`[DESCARGA]` de `decision.py` (y de `[CARGA]` saca también el `→ alba N%` de la fila «SOC esperado al alba», v1.104). Desde v1.105 las tarjetas muestran los datos como «Etiqueta: valor» (`_DETAIL_LABELS`, solo al pintar: el one-liner del log no cambia, porque lo parsean el notifier y la web) y la tabla ANTES/DESPUÉS de las de `main.py`, con expresiones regulares. No es una interfaz declarada: cambiar un prefijo, una tilde o un separador deja el email mudo sin que falle nada. `test_notifier` genera el log con los generadores reales para que ese cambio rompa el test — comprobado por mutación: `[CARGA] SÍ` → `[CARGA] SI` basta para perder la tarjeta.
 
 **`storage.py` se prueba sin InfluxDB** interceptando `_query` (lecturas) y `_write_points` (escrituras), que son los dos únicos puntos de entrada. Si añades una consulta, hazla pasar por `_query` o quedará fuera de los tests — en v1.86 hubo que unificar `_forecast_real_pairs`, que abría su propio cliente, para poder cubrir el JOIN.
 
